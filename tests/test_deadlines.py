@@ -118,3 +118,89 @@ def test_item4_is_per_employee(cal):
 def test_provisional_dates_are_flagged_in_notes(cal):
     dl = compute_due(line(qe_day=date(2026, 9, 21)), cal)
     assert any("provisional" in n for n in dl.notes)
+
+
+def test_item4_does_not_align_contributions_sharing_a_qe_day(cal):
+    """Item 4 keys on a LATER QE day. Two contributions on the same payday
+    must not inherit each other's deadline, or CSV row order would decide
+    the verdict."""
+    extended = line(qe_day=date(2026, 7, 9), first_to_fund=True, row=2)
+    ordinary = line(qe_day=date(2026, 7, 9), row=3)
+    pairs = [(l, compute_due(l, cal)) for l in (extended, ordinary)]
+    apply_item4(pairs)
+    assert pairs[1][1].due == date(2026, 7, 20)
+    assert pairs[1][1].pathway == USUAL_7BD
+
+
+def test_item4_result_is_independent_of_row_order(cal):
+    """Same facts, rows swapped, same answer."""
+    def run(rows):
+        pairs = [(l, compute_due(l, cal)) for l in rows]
+        apply_item4(pairs)
+        return {(l.qe_day, l.row): (d.due, d.pathway) for l, d in pairs}
+
+    forward = run(
+        [
+            line(qe_day=date(2026, 7, 9), first_to_fund=True, row=2),
+            line(qe_day=date(2026, 7, 9), row=3),
+        ]
+    )
+    reverse = run(
+        [
+            line(qe_day=date(2026, 7, 9), row=3),
+            line(qe_day=date(2026, 7, 9), first_to_fund=True, row=2),
+        ]
+    )
+    assert forward == reverse
+
+
+def test_later_qe_day_inherits_the_longest_window_from_a_group(cal):
+    """A later payday inherits the latest due day of everything before it,
+    not just the last row of the previous group."""
+    rows = [
+        line(qe_day=date(2026, 7, 9), first_to_fund=True, row=2),
+        line(qe_day=date(2026, 7, 9), row=3),
+        line(qe_day=date(2026, 7, 23), row=4),
+    ]
+    pairs = [(l, compute_due(l, cal)) for l in rows]
+    apply_item4(pairs)
+    assert pairs[2][1].due == date(2026, 8, 7)
+    assert pairs[2][1].pathway == ITEM4_ALIGNED
+
+
+def test_both_item_1_and_item_2_apply_taking_the_later_deadline(cal):
+    """A new starter paid an off-cycle bonus gets whichever period ends
+    later, not whichever branch the code tests first."""
+    dl = compute_due(
+        line(
+            qe_day=date(2026, 7, 9),
+            first_to_fund=True,
+            out_of_cycle=True,
+            next_standard_qe_day=date(2026, 7, 15),
+        ),
+        cal,
+    )
+    assert dl.due == date(2026, 8, 7)  # the 20-business-day period wins
+    assert any("both the out-of-cycle and first-contribution" in n for n in dl.notes)
+
+
+def test_out_of_cycle_wins_when_its_window_ends_later(cal):
+    dl = compute_due(
+        line(
+            qe_day=date(2026, 7, 9),
+            first_to_fund=True,
+            out_of_cycle=True,
+            next_standard_qe_day=date(2026, 9, 1),
+        ),
+        cal,
+    )
+    assert dl.pathway == OUT_OF_CYCLE
+    assert dl.due == cal.add_business_days(date(2026, 9, 1), 7)
+
+
+def test_deadline_past_the_calendar_horizon_warns(cal):
+    from datetime import timedelta
+
+    qe = cal.verified_until - timedelta(days=3)
+    dl = compute_due(line(qe_day=qe), cal)
+    assert any("verified horizon" in n for n in dl.notes)

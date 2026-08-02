@@ -3,10 +3,10 @@
 Components (SGAA s 16B(2)) modelled here:
 - final SG shortfall (input: the unpaid individual SG amount)
 - notional earnings component (s 19A): daily compounding at the GIC rate
-  on the shortfall, starting the day AFTER the last on-time day (LCR
+  on the BASE shortfall, starting the day AFTER the last on-time day (LCR
   2026/D3 worked example) and running while the final shortfall exceeds
-  nil: modelled to the day before receipt, or to the as-at date while
-  unpaid
+  nil, so it ends on the day the fund receives the late contribution, or
+  runs to the as-at date while the money is still outstanding
 - administrative uplift (s 19B(1)): 60% of (shortfalls + notional
   earnings), reduced by reg 13C (clean 24-month history: -20 points;
   transitional: lookback starts 1 Jul 2026 for QE days to 30 Jun 2028)
@@ -49,8 +49,11 @@ def notional_earnings(
 ) -> Decimal:
     """NEC accrued over [due + 1 day, end] inclusive.
 
-    Caller chooses `end`: the day before the fund received a late
-    contribution clearing the shortfall, or the as-at date while unpaid.
+    Caller chooses `end`: the day the fund received a late contribution
+    clearing the shortfall, or the as-at date while it is still unpaid.
+    `shortfall` is the BASE shortfall: the statutory notional sum
+    compounds on it until the final shortfall reaches nil, so a partial
+    late payment does not slow the accrual.
     Each day's accrual = (shortfall + NEC so far) x daily GIC rate."""
     if shortfall < 0:
         raise ValueError("shortfall cannot be negative")

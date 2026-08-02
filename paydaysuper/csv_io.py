@@ -46,11 +46,19 @@ class CsvError(ValueError):
     pass
 
 
-def load_mapping(path: str | Path | None, overrides: list[str] | None = None) -> dict[str, str]:
+def load_mapping(
+    path: str | Path | None, overrides: list[str] | None = None
+) -> tuple[dict[str, str], set[str]]:
+    """Returns the column mapping and the set of fields the user mapped
+    explicitly. A field the user named must exist in the CSV: silently
+    ignoring a typo there would change every verdict."""
     mapping = dict(DEFAULT_MAPPING)
+    explicit: set[str] = set()
     if path is not None:
         with open(path, encoding="utf-8") as f:
             user = json.load(f)
+        # Keys starting with an underscore are comments, not mappings.
+        user = {k: v for k, v in user.items() if not k.startswith("_")}
         unknown = set(user) - set(CANONICAL)
         if unknown:
             raise CsvError(
@@ -58,6 +66,7 @@ def load_mapping(path: str | Path | None, overrides: list[str] | None = None) ->
                 f"valid fields are {sorted(CANONICAL)}"
             )
         mapping.update(user)
+        explicit.update(user)
     for item in overrides or []:
         if "=" not in item:
             raise CsvError(f"--map expects field=column, got {item!r}")
@@ -65,7 +74,8 @@ def load_mapping(path: str | Path | None, overrides: list[str] | None = None) ->
         if field not in CANONICAL:
             raise CsvError(f"--map field {field!r} is not one of {sorted(CANONICAL)}")
         mapping[field] = column
-    return mapping
+        explicit.add(field)
+    return mapping, explicit
 
 
 def _parse_date(value: str, field: str, row: int) -> date:
@@ -87,7 +97,11 @@ def _parse_amount(value: str, field: str, row: int) -> Decimal:
         text = "-" + text[1:-1]
     try:
         amount = Decimal(text)
+        finite = amount.is_finite()
     except (InvalidOperation, ValueError):
+        raise CsvError(f"row {row}: cannot read {field} value {value!r} as an amount")
+    if not finite:
+        # Decimal accepts "nan" and "Infinity"; neither is an amount.
         raise CsvError(f"row {row}: cannot read {field} value {value!r} as an amount")
     if amount < 0:
         raise CsvError(f"row {row}: {field} is negative ({value!r})")
@@ -103,12 +117,27 @@ def _parse_bool(value: str, field: str, row: int) -> bool:
     raise CsvError(f"row {row}: cannot read {field} value {value!r} as yes/no")
 
 
-def parse_rows(path: str | Path, mapping: dict[str, str]) -> list[ContribLine]:
+MISSING = object()  # marks a field the row never supplied at all
+
+
+def parse_rows(
+    path: str | Path, mapping: dict[str, str], explicit: set[str] | None = None
+) -> list[ContribLine]:
+    explicit = explicit or set()
     with open(path, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
+        reader = csv.DictReader(f, restval=MISSING)
         if reader.fieldnames is None:
             raise CsvError(f"{path} has no header row")
-        headers = {h.strip() for h in reader.fieldnames}
+
+        named = [h.strip() for h in reader.fieldnames if h and h.strip()]
+        duplicates = sorted({h for h in named if named.count(h) > 1})
+        if duplicates:
+            raise CsvError(
+                f"{path} has duplicate column name(s): {duplicates}. Only the last "
+                "one would be read, so the figures cannot be trusted. Rename them."
+            )
+        headers = set(named)
+
         missing = [
             mapping[field]
             for field, required in CANONICAL.items()
@@ -119,10 +148,28 @@ def parse_rows(path: str | Path, mapping: dict[str, str]) -> list[ContribLine]:
                 f"{path} is missing required column(s): {missing}. Columns found: "
                 f"{sorted(headers)}. Map your own names with --map field=column."
             )
+        mismapped = sorted(
+            f"{field} -> {mapping[field]}"
+            for field in explicit
+            if mapping[field] not in headers
+        )
+        if mismapped:
+            raise CsvError(
+                f"mapped column(s) not found in {path}: {mismapped}. Columns found: "
+                f"{sorted(headers)}. Remove the mapping for any field your export "
+                "does not have."
+            )
 
         lines: list[ContribLine] = []
         for i, raw in enumerate(reader, start=2):  # row 1 is the header
-            row = {(k.strip() if k else k): (v or "") for k, v in raw.items()}
+            row = {(k.strip() if k else k): v for k, v in raw.items()}
+            short = sorted(k for k, v in row.items() if v is MISSING and k)
+            if short:
+                raise CsvError(
+                    f"row {i} stops early and supplies no value for {short}. A truncated "
+                    "row is not the same as a blank field, so it is not assumed empty."
+                )
+            row = {k: (v or "") for k, v in row.items() if k is not None}
 
             def optional(field: str) -> str:
                 return row.get(mapping[field], "")

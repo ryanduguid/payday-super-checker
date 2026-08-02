@@ -1,5 +1,6 @@
 import json
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -35,8 +36,8 @@ def test_nsw_act_bank_holiday_is_a_business_day(cal):
     assert cal.is_business_day(date(2026, 8, 4))
 
 
-def test_add_business_days_skips_weekends_and_holidays(cal):
-    # 7 business days after Thu 9 Jul 2026, no holidays in the window
+def test_add_business_days_skips_weekends(cal):
+    # 7 business days after Thu 9 Jul 2026; this window holds no holidays
     assert cal.add_business_days(date(2026, 7, 9), 7) == date(2026, 7, 20)
 
 
@@ -108,3 +109,39 @@ def test_override_unknown_key_errors(tmp_path):
     override.write_text(json.dumps({"delete": ["2026-08-05"]}), encoding="utf-8")
     with pytest.raises(CalendarError):
         load_calendar(override)
+
+
+def test_christmas_new_year_cluster(cal):
+    """Four non-business days stack up over Christmas 2026, including the
+    substitute Boxing Day holiday on Monday 28 December."""
+    for day in (date(2026, 12, 25), date(2026, 12, 26), date(2026, 12, 28)):
+        assert not cal.is_business_day(day)
+    assert cal.is_business_day(date(2026, 12, 29))
+    assert not cal.is_business_day(date(2027, 1, 1))
+    # Christmas Day, the Boxing Day substitute and New Year's Day all fall
+    # inside this window, pushing a 24 Dec payday out to 7 Jan.
+    assert cal.add_business_days(date(2026, 12, 24), 7) == date(2027, 1, 7)
+
+
+def test_easter_cluster_2027(cal):
+    for day in (date(2027, 3, 26), date(2027, 3, 29)):
+        assert not cal.is_business_day(day)
+    assert cal.is_business_day(date(2027, 3, 30))
+    assert cal.add_business_days(date(2027, 3, 25), 7) == date(2027, 4, 7)
+
+
+def test_data_files_ship_inside_the_package():
+    """Installed copies resolve DATA_DIR under site-packages, so the JSON
+    must live in the package, not beside it."""
+    from paydaysuper import calendar as cal_module
+    from paydaysuper import rates as rates_module
+
+    package_root = Path(cal_module.__file__).resolve().parent
+    for data_dir in (cal_module.DATA_DIR, rates_module.DATA_DIR):
+        assert data_dir == package_root / "data"
+        assert data_dir.is_dir()
+    for name in ("business_days.json", "gic_rates.json", "rates.json"):
+        assert (package_root / "data" / name).is_file()
+
+    pyproject = (package_root.parent / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'paydaysuper = ["data/*.json"]' in pyproject

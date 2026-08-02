@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DATA_DIR = Path(__file__).resolve().parent / "data"
 
 
 @dataclass(frozen=True)

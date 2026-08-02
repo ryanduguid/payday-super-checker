@@ -1,9 +1,9 @@
 """Dated legal rates: GIC quarters and FY super parameters.
 
-Every number lives in data/*.json with a source URL and seen-date.
-Nothing here is hard-coded because all of it changes: GIC resets
-quarterly (TAA 1953 s 8AAD), the SG parameters change each financial
-year."""
+Every rate lives in paydaysuper/data/*.json, recording where it came
+from and when that was checked. Nothing here is hard-coded because all
+of it changes: GIC resets quarterly (TAA 1953 s 8AAD), the SG
+parameters change each financial year."""
 from __future__ import annotations
 
 import json
@@ -12,9 +12,13 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DATA_DIR = Path(__file__).resolve().parent / "data"
 
-DAYS_IN_YEAR = 365  # ATO publishes daily GIC as annual rate / 365
+
+def days_in_year(d: date) -> int:
+    """TAA 1953 s 8AAD divides the annual GIC rate by the number of days
+    in the calendar year, so a leap year uses 366."""
+    return (date(d.year, 12, 31) - date(d.year, 1, 1)).days + 1
 
 
 @dataclass(frozen=True)
@@ -39,12 +43,13 @@ class GicTable:
         return self._quarters[-1].end
 
     def daily_rate(self, d: date) -> Decimal:
+        divisor = Decimal(days_in_year(d))
         for q in self._quarters:
             if q.start <= d <= q.end:
-                return q.annual_pct / Decimal(100) / Decimal(DAYS_IN_YEAR)
+                return q.annual_pct / Decimal(100) / divisor
         if d > self.last_known:
             # estimate with the latest known rate; staleness() flags this
-            return self._quarters[-1].annual_pct / Decimal(100) / Decimal(DAYS_IN_YEAR)
+            return self._quarters[-1].annual_pct / Decimal(100) / divisor
         raise RatesError(f"no GIC rate on record for {d.isoformat()}")
 
     def staleness(self, d: date) -> str | None:
@@ -52,7 +57,7 @@ class GicTable:
             return (
                 f"GIC rate table ends {self.last_known.isoformat()}; days after that "
                 f"use the last known rate ({self._quarters[-1].annual_pct}% p.a.): "
-                "update data/gic_rates.json from the ATO GIC rates page"
+                "update paydaysuper/data/gic_rates.json from the ATO GIC rates page"
             )
         return None
 

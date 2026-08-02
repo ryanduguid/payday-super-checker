@@ -3,18 +3,22 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from paydaysuper.calendar import load_calendar
 from paydaysuper.cli import EXIT_ERROR, EXIT_LATE_FOUND, main
 from paydaysuper.csv_io import load_mapping, parse_rows
-from paydaysuper.rates import load_gic
-from paydaysuper.report import assess
+from paydaysuper.deadlines import ContribLine
+from paydaysuper.rates import load_gic, load_rates
+from paydaysuper.report import assess, console_summary
+from paydaysuper.sgc import notional_earnings
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_payrun.csv"
 AS_AT = date(2026, 8, 10)
 
 
 def run_fixture():
-    lines = parse_rows(FIXTURE, load_mapping(None))
+    lines = parse_rows(FIXTURE, *load_mapping(None))
     return assess(lines, load_calendar(), load_gic(), AS_AT)
 
 
@@ -40,13 +44,53 @@ def test_at_risk_line_carries_the_receipt_caveat():
     assert any("receipt by the fund" in w for w in r.warnings)
 
 
-def test_late_line_has_exposure_figures():
+def test_late_but_received_line_has_no_shortfall():
+    """s 18D: a late contribution received before any assessment clears the
+    final shortfall, leaving notional earnings and the uplift on them."""
     r = by_employee(run_fixture(), "EMP002", date(2026, 7, 9))
     assert r.deadline.due == date(2026, 7, 20)
     assert r.days_late == 15
+    assert r.final_shortfall == Decimal("0")
+    assert r.base_shortfall == Decimal("540.00")
     assert r.nec > Decimal("0")
-    assert r.sgc_low == r.line.sg_amount + r.nec
-    assert r.sgc_high > r.sgc_low
+    assert r.sgc_low == r.nec                      # uplift 0%
+    assert r.sgc_high == r.nec * Decimal("1.6")    # uplift 60%
+    assert any("s 18D" in w for w in r.warnings)
+
+
+def test_assessment_before_receipt_keeps_the_shortfall():
+    """The offset needs receipt to beat the assessment. Assess earlier and
+    the whole SG amount stays in the charge."""
+    lines = parse_rows(FIXTURE, *load_mapping(None))
+    results = assess(
+        lines, load_calendar(), load_gic(), AS_AT, assessment_date=date(2026, 7, 25)
+    )
+    r = by_employee(results, "EMP002", date(2026, 7, 9))
+    assert r.final_shortfall == Decimal("540.00")
+    assert r.sgc_low == Decimal("540.00") + r.nec
+
+
+def test_notional_earnings_run_to_the_receipt_date():
+    """Accrual covers [due + 1 day, receipt] inclusive (s 19A)."""
+    r = by_employee(run_fixture(), "EMP002", date(2026, 7, 9))
+    expected = notional_earnings(
+        Decimal("540.00"), date(2026, 7, 20), date(2026, 8, 4), load_gic()
+    )
+    assert r.nec == expected
+
+
+def test_unpaid_line_keeps_the_full_shortfall():
+    lines = parse_rows(FIXTURE, *load_mapping(None))
+    late_unpaid = [
+        line for line in lines if line.employee_id == "EMP002" and line.received
+    ][0]
+    late_unpaid.received = None
+    late_unpaid.remitted = date(2026, 8, 4)
+    results = assess(lines, load_calendar(), load_gic(), AS_AT)
+    r = by_employee(results, "EMP002", date(2026, 7, 9))
+    assert r.verdict == "LATE"
+    assert r.final_shortfall == Decimal("540.00")
+    assert any("still unpaid" in w for w in r.warnings)
 
 
 def test_item4_extends_the_second_payday_for_a_new_starter():
@@ -72,8 +116,9 @@ def test_cli_writes_report_and_flags_late(tmp_path, capsys):
 
     with open(out, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
-    assert len(rows) == 10
-    assert {r["verdict"] for r in rows} == {
+    data = [r for r in rows if r["employee_id"] != "NOTE"]
+    assert len(data) == 10
+    assert {r["verdict"] for r in data} == {
         "ON_TIME",
         "LATE",
         "AT_RISK",
@@ -81,10 +126,60 @@ def test_cli_writes_report_and_flags_late(tmp_path, capsys):
         "SKIPPED",
     }
 
+    # The trailing note keeps the table's width so parsers do not choke.
+    note = rows[-1]
+    assert note["employee_id"] == "NOTE"
+    assert "2026-08-02" in note["warnings"]
+    assert "not advice" in note["warnings"]
+
+    late = next(r for r in data if r["employee_id"] == "EMP002")
+    assert late["due_date"] == "2026-07-20"
+    assert late["pathway"] == "USUAL_7BD"
+    assert late["days_late"] == "15"
+    assert late["sg_amount"] == "540.00"
+    assert late["final_shortfall"] == "0.00"
+    assert late["uplift_best_case"] == "0.00"
+    assert Decimal(late["sgc_estimate_high"]) > Decimal(late["sgc_estimate_low"])
+
+    skipped = next(r for r in data if r["employee_id"] == "EMP007")
+    assert skipped["verdict"] == "SKIPPED"
+    assert skipped["due_date"] == ""
+
     printed = capsys.readouterr().out
     assert "payday-super-checker" in printed
     assert "Educational tool" in printed
     assert "no liability" not in printed
+
+
+def test_console_summary_carries_the_legal_caveats():
+    text = console_summary(run_fixture(), AS_AT, "report.csv", "2026-08-02", load_rates())
+    for phrase in (
+        "Maximum contributions base ($270830 for 2026-27",
+        "Choice loading, the late payment penalty",
+        "PCG 2026/1",
+        "still drafts",
+        "receipt by the fund",
+        "s 18D",
+        "Fund deeds, enterprise agreements",
+    ):
+        assert phrase in text, phrase
+    assert "lowers ATO review risk" in text
+    assert "no liability" not in text
+
+
+def test_console_summary_ranks_by_exposure():
+    """Largest estimated exposure first, as the heading claims."""
+    text = console_summary(run_fixture(), AS_AT, "report.csv", "2026-08-02", load_rates())
+    body = text.split("Late lines")[1]
+    assert body.index("EMP002") < body.index("EMP001")
+
+
+def test_cli_refuses_to_overwrite_the_input(tmp_path, capsys):
+    target = tmp_path / "pay.csv"
+    target.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+    assert main([str(target), "-o", str(target)]) == EXIT_ERROR
+    assert "overwrite the input" in capsys.readouterr().err
+    assert target.read_text(encoding="utf-8").startswith("employee_id,payment_date")
 
 
 def test_cli_reports_missing_file(tmp_path, capsys):
@@ -103,3 +198,76 @@ def test_cli_rejects_pre_regime_paydays(tmp_path, capsys):
     )
     assert main([str(path), "-o", str(tmp_path / "r.csv")]) == EXIT_ERROR
     assert "old quarterly SG law" in capsys.readouterr().err
+
+
+def test_late_remittance_without_a_receipt_date_is_late():
+    """The LATE branch of the remittance-only path: no receipt date, and
+    the money left after the deadline."""
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("300.00"),
+        remitted=date(2026, 8, 1),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+    assert r.verdict == "LATE"
+    assert r.days_late == 12                      # measured to the remittance date
+    assert r.final_shortfall == Decimal("300.00")  # no receipt, so no s 18D offset
+    assert any("still unpaid" in w for w in r.warnings)
+
+
+def test_prepayment_inside_the_twelve_month_window_is_on_time():
+    """s 18C(1)(c)(ii): received in the 12 months before the QE day."""
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("300.00"),
+        received=date(2026, 5, 1),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+    assert r.verdict == "ON_TIME"
+    assert any("pre-payment" in w for w in r.warnings)
+
+
+def test_payment_older_than_twelve_months_cannot_offset():
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2027, 7, 9),
+        sg_amount=Decimal("300.00"),
+        received=date(2026, 7, 1),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), date(2027, 8, 1))[0]
+    assert r.verdict == "LATE"
+    assert any("more than 12 months" in w for w in r.warnings)
+
+
+def test_receipt_before_remittance_is_rejected():
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("300.00"),
+        remitted=date(2026, 7, 20),
+        received=date(2026, 7, 15),
+        row=2,
+    )
+    with pytest.raises(ValueError, match="cannot happen"):
+        assess([line], load_calendar(), load_gic(), AS_AT)
+
+
+def test_receipt_after_the_as_at_date_still_accrues_to_receipt():
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("300.00"),
+        received=date(2026, 8, 20),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+    expected = notional_earnings(
+        Decimal("300.00"), date(2026, 7, 20), date(2026, 8, 20), load_gic()
+    )
+    assert r.nec == expected
+    assert any("after the as-at date" in w for w in r.warnings)
