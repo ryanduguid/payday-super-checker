@@ -25,14 +25,23 @@ The rules below were researched against primary sources and then re-checked by a
 
 `paydaysuper/` package, Python ≥3.10, **stdlib-only runtime**. Units:
 
-- `calendar.py` — loads bundled `data/business_days.json` (+ optional user override JSON), `is_business_day(date)`, `add_business_days(date, n)`, horizon warning when computation leaves verified range.
-- `deadlines.py` — pure functions implementing the four s 18C pathways; input = line facts, output = `Deadline(due_date, pathway, notes)`. Item 4 alignment applied per employee after per-line computation.
-- `sgc.py` — pure functions: `notional_earnings(shortfall_cents, late_period)` iterating daily GIC compounding across quarter boundaries from `data/gic_rates.json`; `uplift_scenarios(...)` returning the reg 13C/13D matrix. All money in integer cents; no rounding rule hardcoded (none verified) — output cents exact.
-- `csv_io.py` — column mapping (CLI flags or JSON config), date parsing (ISO + DD/MM/YYYY), validation with loud errors (no silent coercion — Xero round-2 lesson).
-- `report.py` — console summary + `report.csv` (verdict, due date, pathway, days late, shortfall, NEC, uplift range low/high, warnings per line).
-- `cli.py` — argparse entry (`payday-super-check run pay.csv --map ...`), `--as-at` date for NEC end (defaults: today), exits non-zero when LATE lines exist (scheduling-friendly).
+- `calendar.py` — loads bundled `paydaysuper/data/business_days.json` (+ optional user override JSON), `is_business_day(date)`, `add_business_days(date, n)`, horizon warning when computation leaves verified range.
+- `deadlines.py` — pure functions implementing the four s 18C pathways; input = line facts, output = `Deadline(due, pathway, notes, caveats)`, where notes explain which rule applied and caveats mean the answer itself may be wrong. Item 4 alignment is applied per employee after per-line computation, and calendar caveats are attached after that so they describe the final date.
+- `sgc.py` — pure functions: `notional_earnings(shortfall_cents, late_period)` iterating daily GIC compounding across quarter boundaries from `paydaysuper/data/gic_rates.json`; `uplift_scenarios(...)` returning the reg 13C/13D matrix. All money in integer cents; no rounding rule hardcoded (none verified) — output cents exact.
+- `csv_io.py` — column mapping (CLI flags or JSON config), date parsing (ISO + DD/MM/YYYY), validation with loud errors. Payroll exports vary too much to guess at: a value the parser cannot read is named, never coerced.
+- `report.py` — console summary + `report.csv` (verdict, due date, pathway, days late and the date it was measured to, shortfall, NEC, uplift range low/high, caveats and notes per line), plus totals across every exposed line.
+- `cli.py` — argparse entry (`payday-super-check pay.csv --map field=column ...`), `--as-at` for the interest end date (default: today) and `--assessment-date` for the s 18D cut-off, exits non-zero when LATE or UNPAID lines exist (scheduling-friendly).
 
-Verdicts: `ON_TIME` (receipt date ≤ due), `LATE` (receipt date > due, or remittance date > due), `AT_RISK` (remittance ≤ due but no receipt date — transit risk, s 18C receipt test), `UNKNOWN` (missing dates). Remittance-based results always carry the assumed-receipt caveat.
+Verdicts:
+
+- `ON_TIME` — received by the due date, or a valid pre-payment inside the 12-month window.
+- `LATE` — received or remitted after the due date, or funded only by a pre-payment too old to apply.
+- `AT_RISK` — remitted by the due date with no fund-receipt date. The statutory test is receipt, so this is not a pass.
+- `UNPAID` — the due date has passed and nothing at all is recorded. Carries the full shortfall plus interest.
+- `UNKNOWN` — nothing recorded and not yet due, so there is nothing to assess.
+- `SKIPPED` — defined-benefit interests, where the contribution is notional (s 18A(3)).
+
+`LATE` and `UNPAID` carry exposure figures. Remittance-based results always carry the assumed-receipt caveat.
 
 Pre-1 Jul 2026 QE days: hard error (old quarterly law, out of scope).
 
@@ -57,7 +66,3 @@ Synthetic fixtures only; no client data.
 ## Non-goals / guardrails
 
 Out of scope v1: choice loading (user-visible note), defined-benefit interests (lines flagged and skipped), LPP (mentioned in README as post-assessment risk), old regime, fund-deed/EBA obligations (PCG 2026/1 para 3 note). Wording: "low ATO review risk", never "no liability" (PCG 2026/1 para 11). README date-stamps legal content, cites LCR drafts as drafts, states the fund-receipt assumption prominently. Disclaimer: educational tool, verify against ATO calculators, no professional advice.
-
-## Release checklist (before push)
-
-Manual browser re-verification of: 3 ATO pages quoted (403 scripted), LI 2026/20 instrument text, calendar cross-check against 8 state/territory pages, live s 18C(4) determinations check, LCR finalisation sweep. Multi-lens review workflow; findings actioned. No AI co-author trailer; noreply identity; MIT.

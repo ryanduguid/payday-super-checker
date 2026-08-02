@@ -8,7 +8,13 @@ from pathlib import Path
 
 from . import LAW_CONTENT_DATE, __version__
 from .calendar import CalendarError, load_calendar
-from .csv_io import CsvError, load_mapping, parse_date_text, parse_rows
+from .csv_io import (
+    LATEST_SANE_YEAR,
+    CsvError,
+    load_mapping,
+    parse_date_text,
+    parse_rows,
+)
 from .deadlines import PreRegimeError
 from .rates import RatesError, load_gic, load_rates
 from .report import EXPOSED, assess, console_summary, write_csv
@@ -68,6 +74,8 @@ def _parse_cli_date(value: str | None, flag: str) -> date | None:
         raise CsvError(
             f"{flag} expects a date such as 2026-08-10 or 10/08/2026, got {value!r}"
         )
+    if parsed.year > LATEST_SANE_YEAR:
+        raise CsvError(f"{flag} value {value!r} is not a real date")
     return parsed
 
 

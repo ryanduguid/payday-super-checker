@@ -10,6 +10,7 @@ from pathlib import Path
 from . import __version__
 from .calendar import BusinessCalendar
 from .deadlines import (
+    ITEM4_ALIGNED,
     REGIME_START,
     SKIP_DB,
     USUAL_7BD,
@@ -35,7 +36,9 @@ EXPOSED = (LATE, UNPAID)
 
 CENTS = Decimal("0.01")
 
-# Characters Excel and Sheets treat as the start of a formula.
+# Characters Excel and Sheets evaluate at the start of a cell. A plain code
+# such as -00123 or @home is left alone: rewriting it would break a lookup
+# from this report back to the payroll export.
 FORMULA_LEAD = ("=", "+", "-", "@")
 
 
@@ -52,7 +55,9 @@ def cents(value: Decimal | None) -> Decimal:
 def csv_safe(text: str) -> str:
     """Stop a spreadsheet treating a cell as a formula. Only employee ids
     come from the input, so only they can carry a payload."""
-    if text[:1] in FORMULA_LEAD:
+    if text[:1] == "=":
+        return "'" + text
+    if text[:1] in FORMULA_LEAD and not text[1:].replace("_", "").isalnum():
         return "'" + text
     return text
 
@@ -132,25 +137,41 @@ def _flag_duplicates(lines: list[ContribLine]) -> None:
                 line.duplicate_note = note
 
 
+def _donor_index(
+    pairs: list[tuple[ContribLine, Deadline]]
+) -> dict[tuple[str, date], list[ContribLine]]:
+    index: dict[tuple[str, date], list[ContribLine]] = {}
+    for line, dl in pairs:
+        if dl.due is not None:
+            index.setdefault((line.employee_id, dl.due), []).append(line)
+    return index
+
+
 def _item4_seeded_by_unrecorded(
-    line: ContribLine, dl: Deadline, pairs: list[tuple[ContribLine, Deadline]]
+    line: ContribLine,
+    dl: Deadline,
+    index: dict[tuple[str, date], list[ContribLine]],
+    cal: BusinessCalendar,
 ) -> str | None:
     """Item 4 needs an EARLIER ELIGIBLE CONTRIBUTION. The tool cannot see
     whether one was made, so where every earlier line it could have inherited
-    from records no payment at all, say so rather than quietly extending."""
+    from records no payment at all, name both deadlines rather than quietly
+    presenting the longer one as settled."""
+    if dl.pathway != ITEM4_ALIGNED or dl.due is None:
+        return None
     donors = [
         other
-        for other, other_dl in pairs
-        if other.employee_id == line.employee_id
-        and other.qe_day < line.qe_day
-        and other_dl.due == dl.due
+        for other in index.get((line.employee_id, dl.due), [])
+        if other.qe_day < line.qe_day
     ]
     if donors and all(d.received is None and d.remitted is None for d in donors):
         earlier = ", ".join(sorted({d.qe_day.isoformat() for d in donors}))
+        own = cal.add_business_days(line.qe_day, 20 if line.first_to_fund else 7)
         return (
             f"this deadline is inherited from the QE day {earlier}, for which no payment "
             "is recorded. s 18C(2) item 4 needs an earlier eligible contribution, so if "
-            "none was made the deadline for this line is its own period end"
+            f"none was made the deadline for this line is {own.isoformat()} and any "
+            "shortfall is larger than shown"
         )
     return None
 
@@ -193,12 +214,14 @@ def assess(
     apply_item4(pairs)
     annotate_calendar_risk(pairs, cal)
 
+    donors = _donor_index(pairs)
+
     results: list[Result] = []
     for line, dl in pairs:
         result = Result(line, dl, UNKNOWN, notes=list(dl.notes), caveats=list(dl.caveats))
         if line.duplicate_note:
             result.caveats.append(line.duplicate_note)
-        inherited = _item4_seeded_by_unrecorded(line, dl, pairs)
+        inherited = _item4_seeded_by_unrecorded(line, dl, donors, cal)
         if inherited:
             result.caveats.append(inherited)
 
@@ -220,7 +243,9 @@ def assess(
             if settled < line.qe_day:
                 # Pre-payments count only inside the 12-month window ending
                 # the day before the QE day (s 18C(1)(c)(ii)).
-                earliest = twelve_months_before(line.qe_day - timedelta(days=1)) + timedelta(days=1)
+                earliest = twelve_months_before(
+                    line.qe_day - timedelta(days=1)
+                ) + timedelta(days=1)
                 if settled >= earliest:
                     result.verdict = ON_TIME
                     result.notes.append(
@@ -239,7 +264,7 @@ def assess(
                 result.verdict = ON_TIME if settled <= dl.due else LATE
         elif line.remitted is not None:
             result.verdict = AT_RISK if line.remitted <= dl.due else LATE
-        elif dl.due < as_at:
+        elif dl.due < as_at and line.sg_amount > 0:
             # Nothing recorded and the deadline has passed. This is the
             # largest exposure the tool can see, so it must not be silent.
             result.verdict = UNPAID
@@ -286,15 +311,16 @@ def assess(
                 nec_end = as_at
                 result.lateness_basis = "as-at date (nothing applied to this payday)"
 
+            outstanding_to = nec_end
             if assessment_date is not None and nec_end >= assessment_date:
                 nec_end = assessment_date - timedelta(days=1)
-                result.notes.append(
+                result.caveats.append(
                     f"notional earnings stop {nec_end.isoformat()}, the day before the "
                     "assessment. Interest on the unpaid charge after that is general "
                     "interest charge, which this tool does not estimate"
                 )
 
-            result.days_late = max((nec_end - dl.due).days, 0)
+            result.days_late = max((outstanding_to - dl.due).days, 0)
             result.nec = (
                 notional_earnings(base_shortfall, dl.due, nec_end, gic)
                 if nec_end > dl.due
@@ -333,13 +359,24 @@ def assess(
 
             # A missed new-starter flag is the most likely reason a line is
             # wrongly late, and the operator cannot tell which rows to check.
-            if dl.pathway == USUAL_7BD and landed is not None:
+            if (
+                dl.pathway == USUAL_7BD
+                and landed is not None
+                and not stale_prepayment
+                and landed >= line.qe_day
+            ):
                 extended = cal.add_business_days(line.qe_day, 20)
                 if landed <= extended:
+                    becomes = (
+                        "the line becomes on time"
+                        if settled is not None
+                        else "the line stops being late, though it stays at risk until "
+                        "you supply a fund-receipt date"
+                    )
                     result.caveats.append(
                         "this assumes the contribution is not the first to this fund. If "
                         "it is a new starter or a fund switch, set "
-                        f"first_contribution_to_fund=yes and the line becomes on time "
+                        f"first_contribution_to_fund=yes and {becomes} "
                         f"(due {extended.isoformat()})"
                     )
 
@@ -517,7 +554,11 @@ def console_summary(
         )
         lines.append("")
 
-    unflagged = [r for r in results if r.verdict not in EXPOSED and r.caveats]
+    unflagged = [
+        r
+        for r in results
+        if r.verdict not in EXPOSED and r.verdict != AT_RISK and r.caveats
+    ]
     if unflagged:
         lines.append(
             f"{len(unflagged)} other line(s) carry data-quality notes; see the caveats "

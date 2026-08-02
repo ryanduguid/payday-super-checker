@@ -575,3 +575,122 @@ def test_sentinel_high_date_is_refused_cleanly(tmp_path, capsys):
     )
     assert main([str(path), "-o", str(tmp_path / "r.csv")]) == EXIT_ERROR
     assert "not a real date" in capsys.readouterr().err
+
+
+def test_days_late_is_not_truncated_by_the_assessment_date():
+    """An assessment stops interest accruing; it does not shorten how long
+    the money was outstanding."""
+    lines = parse_rows(FIXTURE, *load_mapping(None))
+    results = assess(
+        lines, load_calendar(), load_gic(), AS_AT, assessment_date=date(2026, 8, 5)
+    )
+    r = by_employee(results, "EMP001", date(2026, 7, 23))
+    assert r.verdict == "LATE"
+    assert r.final_shortfall == Decimal("612.00")  # receipt postdates assessment
+    assert r.days_late == 2                        # due 4 Aug, received 6 Aug
+    assert any("day before the assessment" in c for c in r.caveats)
+
+
+def test_stale_prepayment_gets_no_new_starter_hint():
+    """Flipping the flag cannot rescue a receipt outside the 12-month
+    window, so the tool must not suggest it."""
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2027, 9, 15),
+        sg_amount=Decimal("1000.00"),
+        received=date(2026, 8, 1),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), date(2027, 10, 30))[0]
+    assert r.verdict == "LATE"
+    assert not any("first_contribution_to_fund" in c for c in r.caveats)
+
+
+def test_new_starter_hint_wording_matches_the_verdict_it_would_produce():
+    """With only a remittance date the line becomes AT_RISK, not on time."""
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("100.00"),
+        remitted=date(2026, 8, 5),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+    hint = [c for c in r.caveats if "first_contribution_to_fund" in c]
+    assert hint and "stays at risk" in hint[0]
+
+
+def test_zero_amount_line_is_not_exposure(tmp_path):
+    line = ContribLine(
+        employee_id="E0", qe_day=date(2026, 7, 9), sg_amount=Decimal("0.00"), row=2
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+    assert r.verdict == "UNKNOWN"
+    assert r.sgc_high is None
+
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        "E0,2026-07-09,0.00,,,no,no,,no\n",
+        encoding="utf-8",
+    )
+    assert main([str(path), "-o", str(tmp_path / "r.csv"), "--as-at", "2026-08-10"]) == 0
+
+
+def test_item4_caveat_only_fires_on_an_aligned_line():
+    """Two paydays can share a due date by plain calendar arithmetic without
+    item 4 applying at all."""
+    rows = [
+        ContribLine(
+            employee_id="E9", qe_day=date(2026, 7, 10), sg_amount=Decimal("100.00"), row=2
+        ),
+        ContribLine(
+            employee_id="E9", qe_day=date(2026, 7, 11), sg_amount=Decimal("100.00"), row=3
+        ),
+    ]
+    results = assess(rows, load_calendar(), load_gic(), AS_AT)
+    assert results[0].deadline.due == results[1].deadline.due  # same due date
+    assert results[1].deadline.pathway == "USUAL_7BD"
+    assert not any("inherited" in c for c in results[1].caveats)
+
+
+def test_item4_caveat_names_the_deadline_without_the_alignment():
+    rows = [
+        ContribLine(
+            employee_id="E9",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("100.00"),
+            first_to_fund=True,
+            row=2,
+        ),
+        ContribLine(
+            employee_id="E9",
+            qe_day=date(2026, 7, 23),
+            sg_amount=Decimal("100.00"),
+            received=date(2026, 8, 6),
+            row=3,
+        ),
+    ]
+    results = assess(rows, load_calendar(), load_gic(), AS_AT)
+    caveat = [c for c in results[1].caveats if "inherited" in c]
+    assert caveat and "2026-08-04" in caveat[0]  # its own period end
+
+
+def test_ordinary_employee_ids_are_not_rewritten(tmp_path):
+    """A code starting with a hyphen must still join back to payroll."""
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        "-00123,2026-07-09,100.00,,2026-07-15,no,no,,no\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "r.csv"
+    main([str(path), "-o", str(out), "--as-at", "2026-08-10"])
+    assert ",-00123," in out.read_text(encoding="utf-8")
+
+
+def test_cli_rejects_an_absurd_as_at_date(tmp_path, capsys):
+    assert main([str(FIXTURE), "-o", str(tmp_path / "r.csv"), "--as-at", "9999-01-01"]) == 1
+    assert "not a real date" in capsys.readouterr().err
