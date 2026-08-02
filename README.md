@@ -50,7 +50,7 @@ Full detail goes to `report.csv`: due date, which deadline rule applied, days la
 
 Verdicts are `ON_TIME`, `AT_RISK` (remitted in time but no fund receipt recorded), `LATE`, `UNPAID` (the deadline has passed and nothing is recorded against it), `UNKNOWN` (not due yet, nothing recorded) and `SKIPPED` (defined-benefit interests). `LATE` and `UNPAID` both carry exposure figures.
 
-The exit code is 0 when nothing is exposed, 2 when something is, and 1 on an error, so you can run it from a scheduled job.
+The exit code is 0 when nothing is exposed, 2 when something is, and 1 on a data or file error, so you can run it from a scheduled job. Argparse also uses 2 for a bad command line, so a wrapper should check stderr before raising an alarm.
 
 ### Options
 
@@ -79,7 +79,7 @@ Required: `employee_id`, `payment_date`, `sg_amount`. Everything else is optiona
 | `next_standard_qe_day` | `next_standard_payday` | The next regular payday, needed to date an out-of-cycle deadline |
 | `db_interest` | `defined_benefit` | Yes for defined-benefit interests, which are skipped |
 
-Dates read as `YYYY-MM-DD`, day-first `DD/MM/YYYY`, or `9 Jul 2026`, and a time component is ignored. Amounts accept `$` and thousands separators. Anything unreadable stops the run and names every bad cell at once, and so does a truncated row, a duplicated column heading, or a mapping that points at a column your file does not have. A compliance tool that guesses is worse than one that refuses.
+Dates read as `YYYY-MM-DD`, day-first `DD/MM/YYYY`, or `9 Jul 2026`, and a time component is ignored. Amounts accept `$` and thousands separators. Anything unreadable stops the run and names up to twenty bad cells at once, and so does a truncated row, a duplicated column heading, or a mapping that points at a column your file does not have. A compliance tool that guesses is worse than one that refuses.
 
 **The amount column must hold super guarantee only.** Salary sacrifice and additional contributions have a different base and a different deadline, so filter them out of the export first or the shortfall will be overstated.
 

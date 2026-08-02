@@ -2,7 +2,6 @@ include LICENSE
 include README.md
 recursive-include paydaysuper/data *.json
 recursive-include tests *.py
-recursive-include tests/fixtures *.csv
 recursive-include examples *.json *.csv
 recursive-include tools *.py
 recursive-include docs *.md
