@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from paydaysuper.rates import GicQuarter, GicTable, load_gic
+from paydaysuper.rates import GicQuarter, GicTable, RatesError, load_gic
 from paydaysuper.sgc import exposure_range, notional_earnings, uplift_scenarios
 
 
@@ -20,9 +20,13 @@ def test_rate_table_covers_prior_quarter(gic):
     assert gic.daily_rate(date(2026, 5, 1)) == Decimal("10.96") / 100 / 365
 
 
-def test_staleness_warns_past_the_table(gic):
-    assert gic.staleness(date(2026, 9, 30)) is None
-    assert "GIC rate table ends" in gic.staleness(date(2026, 12, 1))
+def test_staleness_warns_past_the_shipped_table(gic):
+    """Pinned to the table's own horizon so a quarterly data update does
+    not turn this red."""
+    from datetime import timedelta
+
+    assert gic.staleness(gic.last_known) is None
+    assert "GIC rate table ends" in gic.staleness(gic.last_known + timedelta(days=1))
 
 
 def test_no_accrual_before_the_deadline_passes(gic):
@@ -94,3 +98,32 @@ def test_exposure_range_spans_best_and_worst_uplift():
     assert low == Decimal("1100")            # uplift 0%
     assert high == Decimal("1100") + Decimal("660")  # uplift 60%
     assert low < high
+
+
+def test_lcr_2026_d3_accrual_boundary(gic):
+    """LCR 2026/D3 worked example: usual period ends 18 Jun 2027, so
+    notional earnings begin accruing on 19 Jun 2027, not before."""
+    due = date(2027, 6, 18)
+    assert notional_earnings(Decimal("1000"), due, due, gic) == Decimal("0")
+    assert notional_earnings(Decimal("1000"), due, date(2027, 6, 19), gic) > Decimal("0")
+
+
+def test_daily_rate_uses_366_in_a_leap_year():
+    """TAA 1953 s 8AAD divides by the days in the calendar year."""
+    table = GicTable([GicQuarter(date(2027, 1, 1), date(2028, 12, 31), Decimal("11.43"))])
+    assert table.daily_rate(date(2027, 3, 1)) == Decimal("11.43") / 100 / 365
+    assert table.daily_rate(date(2028, 3, 1)) == Decimal("11.43") / 100 / 366
+
+
+def test_daily_rate_before_the_table_raises():
+    table = GicTable([GicQuarter(date(2026, 7, 1), date(2026, 9, 30), Decimal("11.43"))])
+    with pytest.raises(RatesError):
+        table.daily_rate(date(2026, 6, 1))
+
+
+def test_daily_rate_past_the_table_falls_back_with_a_warning():
+    table = GicTable([GicQuarter(date(2026, 7, 1), date(2026, 9, 30), Decimal("11.43"))])
+    beyond = date(2026, 12, 1)
+    assert table.daily_rate(beyond) == Decimal("11.43") / 100 / 365
+    assert "11.43" in table.staleness(beyond)
+    assert table.staleness(date(2026, 9, 30)) is None

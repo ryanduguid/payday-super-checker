@@ -2,7 +2,7 @@
 
 Check Australian super contributions against the payday-super deadlines and estimate the SG charge on anything late.
 
-Since 1 July 2026, super is due within 7 business days of each payday instead of quarterly. Miss it and the SG charge applies automatically: the shortfall, daily-compounding notional earnings, and an administrative uplift of up to 60%. This reads a CSV out of your payroll or clearing-house records and tells you, line by line, which contributions landed in time.
+Since 1 July 2026, super is due within 7 business days of each payday instead of quarterly. Miss it and the SG charge applies automatically: daily-compounding notional earnings, an administrative uplift of up to 60%, and the shortfall itself until the money reaches the fund. This reads a CSV out of your payroll or clearing-house records and tells you, line by line, which contributions landed in time.
 
 Built by Ryan Duguid, a provisional member of Chartered Accountants ANZ working in Australian public practice. Written independently, in his own time and on his own equipment.
 
@@ -11,17 +11,15 @@ Built by Ryan Duguid, a provisional member of Chartered Accountants ANZ working 
 Python 3.10 or later. No runtime dependencies.
 
 ```bash
-git clone https://github.com/ryanduguid/payday-super-checker.git
-cd payday-super-checker
-pip install .
+pip install git+https://github.com/ryanduguid/payday-super-checker.git
 ```
 
-Or run it straight from the source tree with `python -m paydaysuper.cli`.
+Or clone it and run from the source tree with `python -m paydaysuper.cli`.
 
 ## Use
 
 ```bash
-payday-super-check examples/sample_payrun.csv
+payday-super-check examples/sample_payrun.csv --as-at 2026-08-10
 ```
 
 ```
@@ -31,10 +29,10 @@ payday-super-checker: 10 contribution lines, as at 2026-08-10
 
 Late lines (largest estimated exposure first):
   row 3  EMP002  QE day 2026-07-09  due 2026-07-20  15 days late
-      shortfall $540.00  notional earnings $2.37  SG charge estimate $542.37 - $867.80
+      super $540.00 (received, so the shortfall is nil)  notional earnings $2.54  SG charge estimate $2.54 - $4.07
 ```
 
-Full detail goes to `report.csv`: due date, which deadline rule applied, days late, notional earnings, best and worst case uplift, and every warning that applies to that line.
+Full detail goes to `report.csv`: due date, which deadline rule applied, days late, the final shortfall after any offset, notional earnings, best and worst case uplift, and every warning that applies to that line.
 
 The exit code is 0 when nothing is late, 2 when something is, and 1 on an error, so you can run it from a scheduled job.
 
@@ -44,6 +42,7 @@ The exit code is 0 when nothing is late, 2 when something is, and 1 on an error,
 | --- | --- |
 | `-o, --output` | Where to write the report CSV (default `report.csv`) |
 | `--as-at DATE` | Measures notional earnings on still-unpaid contributions to this date (default: today) |
+| `--assessment-date DATE` | The day the ATO assessed the charge for these paydays. Only contributions received before it clear the shortfall. Omit if no assessment has issued |
 | `--map FIELD=COLUMN` | Point one field at your column name; repeatable |
 | `--mapping-file FILE` | Same thing as JSON, see `examples/mapping.example.json` |
 | `--holidays-override FILE` | Add or remove public holidays from the bundled calendar |
@@ -64,21 +63,23 @@ Required: `employee_id`, `payment_date`, `sg_amount`. Everything else is optiona
 | `next_standard_qe_day` | `next_standard_payday` | The next regular payday, needed to date an out-of-cycle deadline |
 | `db_interest` | `defined_benefit` | Yes for defined-benefit interests, which are skipped |
 
-Dates read as `YYYY-MM-DD` or day-first `DD/MM/YYYY`. Amounts accept `$` and thousands separators. Anything unreadable stops the run and names the row: a compliance tool that guesses is worse than one that refuses.
+Dates read as `YYYY-MM-DD` or day-first `DD/MM/YYYY`. Amounts accept `$` and thousands separators. Anything unreadable stops the run and names the row, and so does a truncated row, a duplicated column heading, or a mapping that points at a column your file does not have. A compliance tool that guesses is worse than one that refuses.
 
 ## The rules it applies
 
-All of this is enacted law: the Treasury Laws Amendment (Payday Superannuation) Act 2025 (No. 57 of 2025, assent 6 November 2025), the Superannuation Guarantee Charge Amendment Act 2025, and the Payday Superannuation Regulations 2026 (F2026L00133). It applies to paydays from 1 July 2026. Legal content here was verified on **2 August 2026**.
+All of this is enacted law: the Treasury Laws Amendment (Payday Superannuation) Act 2025 (No. 57 of 2025, assent 6 November 2025), the Superannuation Guarantee Charge Amendment Act 2025 (No. 58 of 2025), and the regulations registered as F2026L00133, which amend the Superannuation Guarantee (Administration) Regulations 2018. It applies to paydays from 1 July 2026. Legal content here was verified on **2 August 2026**; `docs/research-notes-2026-08-02.md` records every source and, just as usefully, the points that rest on secondary commentary because the primary source blocks automated access.
 
 **The deadline.** A contribution is on time only if the fund *receives* it, with enough information to allocate it, by the end of the seventh business day after the payday (SGAA 1992 s 6(1) "usual period", s 18C(1)(c)). Paying a clearing house by the deadline does not count, and the ATO's small business clearing house closed on 30 June 2026, so transit time is now the employer's risk. That is why a line with a remittance date but no fund receipt date comes back `AT_RISK` rather than `ON_TIME`.
 
-**Business days.** SGAA s 6(1) defines a business day as any day that is not a Saturday, a Sunday, or a public holiday for the whole of any State, the ACT or the NT. One national calendar applies to every employer: WA Day stops the clock for a Sydney employer. Regional holidays do not, so the Brisbane Ekka is still a business day even in Brisbane. The bundled calendar in `data/business_days.json` covers July 2026 to December 2028.
+**Business days.** SGAA s 6(1) defines a business day as any day that is not a Saturday, a Sunday, or a public holiday for the whole of any State, the ACT or the NT. One national calendar applies to every employer: WA Day stops the clock for a Sydney employer. Regional holidays do not, so the Brisbane Ekka is still a business day even in Brisbane. The bundled calendar covers July 2026 to December 2028.
 
-**20 business days instead of 7** for the first contribution to a particular fund, whether that is a new starter or an existing employee switching funds (s 18C(2) item 1). Later paydays that fall inside that window inherit its end date (item 4), which the tool applies per employee.
+**20 business days instead of 7** for the first contribution to a particular fund, whether that is a new starter or an existing employee switching funds (s 18C(2) item 1). Later paydays that fall inside that window inherit its end date (item 4), applied per employee.
 
-**Out-of-cycle payments** (bonuses, commissions, back pay) ride the next regular payday's window rather than their own (s 18C(2) item 2 and LI 2026/20). Give the tool `next_standard_payday` or it falls back to the stricter 7-day test.
+**Out-of-cycle payments** (bonuses, commissions, back pay) ride the next regular payday's window rather than their own (s 18C(2) item 2, and the Commissioner's determination LI 2026/20). Give the tool `next_standard_payday` or it falls back to the stricter 7-day test. Where both this rule and the new-fund rule apply to the same payment, the later deadline governs.
 
-**When it is late,** the SG charge is the shortfall, plus notional earnings compounding daily at the general interest charge rate from the day after the deadline (s 19A), plus an administrative uplift starting at 60% of both. The uplift falls 20 points for a clean 24-month history, which almost every employer has until 30 June 2028 under the transitional rule, and another 40, 35, 30 or 15 points for a voluntary disclosure lodged within 30, 60, 120 or more than 120 days of the payday. Best case the uplift is nil; worst case it is 60%. The report shows both ends.
+**When it is late,** notional earnings compound daily at the general interest charge rate from the day after the deadline until the fund receives the money (s 19A), and an administrative uplift of up to 60% applies on top. A late contribution that reaches the fund before the ATO assesses the charge clears the shortfall itself (s 18D), which is why a paid-but-late line shows a small estimate rather than the whole contribution. Pass `--assessment-date` if an assessment has already issued, and the shortfall stays in the figure.
+
+The uplift starts at 60% and falls 20 points for a clean 24-month history, which almost every employer has until 30 June 2028 under the transitional rule, and another 40, 35, 30 or 15 points for a voluntary disclosure lodged within 30, 60, 120 or more than 120 days of the payday. Best case it is nil, worst case 60%. The report shows both ends because the ATO, not this tool, decides which applies.
 
 ## What it does not do
 
@@ -93,11 +94,11 @@ PCG 2026/1 sets out how the ATO will allocate compliance resources for paydays u
 
 ## Keeping it current
 
-Three files hold everything that goes stale. Each entry records its source and the date it was checked.
+Everything that goes stale lives in `paydaysuper/data/`.
 
-- `data/gic_rates.json` : the general interest charge rate, which the ATO resets every quarter. Update it each quarter or the notional earnings estimate drifts. The tool warns when a calculation runs past the last quarter it knows.
-- `data/rates.json` : SG rate, concessional cap, maximum contributions base, per financial year.
-- `data/business_days.json` : national non-business days. Regenerate with `python tools/generate_calendar.py`, which uses `holidays==0.101` as a development dependency and filters out sub-state holidays, then check every line against the eight state and territory government pages before shipping. Dates for holidays proclaimed annually, such as the Victorian grand final Friday and the WA King's Birthday, are marked provisional and the tool says so when a deadline depends on one.
+- `gic_rates.json` : the general interest charge rate, which the ATO resets every quarter. Each entry records where the figure came from and when that was checked. Update it each quarter or the notional earnings estimate drifts; the tool warns when a calculation runs past the last quarter it knows.
+- `rates.json` : SG rate, concessional cap, maximum contributions base, per financial year, with the same source and checked-date fields.
+- `business_days.json` : national non-business days, carrying a generation date for the file as a whole rather than per entry. Regenerate with `python tools/generate_calendar.py > paydaysuper/data/business_days.json`, which uses `holidays==0.101` as a development dependency and filters out sub-state holidays, then check every line against the eight state and territory government pages before shipping. Dates for holidays proclaimed annually, such as the Victorian grand final Friday and the WA King's Birthday, are marked provisional and the tool says so when a deadline depends on one.
 
 Two calendar questions have no clear answer in the Act, and the override file exists for both. Part-day holidays, like Christmas Eve evening in South Australia, Queensland and the Northern Territory, are treated here as business days because they are not holidays for the whole of the day. Melbourne Cup Day is treated as a non-business day, though Victorian regional districts can substitute a local holiday for it.
 
@@ -108,7 +109,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-61 tests, anchored on the ATO's own worked examples: a first payday of 9 July 2026 falling due 7 August 2026, and notional earnings on an 8 June 2027 payday starting to accrue on 19 June 2027. Test data is synthetic. Never commit client payroll data to this repository; `.gitignore` blocks the usual formats.
+The suite pins the ATO's own worked examples: a first payday of 9 July 2026 falling due 7 August 2026, and notional earnings on a payday whose usual period ends 18 June 2027 starting to accrue on 19 June 2027. It also pins the traps that make this hard, including the Ekka staying a business day, deadlines that must not change when you reorder rows in the CSV, and the leap-year divisor in the interest calculation. Test data is synthetic. Never commit client payroll data to this repository; `.gitignore` blocks the usual formats, case-insensitively.
 
 ## Disclaimer
 

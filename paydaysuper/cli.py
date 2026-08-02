@@ -10,7 +10,7 @@ from . import LAW_CONTENT_DATE, __version__
 from .calendar import CalendarError, load_calendar
 from .csv_io import CsvError, load_mapping, parse_rows
 from .deadlines import PreRegimeError
-from .rates import RatesError, load_gic
+from .rates import RatesError, load_gic, load_rates
 from .report import LATE, assess, console_summary, write_csv
 
 EXIT_OK = 0
@@ -36,6 +36,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="date to measure unpaid notional earnings to (YYYY-MM-DD, default: today)",
     )
     parser.add_argument(
+        "--assessment-date",
+        help=(
+            "date the ATO assessed the SG charge for these paydays (YYYY-MM-DD). "
+            "Only contributions received before it clear the shortfall under s 18D. "
+            "Omit if no assessment has issued."
+        ),
+    )
+    parser.add_argument(
         "--mapping-file", help="JSON file mapping canonical field names to your CSV columns"
     )
     parser.add_argument(
@@ -52,18 +60,32 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _parse_cli_date(value: str | None, flag: str) -> date | None:
+    if value is None:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        raise CsvError(f"{flag} expects a YYYY-MM-DD date, got {value!r}")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     try:
-        as_at = (
-            datetime.strptime(args.as_at, "%Y-%m-%d").date() if args.as_at else date.today()
-        )
-        mapping = load_mapping(args.mapping_file, args.map)
-        lines = parse_rows(args.csv_path, mapping)
+        as_at = _parse_cli_date(args.as_at, "--as-at") or date.today()
+        assessment_date = _parse_cli_date(args.assessment_date, "--assessment-date")
+        if Path(args.output).resolve() == Path(args.csv_path).resolve():
+            raise CsvError(
+                "the report would overwrite the input file. Choose a different "
+                "path with -o."
+            )
+        mapping, explicit = load_mapping(args.mapping_file, args.map)
+        lines = parse_rows(args.csv_path, mapping, explicit)
         cal = load_calendar(args.holidays_override)
         gic = load_gic()
-        results = assess(lines, cal, gic, as_at)
+        rates = load_rates()
+        results = assess(lines, cal, gic, as_at, assessment_date)
     except (CsvError, CalendarError, RatesError, PreRegimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
@@ -71,8 +93,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: file not found: {exc.filename}", file=sys.stderr)
         return EXIT_ERROR
 
-    write_csv(results, args.output)
-    print(console_summary(results, as_at, Path(args.output), LAW_CONTENT_DATE))
+    try:
+        write_csv(results, args.output, as_at, LAW_CONTENT_DATE)
+    except OSError as exc:
+        print(f"error: cannot write {args.output}: {exc.strerror}", file=sys.stderr)
+        return EXIT_ERROR
+
+    print(console_summary(results, as_at, Path(args.output), LAW_CONTENT_DATE, rates))
 
     return EXIT_LATE_FOUND if any(r.verdict == LATE for r in results) else EXIT_OK
 

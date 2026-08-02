@@ -1,4 +1,4 @@
-"""Generate data/business_days.json: the national non-business-day table.
+"""Generate paydaysuper/data/business_days.json: the national non-business-day table.
 
 DEV-TIME TOOL ONLY. The runtime never imports python-holidays: compliance
 output must not change because a transitive dependency updated, and the raw
@@ -13,7 +13,7 @@ Method (SGAA 1992 s 6(1) "business day"):
 
 Usage:
     pip install holidays==0.101
-    python tools/generate_calendar.py > data/business_days.json
+    python tools/generate_calendar.py > paydaysuper/data/business_days.json
 Then hand-review every line against the 8 state/territory government pages
 before shipping. Dates for proclaimed-yearly holidays are marked
 provisional until gazetted.

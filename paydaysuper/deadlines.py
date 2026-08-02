@@ -77,36 +77,58 @@ def compute_due(line: ContribLine, cal: BusinessCalendar) -> Deadline:
             ],
         )
 
+    # Items 1 and 2 are separate rows of the same table and can both apply
+    # (a new starter paid an off-cycle bonus before their first standard
+    # payday). Where they do, the taxpayer gets the later period.
     notes: list[str] = []
+    candidates: list[tuple[date, str, str]] = []
+
     if line.out_of_cycle:
-        pathway = OUT_OF_CYCLE
         if line.next_standard_qe_day is not None:
             if line.next_standard_qe_day <= line.qe_day:
                 raise ValueError(
                     f"row {line.row}: next_standard_qe_day must be after qe_day"
                 )
-            due = cal.add_business_days(line.next_standard_qe_day, 7)
-            notes.append(
-                "out-of-cycle earnings: deadline is the usual period of the next "
-                f"standard QE day {line.next_standard_qe_day.isoformat()} "
-                "(s 18C(2) item 2, LI 2026/20)"
+            candidates.append(
+                (
+                    cal.add_business_days(line.next_standard_qe_day, 7),
+                    OUT_OF_CYCLE,
+                    "out-of-cycle earnings: deadline is the usual period of the next "
+                    f"standard QE day {line.next_standard_qe_day.isoformat()} "
+                    "(s 18C(2) item 2, LI 2026/20)",
+                )
             )
         else:
-            due = cal.add_business_days(line.qe_day, 7)
-            notes.append(
-                "out-of-cycle flag set but no next standard QE day supplied: "
-                "using the line's own 7-business-day period (conservative fallback)"
+            candidates.append(
+                (
+                    cal.add_business_days(line.qe_day, 7),
+                    OUT_OF_CYCLE,
+                    "out-of-cycle flag set but no next standard QE day supplied: "
+                    "using the line's own 7-business-day period (conservative fallback)",
+                )
             )
-    elif line.first_to_fund:
-        pathway = EXTENDED_20BD
-        due = cal.add_business_days(line.qe_day, 20)
-        notes.append(
-            "first eligible contribution to this fund: extended usual period, "
-            "20 business days (s 18C(2) item 1)"
+
+    if line.first_to_fund:
+        candidates.append(
+            (
+                cal.add_business_days(line.qe_day, 20),
+                EXTENDED_20BD,
+                "first eligible contribution to this fund: extended usual period, "
+                "20 business days (s 18C(2) item 1)",
+            )
         )
-    else:
-        pathway = USUAL_7BD
-        due = cal.add_business_days(line.qe_day, 7)
+
+    if not candidates:
+        candidates.append((cal.add_business_days(line.qe_day, 7), USUAL_7BD, ""))
+
+    due, pathway, note = max(candidates, key=lambda c: c[0])
+    if note:
+        notes.append(note)
+    if len(candidates) > 1:
+        notes.append(
+            "both the out-of-cycle and first-contribution rules apply; using the "
+            "later deadline"
+        )
 
     horizon = cal.check_horizon(due)
     if horizon:
@@ -133,13 +155,32 @@ def apply_item4(pairs: list[tuple[ContribLine, Deadline]]) -> None:
     for items in by_employee.values():
         items.sort(key=lambda p: (p[0].qe_day, p[0].row))
         running_latest: date | None = None
-        for line, dl in items:
-            if running_latest is not None and dl.due is not None and dl.due < running_latest:
-                dl.notes.append(
-                    f"deadline aligned to an earlier contribution's latest due day "
-                    f"{running_latest.isoformat()} (s 18C(2) item 4)"
-                )
-                dl.due = running_latest
-                dl.pathway = ITEM4_ALIGNED
-            if dl.due is not None:
-                running_latest = dl.due if running_latest is None else max(running_latest, dl.due)
+        # Item 4 keys on a LATER QE day, so contributions sharing a QE day
+        # are resolved as one group: none of them aligns to a sibling, and
+        # the group's latest due day is what later QE days inherit. Without
+        # the grouping, CSV row order would decide the verdict.
+        index = 0
+        while index < len(items):
+            end = index
+            while end < len(items) and items[end][0].qe_day == items[index][0].qe_day:
+                end += 1
+            group = items[index:end]
+
+            group_latest = running_latest
+            for line, dl in group:
+                if (
+                    running_latest is not None
+                    and dl.due is not None
+                    and dl.due < running_latest
+                ):
+                    dl.notes.append(
+                        "deadline aligned to an earlier contribution's latest due day "
+                        f"{running_latest.isoformat()} (s 18C(2) item 4)"
+                    )
+                    dl.due = running_latest
+                    dl.pathway = ITEM4_ALIGNED
+                if dl.due is not None:
+                    group_latest = dl.due if group_latest is None else max(group_latest, dl.due)
+
+            running_latest = group_latest
+            index = end

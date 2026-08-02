@@ -1,15 +1,15 @@
-# Client and payroll data never belongs in this repo.
-*.aba
-*.ABA
-*.xlsx
-*.xls
-*.qif
-*.ofx
-*.pdf
-*.csv
+# Client and payroll data never belongs in this repo. Character classes
+# because git only folds extension case when core.ignorecase is set, which
+# is false on Linux: Payrun.CSV would otherwise slip through.
+*.[aA][bB][aA]
+*.[xX][lL][sS]
+*.[xX][lL][sS][xX]
+*.[qQ][iI][fF]
+*.[oO][fF][xX]
+*.[pP][dD][fF]
+*.[cC][sS][vV]
 !tests/fixtures/*.csv
 !examples/*.csv
-report.csv
 
 # Python
 __pycache__/

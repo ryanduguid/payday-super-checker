@@ -1,11 +1,7 @@
 {
+  "_comment": "Map only the fields whose column names differ from the defaults, and only fields your export actually has. A field listed here must exist in the CSV: naming a column that is not there stops the run rather than silently ignoring it.",
   "employee_id": "Employee Code",
   "qe_day": "Payment Date",
   "sg_amount": "Super Guarantee",
-  "remitted": "Date Paid to Clearing House",
-  "received": "Fund Receipt Date",
-  "first_to_fund": "First Contribution",
-  "out_of_cycle": "Off Cycle",
-  "next_standard_qe_day": "Next Pay Date",
-  "db_interest": "Defined Benefit"
+  "received": "Fund Receipt Date"
 }

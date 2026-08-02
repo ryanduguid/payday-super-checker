@@ -6,9 +6,9 @@ Date: 2026-08-02. Status: approved.
 
 CLI that reads a pay-run/contribution CSV and, for each super contribution line, computes the statutory payday-super deadline, gives an on-time/late verdict, and estimates SG charge exposure for late lines. Audience: Australian accountants and employers. Not a payroll system, not legal advice.
 
-## Legal basis (verified 2026-08-02, adversarially cross-checked)
+## Legal basis (researched 2026-08-02, adversarially cross-checked)
 
-All rules below were confirmed against primary sources. Full citation notes in `docs/research-notes-2026-08-02.md`.
+The rules below were researched against primary sources and then re-checked by an independent verification pass. Most were read from the Act, the regulations or PCG 2026/1 directly. Some rest on secondary commentary because ato.gov.au and the ATO legal database block automated fetching: the GIC rate, the maximum contributions base, the text of LI 2026/20, and the finalisation status of LCR 2026/D1 to D4. Those need a browser check before release. Full citations, confidence ratings and open ambiguities in `docs/research-notes-2026-08-02.md`.
 
 - Treasury Laws Amendment (Payday Superannuation) Act 2025 (No. 57 of 2025), assent 6 Nov 2025; SGC Amendment Act 2025 (No. 58 of 2025); Payday Superannuation Regulations 2026 (F2026L00133). Applies to QE days from 1 Jul 2026.
 - Deadline: contribution must be **received by the fund** (and allocatable) by end of the 7th business day after the QE day (SGAA s 6(1) "usual period", s 18C(1)(c)(i)). QE day = day earnings actually paid (s 17A(1)). Pre-payments within prior 12 months also count (s 18C(1)(c)(ii)).
