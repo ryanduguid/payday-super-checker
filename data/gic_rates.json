@@ -1,0 +1,19 @@
+{
+  "_comment": "General interest charge rates (TAA 1953 s 8AAD), used for the notional earnings component (SGAA s 19A). The ATO publishes these quarterly; the daily rate is the annual rate divided by 365. Update each quarter from the ATO 'General interest charge rates' page and record the seen date.",
+  "quarters": [
+    {
+      "from": "2026-04-01",
+      "to": "2026-06-30",
+      "annual_pct": "10.96",
+      "source": "https://www.ato.gov.au/tax-rates-and-codes/interest-rates-general-interest-charge-and-shortfall-interest-charge",
+      "seen": "2026-08-02"
+    },
+    {
+      "from": "2026-07-01",
+      "to": "2026-09-30",
+      "annual_pct": "11.43",
+      "source": "https://www.ato.gov.au/tax-rates-and-codes/interest-rates-general-interest-charge-and-shortfall-interest-charge",
+      "seen": "2026-08-02"
+    }
+  ]
+}
