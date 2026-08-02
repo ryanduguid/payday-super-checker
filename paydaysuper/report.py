@@ -39,6 +39,7 @@ class Result:
     days_late: int | None = None
     base_shortfall: Decimal | None = None
     final_shortfall: Decimal | None = None
+    offset_s18d: bool = False
     nec: Decimal | None = None
     sgc_low: Decimal | None = None
     sgc_high: Decimal | None = None
@@ -46,14 +47,13 @@ class Result:
     warnings: list[str] = field(default_factory=list)
 
 
-def _validate_dates(line: ContribLine) -> list[str]:
-    problems = []
+def _date_problem(line: ContribLine) -> str | None:
     if line.received is not None and line.remitted is not None and line.received < line.remitted:
-        problems.append(
+        return (
             f"row {line.row}: fund receipt date {line.received.isoformat()} is before the "
             f"remittance date {line.remitted.isoformat()}, which cannot happen"
         )
-    return problems
+    return None
 
 
 def assess(
@@ -70,9 +70,11 @@ def assess(
     then reduce the final shortfall to nil (s 18D). Left as None, the tool
     assumes no assessment has issued, which is the usual case for an
     employer checking their own records."""
-    for line in lines:
-        for problem in _validate_dates(line):
-            raise ValueError(problem)
+    # Collect every date problem before stopping, so the operator can fix
+    # the whole file in one pass rather than one row per run.
+    problems = [p for p in (_date_problem(line) for line in lines) if p]
+    if problems:
+        raise ValueError("; ".join(problems))
 
     pairs = [(line, compute_due(line, cal)) for line in lines]
     apply_item4(pairs)
@@ -131,7 +133,9 @@ def assess(
         if verdict == LATE:
             base_shortfall = line.sg_amount
             landed = settled if settled is not None else line.remitted
-            result.days_late = (landed - dl.due).days
+            # A stale pre-payment lands before the deadline but cannot offset
+            # this payday, so there are no days late to report.
+            result.days_late = max((landed - dl.due).days, 0)
 
             if settled is not None and settled > as_at:
                 result.warnings.append(
@@ -142,7 +146,8 @@ def assess(
 
             # Notional earnings compound on the base shortfall until the
             # fund receives the money (s 19A). While it is outstanding they
-            # run to the as-at date.
+            # run to the as-at date, and they stop the day before an
+            # assessment, after which GIC on the assessment takes over.
             if settled is not None:
                 nec_end = settled
             else:
@@ -151,24 +156,43 @@ def assess(
                     "treated as still unpaid at the as-at date: notional earnings keep "
                     "accruing until the fund receives the contribution"
                 )
-            result.nec = notional_earnings(base_shortfall, dl.due, nec_end, gic)
+            if assessment_date is not None and nec_end >= assessment_date:
+                nec_end = assessment_date - timedelta(days=1)
+                result.warnings.append(
+                    f"notional earnings stop {nec_end.isoformat()}, the day before the "
+                    "assessment. Interest on the unpaid charge after that is general "
+                    "interest charge, which this tool does not estimate"
+                )
+            result.nec = (
+                notional_earnings(base_shortfall, dl.due, nec_end, gic)
+                if nec_end > dl.due
+                else Decimal("0")
+            )
 
-            # s 18D: a late contribution received before the ATO assesses the
-            # charge reduces the final shortfall, so only the notional
-            # earnings and the uplift on them remain.
-            offset = settled is not None and (
-                assessment_date is None or settled < assessment_date
+            # s 18D: a late contribution received in the late period, before
+            # the ATO assesses the charge, reduces the final shortfall. A
+            # payment made before the deadline is not a late-period payment,
+            # so a stale pre-payment cannot offset anything.
+            offset = (
+                settled is not None
+                and settled > dl.due
+                and (assessment_date is None or settled < assessment_date)
             )
             if offset:
                 result.final_shortfall = Decimal("0")
+                assumption = (
+                    f"before the assessment on {assessment_date.isoformat()}"
+                    if assessment_date is not None
+                    else "and no SG charge assessment had issued for this payday by then"
+                )
                 result.warnings.append(
-                    f"contribution received {settled.isoformat()}: the final shortfall is "
-                    "nil under s 18D, leaving notional earnings and uplift. This assumes "
-                    "no SG charge assessment had issued for this payday by then"
+                    f"contribution received {settled.isoformat()} {assumption}: the final "
+                    "shortfall is nil under s 18D, leaving notional earnings and uplift"
                 )
             else:
                 result.final_shortfall = base_shortfall
 
+            result.offset_s18d = offset
             result.base_shortfall = base_shortfall
             result.uplift = uplift_scenarios(result.final_shortfall, result.nec)
             result.sgc_low, result.sgc_high = exposure_range(
@@ -202,8 +226,18 @@ CSV_HEADER = [
 ]
 
 
+def financial_year(d: date) -> str:
+    """Australian financial year label for a date, e.g. 2026-27."""
+    start = d.year if d.month >= 7 else d.year - 1
+    return f"{start}-{str(start + 1)[2:]}"
+
+
 def write_csv(
-    results: list[Result], path: str | Path, as_at: date, law_date: str
+    results: list[Result],
+    path: str | Path,
+    as_at: date,
+    law_date: str,
+    assessment_date: date | None = None,
 ) -> None:
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -237,9 +271,15 @@ def write_csv(
         # one-field title row makes Power Query infer the wrong column count.
         note = [""] * len(CSV_HEADER)
         note[1] = "NOTE"
+        assessment_text = (
+            f"Assessment date {assessment_date.isoformat()}. "
+            if assessment_date is not None
+            else "No assessment date given, so contributions received late are assumed "
+            "to have reached the fund before any assessment. "
+        )
         note[-1] = (
-            f"payday-super-checker estimates, as at {as_at.isoformat()}. Legal content "
-            f"current at {law_date}. Estimates exclude choice loading, the maximum "
+            f"payday-super-checker estimates, as at {as_at.isoformat()}. {assessment_text}"
+            f"Legal content current at {law_date}. Estimates exclude choice loading, the maximum "
             "contributions base and post-assessment penalties, and each total is "
             "rounded from unrounded figures, so columns may not add. Educational "
             "tool, not advice: the ATO assesses the charge."
@@ -277,7 +317,7 @@ def console_summary(
                 f"  row {r.line.row}  {r.line.employee_id}  QE day {r.line.qe_day.isoformat()}"
                 f"  due {r.deadline.due.isoformat()}  {r.days_late} days late"
             )
-            cleared = r.final_shortfall == 0
+            cleared = r.offset_s18d
             shortfall_text = (
                 f"super ${money(r.line.sg_amount)} (received, so the shortfall is nil)"
                 if cleared
@@ -301,8 +341,16 @@ def console_summary(
         lines.append("")
 
     fy = rates.get("financial_years", {})
-    mcb = next(iter(fy.values()), {}).get("max_contributions_base", "the annual cap")
-    fy_label = next(iter(fy), "")
+    fy_label = financial_year(as_at)
+    entry = fy.get(fy_label)
+    if entry is None and fy:
+        fy_label = sorted(fy)[-1]
+        entry = fy[fy_label]
+    mcb = (entry or {}).get("max_contributions_base")
+    try:
+        mcb_text = f"${int(mcb):,} for {fy_label}"
+    except (TypeError, ValueError):
+        mcb_text = "the annual cap"
 
     lines += [
         "Assumptions and limits:",
@@ -316,7 +364,7 @@ def console_summary(
         "  - Exposure figures are estimates of shortfall, notional earnings and "
         "administrative uplift only. Choice loading, the late payment penalty and "
         "interest on an unpaid assessment are not included. The ATO assesses the charge.",
-        f"  - Maximum contributions base (${mcb} for {fy_label}, annual per employer) is "
+        f"  - Maximum contributions base ({mcb_text}, annual per employer) is "
         "not applied: it needs each employee's cumulative earnings for the year. "
         "High earners may show a larger shortfall here than the law requires.",
         "  - PCG 2026/1 sets the ATO's compliance approach for QE days to 30 Jun 2027. "

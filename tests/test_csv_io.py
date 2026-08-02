@@ -184,3 +184,23 @@ def test_nan_and_infinity_amounts_are_rejected(tmp_path):
         path = write_csv(tmp_path, f"E1,2026-07-09,{text},,,no,no,,no")
         with pytest.raises(CsvError, match="row 2"):
             parse_rows(path, *load_mapping(None))
+
+
+def test_row_with_more_values_than_columns_is_rejected(tmp_path):
+    path = tmp_path / "pay.csv"
+    path.write_text(HEADER + "E1,2026-07-09,600.00,,,no,no,,no,900.00\n", encoding="utf-8")
+    with pytest.raises(CsvError, match="more values than the header"):
+        parse_rows(path, *load_mapping(None))
+
+
+def test_mapping_file_that_is_not_an_object_is_rejected(tmp_path):
+    mapping_file = tmp_path / "map.json"
+    mapping_file.write_text(json.dumps(["employee_id"]), encoding="utf-8")
+    with pytest.raises(CsvError, match="JSON object"):
+        load_mapping(mapping_file)
+
+
+def test_absurdly_large_amount_is_rejected(tmp_path):
+    path = write_csv(tmp_path, "E1,2026-07-09,1e26,,,no,no,,no")
+    with pytest.raises(CsvError, match="too large"):
+        parse_rows(path, *load_mapping(None))

@@ -154,7 +154,7 @@ def test_cli_writes_report_and_flags_late(tmp_path, capsys):
 def test_console_summary_carries_the_legal_caveats():
     text = console_summary(run_fixture(), AS_AT, "report.csv", "2026-08-02", load_rates())
     for phrase in (
-        "Maximum contributions base ($270830 for 2026-27",
+        "Maximum contributions base ($270,830 for 2026-27",
         "Choice loading, the late payment penalty",
         "PCG 2026/1",
         "still drafts",
@@ -271,3 +271,94 @@ def test_receipt_after_the_as_at_date_still_accrues_to_receipt():
     )
     assert r.nec == expected
     assert any("after the as-at date" in w for w in r.warnings)
+
+
+def test_stale_prepayment_keeps_the_full_shortfall():
+    """s 18D offsets a payment made in the late period. A receipt from
+    before the deadline is not one, so the shortfall stands."""
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2027, 7, 9),
+        sg_amount=Decimal("300.00"),
+        received=date(2026, 7, 1),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), date(2027, 8, 1))[0]
+    assert r.verdict == "LATE"
+    assert r.final_shortfall == Decimal("300.00")
+    assert r.offset_s18d is False
+    assert r.days_late == 0
+    assert r.sgc_low >= Decimal("300.00")
+    assert not any("s 18D" in w for w in r.warnings)
+
+
+def test_notional_earnings_stop_before_an_assessment():
+    """Once assessed, interest on the charge is GIC on the assessment, which
+    this tool does not model, so accrual stops the day before."""
+    lines = parse_rows(FIXTURE, *load_mapping(None))
+    results = assess(
+        lines, load_calendar(), load_gic(), AS_AT, assessment_date=date(2026, 7, 25)
+    )
+    r = by_employee(results, "EMP002", date(2026, 7, 9))
+    expected = notional_earnings(
+        Decimal("540.00"), date(2026, 7, 20), date(2026, 7, 24), load_gic()
+    )
+    assert r.nec == expected
+    assert any("day before the assessment" in w for w in r.warnings)
+
+
+def test_zero_amount_late_line_does_not_claim_a_receipt():
+    line = ContribLine(
+        employee_id="E0",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("0.00"),
+        remitted=date(2026, 8, 1),
+        row=2,
+    )
+    results = assess([line], load_calendar(), load_gic(), AS_AT)
+    text = console_summary(results, AS_AT, "report.csv", "2026-08-02", load_rates())
+    assert "shortfall $0.00" in text
+    assert "received, so the shortfall is nil" not in text
+
+
+def test_report_records_the_assessment_assumption(tmp_path):
+    out = tmp_path / "report.csv"
+    main([str(FIXTURE), "-o", str(out), "--as-at", "2026-08-10",
+          "--assessment-date", "2026-08-05"])
+    text = out.read_text(encoding="utf-8")
+    assert "Assessment date 2026-08-05" in text
+
+    out2 = tmp_path / "report2.csv"
+    main([str(FIXTURE), "-o", str(out2), "--as-at", "2026-08-10"])
+    assert "No assessment date given" in out2.read_text(encoding="utf-8")
+
+
+def test_mcb_caveat_follows_the_as_at_financial_year():
+    rates = {
+        "financial_years": {
+            "2026-27": {"max_contributions_base": "270830"},
+            "2027-28": {"max_contributions_base": "280000"},
+        }
+    }
+    results = run_fixture()
+    text = console_summary(results, date(2027, 9, 1), "report.csv", "2026-08-02", rates)
+    assert "$280,000 for 2027-28" in text
+    text_2026 = console_summary(results, AS_AT, "report.csv", "2026-08-02", rates)
+    assert "$270,830 for 2026-27" in text_2026
+
+
+def test_all_date_problems_are_reported_at_once():
+    bad = [
+        ContribLine(
+            employee_id=f"E{n}",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("100.00"),
+            remitted=date(2026, 7, 20),
+            received=date(2026, 7, 15),
+            row=n,
+        )
+        for n in (2, 3)
+    ]
+    with pytest.raises(ValueError) as exc:
+        assess(bad, load_calendar(), load_gic(), AS_AT)
+    assert "row 2" in str(exc.value) and "row 3" in str(exc.value)

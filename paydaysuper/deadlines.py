@@ -99,13 +99,16 @@ def compute_due(line: ContribLine, cal: BusinessCalendar) -> Deadline:
                 )
             )
         else:
+            # A data-quality problem, not a pathway note: it must survive even
+            # when another candidate wins, because the real item 2 deadline
+            # could be later than anything computed here.
+            notes.append(
+                "out-of-cycle flag set but no next standard QE day supplied, so the "
+                "item 2 deadline cannot be calculated. Supply the next regular payday: "
+                "the real deadline may be later than the one shown"
+            )
             candidates.append(
-                (
-                    cal.add_business_days(line.qe_day, 7),
-                    OUT_OF_CYCLE,
-                    "out-of-cycle flag set but no next standard QE day supplied: "
-                    "using the line's own 7-business-day period (conservative fallback)",
-                )
+                (cal.add_business_days(line.qe_day, 7), OUT_OF_CYCLE, "")
             )
 
     if line.first_to_fund:
@@ -124,7 +127,7 @@ def compute_due(line: ContribLine, cal: BusinessCalendar) -> Deadline:
     due, pathway, note = max(candidates, key=lambda c: c[0])
     if note:
         notes.append(note)
-    if len(candidates) > 1:
+    if line.out_of_cycle and line.first_to_fund and line.next_standard_qe_day is not None:
         notes.append(
             "both the out-of-cycle and first-contribution rules apply; using the "
             "later deadline"

@@ -92,11 +92,15 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError as exc:
         print(f"error: file not found: {exc.filename}", file=sys.stderr)
         return EXIT_ERROR
+    except OSError as exc:
+        target = exc.filename or args.csv_path
+        print(f"error: cannot read {target}: {exc.strerror or exc}", file=sys.stderr)
+        return EXIT_ERROR
 
     try:
-        write_csv(results, args.output, as_at, LAW_CONTENT_DATE)
+        write_csv(results, args.output, as_at, LAW_CONTENT_DATE, assessment_date)
     except OSError as exc:
-        print(f"error: cannot write {args.output}: {exc.strerror}", file=sys.stderr)
+        print(f"error: cannot write {args.output}: {exc.strerror or exc}", file=sys.stderr)
         return EXIT_ERROR
 
     print(console_summary(results, as_at, Path(args.output), LAW_CONTENT_DATE, rates))

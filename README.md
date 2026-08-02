@@ -30,7 +30,11 @@ payday-super-checker: 10 contribution lines, as at 2026-08-10
 Late lines (largest estimated exposure first):
   row 3  EMP002  QE day 2026-07-09  due 2026-07-20  15 days late
       super $540.00 (received, so the shortfall is nil)  notional earnings $2.54  SG charge estimate $2.54 - $4.07
+  row 9  EMP001  QE day 2026-07-23  due 2026-08-04  2 days late
+      super $612.00 (received, so the shortfall is nil)  notional earnings $0.38  SG charge estimate $0.38 - $0.61
 ```
+
+(The caveats that follow in the real output are trimmed here.)
 
 Full detail goes to `report.csv`: due date, which deadline rule applied, days late, the final shortfall after any offset, notional earnings, best and worst case uplift, and every warning that applies to that line.
 
