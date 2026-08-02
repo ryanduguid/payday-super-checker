@@ -59,7 +59,7 @@ def test_out_of_cycle_without_next_payday_falls_back(cal):
     dl = compute_due(line(out_of_cycle=True), cal)
     assert dl.pathway == OUT_OF_CYCLE
     assert dl.due == date(2026, 7, 20)
-    assert any("fallback" in n for n in dl.notes)
+    assert any("cannot be calculated" in n for n in dl.notes)
 
 
 def test_out_of_cycle_next_payday_must_be_later(cal):
@@ -133,25 +133,18 @@ def test_item4_does_not_align_contributions_sharing_a_qe_day(cal):
 
 
 def test_item4_result_is_independent_of_row_order(cal):
-    """Same facts, rows swapped, same answer."""
-    def run(rows):
+    """Same facts, rows swapped. Row numbers follow file position, as they
+    do in a real CSV, so this fails if row order can change a verdict."""
+    def run(order):
+        rows = [
+            line(qe_day=date(2026, 7, 9), first_to_fund=flag, row=i)
+            for i, flag in enumerate(order, start=2)
+        ]
         pairs = [(l, compute_due(l, cal)) for l in rows]
         apply_item4(pairs)
-        return {(l.qe_day, l.row): (d.due, d.pathway) for l, d in pairs}
+        return {l.first_to_fund: (d.due, d.pathway) for l, d in pairs}
 
-    forward = run(
-        [
-            line(qe_day=date(2026, 7, 9), first_to_fund=True, row=2),
-            line(qe_day=date(2026, 7, 9), row=3),
-        ]
-    )
-    reverse = run(
-        [
-            line(qe_day=date(2026, 7, 9), row=3),
-            line(qe_day=date(2026, 7, 9), first_to_fund=True, row=2),
-        ]
-    )
-    assert forward == reverse
+    assert run([True, False]) == run([False, True])
 
 
 def test_later_qe_day_inherits_the_longest_window_from_a_group(cal):
@@ -204,3 +197,13 @@ def test_deadline_past_the_calendar_horizon_warns(cal):
     qe = cal.verified_until - timedelta(days=3)
     dl = compute_due(line(qe_day=qe), cal)
     assert any("verified horizon" in n for n in dl.notes)
+
+
+def test_out_of_cycle_without_next_payday_keeps_its_warning_when_item_1_wins(cal):
+    """The missing-data warning must survive even when the 20-business-day
+    period is the later deadline, because the real item 2 deadline could be
+    later still."""
+    dl = compute_due(line(first_to_fund=True, out_of_cycle=True), cal)
+    assert dl.due == date(2026, 8, 7)
+    assert any("cannot be calculated" in n for n in dl.notes)
+    assert not any("both the out-of-cycle" in n for n in dl.notes)

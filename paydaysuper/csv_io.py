@@ -57,6 +57,8 @@ def load_mapping(
     if path is not None:
         with open(path, encoding="utf-8") as f:
             user = json.load(f)
+        if not isinstance(user, dict):
+            raise CsvError(f"{path} must be a JSON object of field: column pairs")
         # Keys starting with an underscore are comments, not mappings.
         user = {k: v for k, v in user.items() if not k.startswith("_")}
         unknown = set(user) - set(CANONICAL)
@@ -103,6 +105,12 @@ def _parse_amount(value: str, field: str, row: int) -> Decimal:
     if not finite:
         # Decimal accepts "nan" and "Infinity"; neither is an amount.
         raise CsvError(f"row {row}: cannot read {field} value {value!r} as an amount")
+    if amount.adjusted() > 15:
+        # Beyond this the value cannot be rounded to cents under the default
+        # decimal context, and no super contribution is this large.
+        raise CsvError(
+            f"row {row}: {field} value {value!r} is too large to be a real amount"
+        )
     if amount < 0:
         raise CsvError(f"row {row}: {field} is negative ({value!r})")
     return amount
@@ -168,6 +176,12 @@ def parse_rows(
                 raise CsvError(
                     f"row {i} stops early and supplies no value for {short}. A truncated "
                     "row is not the same as a blank field, so it is not assumed empty."
+                )
+            surplus = [v for v in (row.get(None) or []) if v and v.strip()]
+            if surplus:
+                raise CsvError(
+                    f"row {i} carries more values than the header has columns: "
+                    f"{surplus}. They would be dropped, so the row is refused instead."
                 )
             row = {k: (v or "") for k, v in row.items() if k is not None}
 
