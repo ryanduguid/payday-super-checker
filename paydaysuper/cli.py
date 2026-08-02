@@ -8,10 +8,10 @@ from pathlib import Path
 
 from . import LAW_CONTENT_DATE, __version__
 from .calendar import CalendarError, load_calendar
-from .csv_io import CsvError, load_mapping, parse_rows
+from .csv_io import CsvError, load_mapping, parse_date_text, parse_rows
 from .deadlines import PreRegimeError
 from .rates import RatesError, load_gic, load_rates
-from .report import LATE, assess, console_summary, write_csv
+from .report import EXPOSED, assess, console_summary, write_csv
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -63,10 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
 def _parse_cli_date(value: str | None, flag: str) -> date | None:
     if value is None:
         return None
-    try:
-        return datetime.strptime(value, "%Y-%m-%d").date()
-    except ValueError:
-        raise CsvError(f"{flag} expects a YYYY-MM-DD date, got {value!r}")
+    parsed = parse_date_text(value)
+    if parsed is None:
+        raise CsvError(
+            f"{flag} expects a date such as 2026-08-10 or 10/08/2026, got {value!r}"
+        )
+    return parsed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -96,16 +98,41 @@ def main(argv: list[str] | None = None) -> int:
         target = exc.filename or args.csv_path
         print(f"error: cannot read {target}: {exc.strerror or exc}", file=sys.stderr)
         return EXIT_ERROR
+    except OverflowError:
+        # A sentinel date such as 9999-12-31 walked past date.max.
+        print(
+            "error: a date in this file is too far in the future to work with. "
+            "Check for placeholder dates such as 9999-12-31.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
 
     try:
-        write_csv(results, args.output, as_at, LAW_CONTENT_DATE, assessment_date)
+        write_csv(
+            results,
+            args.output,
+            as_at,
+            LAW_CONTENT_DATE,
+            assessment_date,
+            source=Path(args.csv_path).resolve(),
+            gic_provenance=gic.provenance(),
+        )
     except OSError as exc:
         print(f"error: cannot write {args.output}: {exc.strerror or exc}", file=sys.stderr)
         return EXIT_ERROR
 
-    print(console_summary(results, as_at, Path(args.output), LAW_CONTENT_DATE, rates))
+    # Redirected stdout on Windows falls back to the locale encoding, which
+    # cannot represent every employee name.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(encoding="utf-8", errors="backslashreplace")
+    print(
+        console_summary(
+            results, as_at, Path(args.output), LAW_CONTENT_DATE, rates, assessment_date
+        )
+    )
 
-    return EXIT_LATE_FOUND if any(r.verdict == LATE for r in results) else EXIT_OK
+    return EXIT_LATE_FOUND if any(r.verdict in EXPOSED for r in results) else EXIT_OK
 
 
 if __name__ == "__main__":

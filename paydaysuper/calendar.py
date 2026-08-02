@@ -75,12 +75,23 @@ class BusinessCalendar:
         return None
 
 
-def _parse_entry(e: dict, provisional_default: bool = False) -> Holiday:
+def _parse_entry(e: dict, where: str) -> Holiday:
+    if not isinstance(e, dict):
+        raise CalendarError(f"{where} must be an object with 'date' and 'name'")
+    for key in ("date", "name"):
+        if key not in e:
+            raise CalendarError(f"{where} is missing '{key}'")
+    try:
+        day = date.fromisoformat(str(e["date"]))
+    except ValueError:
+        raise CalendarError(
+            f"{where} has date {e['date']!r}; write it as YYYY-MM-DD"
+        )
     return Holiday(
-        day=date.fromisoformat(e["date"]),
-        name=e["name"],
+        day=day,
+        name=str(e["name"]),
         jurisdictions=tuple(e.get("jurisdictions", [])),
-        provisional=bool(e.get("provisional", provisional_default)),
+        provisional=bool(e.get("provisional", False)),
     )
 
 
@@ -91,19 +102,43 @@ def load_calendar(override_path: str | Path | None = None) -> BusinessCalendar:
     mourning) and for the documented Melbourne Cup / part-day ambiguities."""
     with open(DATA_DIR / "business_days.json", encoding="utf-8") as f:
         doc = json.load(f)
-    holidays = {h.day: h for h in (_parse_entry(e) for e in doc["non_business_days"])}
+    holidays = {
+        h.day: h
+        for h in (
+            _parse_entry(e, f"bundled calendar entry {n}")
+            for n, e in enumerate(doc["non_business_days"], start=1)
+        )
+    }
 
     if override_path is not None:
         with open(override_path, encoding="utf-8") as f:
             override = json.load(f)
+        if not isinstance(override, dict):
+            raise CalendarError(
+                f"{override_path} must be an object with 'add' and 'remove' lists"
+            )
         unknown = set(override) - {"add", "remove"}
         if unknown:
             raise CalendarError(f"override file has unknown keys: {sorted(unknown)}")
-        for e in override.get("add", []):
-            h = _parse_entry(e)
+
+        add = override.get("add", [])
+        remove = override.get("remove", [])
+        if not isinstance(add, list):
+            raise CalendarError(f"{override_path}: 'add' must be a list of entries")
+        if not isinstance(remove, list):
+            raise CalendarError(f"{override_path}: 'remove' must be a list of dates")
+
+        for n, e in enumerate(add, start=1):
+            h = _parse_entry(e, f"{override_path} add entry {n}")
             holidays[h.day] = h
-        for iso in override.get("remove", []):
-            removed = holidays.pop(date.fromisoformat(iso), None)
+        for n, iso in enumerate(remove, start=1):
+            try:
+                day = date.fromisoformat(str(iso))
+            except ValueError:
+                raise CalendarError(
+                    f"{override_path} remove entry {n} is {iso!r}; write it as YYYY-MM-DD"
+                )
+            removed = holidays.pop(day, None)
             if removed is None:
                 raise CalendarError(f"override removes {iso}, which is not in the table")
 

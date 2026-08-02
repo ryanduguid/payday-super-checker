@@ -7,7 +7,7 @@ import pytest
 
 from paydaysuper.csv_io import CsvError, load_mapping, parse_rows
 
-FIXTURE = Path(__file__).parent / "fixtures" / "sample_payrun.csv"
+from conftest import SAMPLE as FIXTURE
 
 HEADER = (
     "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
@@ -173,7 +173,7 @@ def test_unmapped_optional_column_absence_is_fine(tmp_path):
 
 
 def test_shipped_example_mapping_file_loads():
-    example = Path(__file__).parent.parent / "examples" / "mapping.example.json"
+    example = FIXTURE.parent / "mapping.example.json"
     mapping, explicit = load_mapping(example)
     assert mapping["qe_day"] == "Payment Date"
     assert "_comment" not in explicit

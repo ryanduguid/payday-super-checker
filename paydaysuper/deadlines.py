@@ -51,6 +51,7 @@ class ContribLine:
     next_standard_qe_day: date | None = None
     db_interest: bool = False
     row: int = 0
+    duplicate_note: str = ""
 
 
 @dataclass
@@ -58,6 +59,9 @@ class Deadline:
     due: date | None
     pathway: str
     notes: list[str] = field(default_factory=list)
+    # Notes explain which rule applied; caveats mean the answer itself may
+    # be wrong. Only caveats reach the console, so they stay readable.
+    caveats: list[str] = field(default_factory=list)
 
 
 def compute_due(line: ContribLine, cal: BusinessCalendar) -> Deadline:
@@ -81,6 +85,7 @@ def compute_due(line: ContribLine, cal: BusinessCalendar) -> Deadline:
     # (a new starter paid an off-cycle bonus before their first standard
     # payday). Where they do, the taxpayer gets the later period.
     notes: list[str] = []
+    caveats: list[str] = []
     candidates: list[tuple[date, str, str]] = []
 
     if line.out_of_cycle:
@@ -102,7 +107,7 @@ def compute_due(line: ContribLine, cal: BusinessCalendar) -> Deadline:
             # A data-quality problem, not a pathway note: it must survive even
             # when another candidate wins, because the real item 2 deadline
             # could be later than anything computed here.
-            notes.append(
+            caveats.append(
                 "out-of-cycle flag set but no next standard QE day supplied, so the "
                 "item 2 deadline cannot be calculated. Supply the next regular payday: "
                 "the real deadline may be later than the one shown"
@@ -133,16 +138,9 @@ def compute_due(line: ContribLine, cal: BusinessCalendar) -> Deadline:
             "later deadline"
         )
 
-    horizon = cal.check_horizon(due)
-    if horizon:
-        notes.append(horizon)
-    provisional = cal.provisional_hits(line.qe_day, due)
-    if provisional:
-        notes.append(
-            "deadline window contains provisional (not yet gazetted) holiday dates: "
-            + "; ".join(provisional)
-        )
-    return Deadline(due=due, pathway=pathway, notes=notes)
+    # Calendar caveats are attached later, by annotate_calendar_risk, because
+    # apply_item4 can still move this deadline.
+    return Deadline(due=due, pathway=pathway, notes=notes, caveats=caveats)
 
 
 def apply_item4(pairs: list[tuple[ContribLine, Deadline]]) -> None:
@@ -154,6 +152,23 @@ def apply_item4(pairs: list[tuple[ContribLine, Deadline]]) -> None:
         if dl.due is None:
             continue
         by_employee.setdefault(line.employee_id, []).append((line, dl))
+
+    # Ids are grouped exactly as given. Folding case here could only ever
+    # extend a deadline and so hide a real liability, which is the wrong way
+    # to be wrong; say so instead and let the operator decide.
+    by_casefold: dict[str, set[str]] = {}
+    for employee_id in by_employee:
+        by_casefold.setdefault(employee_id.casefold(), set()).add(employee_id)
+    for variants in by_casefold.values():
+        if len(variants) > 1:
+            listed = ", ".join(sorted(variants))
+            for employee_id in variants:
+                for _, dl in by_employee[employee_id]:
+                    dl.caveats.append(
+                        f"employee ids {listed} differ only by capitalisation and are "
+                        "treated as different people, so no deadline is aligned between "
+                        "them (s 18C(2) item 4). If they are one person, make the ids match"
+                    )
 
     for items in by_employee.values():
         items.sort(key=lambda p: (p[0].qe_day, p[0].row))
@@ -187,3 +202,25 @@ def apply_item4(pairs: list[tuple[ContribLine, Deadline]]) -> None:
 
             running_latest = group_latest
             index = end
+
+
+def annotate_calendar_risk(
+    pairs: list[tuple[ContribLine, Deadline]], cal: BusinessCalendar
+) -> None:
+    """Attach calendar caveats to the FINAL due date.
+
+    Run after apply_item4: a deadline it moves is the one the user acts on,
+    so a caveat computed against the line's own period end could name a date
+    the row no longer has."""
+    for line, dl in pairs:
+        if dl.due is None:
+            continue
+        horizon = cal.check_horizon(dl.due)
+        if horizon:
+            dl.caveats.append(horizon)
+        provisional = cal.provisional_hits(line.qe_day, dl.due)
+        if provisional:
+            dl.caveats.append(
+                "deadline window contains provisional (not yet gazetted) holiday dates: "
+                + "; ".join(provisional)
+            )

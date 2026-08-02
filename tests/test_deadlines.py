@@ -12,6 +12,7 @@ from paydaysuper.deadlines import (
     USUAL_7BD,
     ContribLine,
     PreRegimeError,
+    annotate_calendar_risk,
     apply_item4,
     compute_due,
 )
@@ -59,7 +60,7 @@ def test_out_of_cycle_without_next_payday_falls_back(cal):
     dl = compute_due(line(out_of_cycle=True), cal)
     assert dl.pathway == OUT_OF_CYCLE
     assert dl.due == date(2026, 7, 20)
-    assert any("cannot be calculated" in n for n in dl.notes)
+    assert any("cannot be calculated" in n for n in dl.caveats)
 
 
 def test_out_of_cycle_next_payday_must_be_later(cal):
@@ -115,9 +116,11 @@ def test_item4_is_per_employee(cal):
     assert pairs[1][1].due == date(2026, 8, 4)  # unaffected by A's window
 
 
-def test_provisional_dates_are_flagged_in_notes(cal):
-    dl = compute_due(line(qe_day=date(2026, 9, 21)), cal)
-    assert any("provisional" in n for n in dl.notes)
+def test_provisional_dates_are_flagged(cal):
+    l = line(qe_day=date(2026, 9, 21))
+    pairs = [(l, compute_due(l, cal))]
+    annotate_calendar_risk(pairs, cal)
+    assert any("provisional" in n for n in pairs[0][1].caveats)
 
 
 def test_item4_does_not_align_contributions_sharing_a_qe_day(cal):
@@ -195,8 +198,10 @@ def test_deadline_past_the_calendar_horizon_warns(cal):
     from datetime import timedelta
 
     qe = cal.verified_until - timedelta(days=3)
-    dl = compute_due(line(qe_day=qe), cal)
-    assert any("verified horizon" in n for n in dl.notes)
+    l = line(qe_day=qe)
+    pairs = [(l, compute_due(l, cal))]
+    annotate_calendar_risk(pairs, cal)
+    assert any("verified horizon" in n for n in pairs[0][1].caveats)
 
 
 def test_out_of_cycle_without_next_payday_keeps_its_warning_when_item_1_wins(cal):
@@ -205,5 +210,5 @@ def test_out_of_cycle_without_next_payday_keeps_its_warning_when_item_1_wins(cal
     later still."""
     dl = compute_due(line(first_to_fund=True, out_of_cycle=True), cal)
     assert dl.due == date(2026, 8, 7)
-    assert any("cannot be calculated" in n for n in dl.notes)
+    assert any("cannot be calculated" in n for n in dl.caveats)
     assert not any("both the out-of-cycle" in n for n in dl.notes)

@@ -1,0 +1,48 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"   # the declared floor
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: windows-latest
+            python: "3.12"   # where path handling can diverge
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build
+      - run: python -m build
+      # The law files ship as package data; a wheel that cannot find them
+      # produces a CLI that will not start.
+      - name: install the wheel and run it
+        run: |
+          python -m venv /tmp/venv
+          /tmp/venv/bin/pip install --find-links dist payday-super-checker
+          /tmp/venv/bin/payday-super-check examples/sample_payrun.csv \
+            -o /tmp/report.csv --as-at 2026-08-10 || [ $? -eq 2 ]
+      - name: the shipped tests must pass from the sdist
+        run: |
+          mkdir /tmp/sdist && tar -xzf dist/*.tar.gz -C /tmp/sdist --strip-components=1
+          cd /tmp/sdist && pip install -e ".[dev]" && pytest -q
