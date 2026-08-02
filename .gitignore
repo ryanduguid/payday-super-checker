@@ -1,0 +1,35 @@
+# Client and payroll data never belongs in this repo.
+*.aba
+*.ABA
+*.xlsx
+*.xls
+*.qif
+*.ofx
+*.pdf
+*.csv
+!tests/fixtures/*.csv
+!examples/*.csv
+report.csv
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Claude Code local state
+.claude/settings.local.json

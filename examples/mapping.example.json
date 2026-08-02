@@ -1,0 +1,11 @@
+{
+  "employee_id": "Employee Code",
+  "qe_day": "Payment Date",
+  "sg_amount": "Super Guarantee",
+  "remitted": "Date Paid to Clearing House",
+  "received": "Fund Receipt Date",
+  "first_to_fund": "First Contribution",
+  "out_of_cycle": "Off Cycle",
+  "next_standard_qe_day": "Next Pay Date",
+  "db_interest": "Defined Benefit"
+}
