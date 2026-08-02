@@ -8,7 +8,6 @@
 *.[oO][fF][xX]
 *.[pP][dD][fF]
 *.[cC][sS][vV]
-!tests/fixtures/*.csv
 !examples/*.csv
 
 # Python

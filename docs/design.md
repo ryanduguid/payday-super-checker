@@ -1,6 +1,7 @@
-# payday-super-checker — design
+# payday-super-checker: design
 
-Date: 2026-08-02. Status: approved.
+Design as implemented. Legal content researched 2 August 2026; see
+`research-notes-2026-08-02.md` for the sources behind every figure.
 
 ## Purpose
 

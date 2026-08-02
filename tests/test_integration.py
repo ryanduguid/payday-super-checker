@@ -10,10 +10,10 @@ from paydaysuper.cli import EXIT_ERROR, EXIT_LATE_FOUND, main
 from paydaysuper.csv_io import load_mapping, parse_rows
 from paydaysuper.deadlines import ContribLine
 from paydaysuper.rates import load_gic, load_rates
-from paydaysuper.report import assess, console_summary
+from paydaysuper.report import _rounded_figures, assess, console_summary
 from paydaysuper.sgc import notional_earnings
 
-FIXTURE = Path(__file__).parent / "fixtures" / "sample_payrun.csv"
+from conftest import SAMPLE as FIXTURE
 AS_AT = date(2026, 8, 10)
 
 
@@ -33,7 +33,7 @@ def test_verdicts_across_the_fixture():
     assert by_employee(results, "EMP001", date(2026, 7, 9)).verdict == "ON_TIME"
     assert by_employee(results, "EMP002", date(2026, 7, 9)).verdict == "LATE"
     assert by_employee(results, "EMP003", date(2026, 7, 9)).verdict == "AT_RISK"
-    assert by_employee(results, "EMP004", date(2026, 7, 9)).verdict == "UNKNOWN"
+    assert by_employee(results, "EMP004", date(2026, 7, 9)).verdict == "UNPAID"
     assert by_employee(results, "EMP005", date(2026, 7, 9)).verdict == "ON_TIME"
     assert by_employee(results, "EMP006", date(2026, 7, 15)).verdict == "ON_TIME"
     assert by_employee(results, "EMP007", date(2026, 7, 9)).verdict == "SKIPPED"
@@ -122,15 +122,18 @@ def test_cli_writes_report_and_flags_late(tmp_path, capsys):
         "ON_TIME",
         "LATE",
         "AT_RISK",
-        "UNKNOWN",
+        "UNPAID",
         "SKIPPED",
     }
 
     # The trailing note keeps the table's width so parsers do not choke.
     note = rows[-1]
     assert note["employee_id"] == "NOTE"
-    assert "2026-08-02" in note["warnings"]
-    assert "not advice" in note["warnings"]
+    assert "2026-08-02" in note["notes"]
+    assert "not advice" in note["notes"]
+    assert "payday-super-checker 0.1.0" in note["notes"]
+    assert "sample_payrun.csv" in note["notes"]
+    assert "GIC table covers" in note["notes"]
 
     late = next(r for r in data if r["employee_id"] == "EMP002")
     assert late["due_date"] == "2026-07-20"
@@ -170,7 +173,7 @@ def test_console_summary_carries_the_legal_caveats():
 def test_console_summary_ranks_by_exposure():
     """Largest estimated exposure first, as the heading claims."""
     text = console_summary(run_fixture(), AS_AT, "report.csv", "2026-08-02", load_rates())
-    body = text.split("Late lines")[1]
+    body = text.split("Lines with exposure")[1]
     assert body.index("EMP002") < body.index("EMP001")
 
 
@@ -212,7 +215,10 @@ def test_late_remittance_without_a_receipt_date_is_late():
     )
     r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
     assert r.verdict == "LATE"
-    assert r.days_late == 12                      # measured to the remittance date
+    # Lateness and interest are both measured to the as-at date, because no
+    # fund receipt is known and the statutory test is receipt.
+    assert r.days_late == (AS_AT - r.deadline.due).days
+    assert r.lateness_basis.startswith("as-at date")
     assert r.final_shortfall == Decimal("300.00")  # no receipt, so no s 18D offset
     assert any("still unpaid" in w for w in r.warnings)
 
@@ -241,7 +247,7 @@ def test_payment_older_than_twelve_months_cannot_offset():
     )
     r = assess([line], load_calendar(), load_gic(), date(2027, 8, 1))[0]
     assert r.verdict == "LATE"
-    assert any("more than 12 months" in w for w in r.warnings)
+    assert any("12-month pre-payment window" in w for w in r.warnings)
 
 
 def test_receipt_before_remittance_is_rejected():
@@ -287,7 +293,10 @@ def test_stale_prepayment_keeps_the_full_shortfall():
     assert r.verdict == "LATE"
     assert r.final_shortfall == Decimal("300.00")
     assert r.offset_s18d is False
-    assert r.days_late == 0
+    # The payday is unfunded, so interest runs to the as-at date rather than
+    # stopping at a receipt that cannot be applied to it.
+    assert r.nec > Decimal("0")
+    assert r.days_late == (date(2027, 8, 1) - r.deadline.due).days
     assert r.sgc_low >= Decimal("300.00")
     assert not any("s 18D" in w for w in r.warnings)
 
@@ -341,10 +350,20 @@ def test_mcb_caveat_follows_the_as_at_financial_year():
         }
     }
     results = run_fixture()
+    # The caveat follows the paydays in the file, not the day of the run.
     text = console_summary(results, date(2027, 9, 1), "report.csv", "2026-08-02", rates)
-    assert "$280,000 for 2027-28" in text
-    text_2026 = console_summary(results, AS_AT, "report.csv", "2026-08-02", rates)
-    assert "$270,830 for 2026-27" in text_2026
+    assert "$270,830 for 2026-27" in text
+    later = ContribLine(
+        employee_id="E9",
+        qe_day=date(2027, 9, 1),
+        sg_amount=Decimal("100.00"),
+        row=2,
+    )
+    later_results = assess([later], load_calendar(), load_gic(), date(2027, 10, 1))
+    text_2027 = console_summary(
+        later_results, date(2027, 10, 1), "report.csv", "2026-08-02", rates
+    )
+    assert "$280,000 for 2027-28" in text_2027
 
 
 def test_all_date_problems_are_reported_at_once():
@@ -362,3 +381,197 @@ def test_all_date_problems_are_reported_at_once():
     with pytest.raises(ValueError) as exc:
         assess(bad, load_calendar(), load_gic(), AS_AT)
     assert "row 2" in str(exc.value) and "row 3" in str(exc.value)
+
+
+def test_unpaid_overdue_line_reports_exposure_and_exit_code(tmp_path, capsys):
+    """The largest exposure the tool can see is a payday with nothing
+    recorded and the deadline already passed. It must not be silent."""
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("800.00"),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+    assert r.verdict == "UNPAID"
+    assert r.final_shortfall == Decimal("800.00")
+    assert r.nec > Decimal("0")
+    assert r.sgc_high > Decimal("800.00")
+    assert any("deadline passed" in w for w in r.caveats)
+
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        "E9,2026-07-09,800.00,,,no,no,,no\n",
+        encoding="utf-8",
+    )
+    assert main([str(path), "-o", str(tmp_path / "r.csv"), "--as-at", "2026-08-10"]) == 2
+
+
+def test_not_yet_due_line_with_no_dates_stays_unknown():
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2026, 8, 6),
+        sg_amount=Decimal("800.00"),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+    assert r.verdict == "UNKNOWN"
+    assert r.sgc_high is None
+
+
+def test_calendar_caveats_describe_the_aligned_deadline():
+    """A deadline moved by item 4 is the one the user acts on, so the
+    horizon caveat must describe that date, not the line's own period end."""
+    cal = load_calendar()
+    inside = ContribLine(
+        employee_id="E9",
+        qe_day=date(2028, 12, 8),
+        sg_amount=Decimal("100.00"),
+        first_to_fund=True,
+        row=2,
+    )
+    later = ContribLine(
+        employee_id="E9",
+        qe_day=date(2028, 12, 11),
+        sg_amount=Decimal("100.00"),
+        row=3,
+    )
+    results = assess([inside, later], cal, load_gic(), date(2029, 3, 1))
+    aligned = results[1]
+    assert aligned.deadline.pathway == "ITEM4_ALIGNED"
+    horizon = [c for c in aligned.caveats if "verified horizon" in c]
+    assert horizon and aligned.deadline.due.isoformat() in horizon[0]
+
+
+def test_case_variant_employee_ids_are_flagged_not_merged():
+    cal = load_calendar()
+    rows = [
+        ContribLine(
+            employee_id="EMP001",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("100.00"),
+            first_to_fund=True,
+            row=2,
+        ),
+        ContribLine(
+            employee_id="emp001",
+            qe_day=date(2026, 7, 23),
+            sg_amount=Decimal("100.00"),
+            received=date(2026, 8, 6),
+            row=3,
+        ),
+    ]
+    results = assess(rows, cal, load_gic(), AS_AT)
+    assert results[1].deadline.due == date(2026, 8, 4)  # not aligned
+    assert any("capitalisation" in c for c in results[1].caveats)
+
+
+def test_item4_inherited_from_an_unrecorded_payday_is_flagged():
+    cal = load_calendar()
+    rows = [
+        ContribLine(
+            employee_id="E9",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("100.00"),
+            first_to_fund=True,
+            row=2,
+        ),
+        ContribLine(
+            employee_id="E9",
+            qe_day=date(2026, 7, 23),
+            sg_amount=Decimal("100.00"),
+            received=date(2026, 8, 6),
+            row=3,
+        ),
+    ]
+    results = assess(rows, cal, load_gic(), AS_AT)
+    assert results[1].verdict == "ON_TIME"
+    assert any("no payment is recorded" in c for c in results[1].caveats)
+
+
+def test_missed_new_starter_flag_is_suggested_on_late_lines():
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("100.00"),
+        received=date(2026, 8, 5),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+    assert r.verdict == "LATE"
+    assert any("first_contribution_to_fund=yes" in c for c in r.caveats)
+
+
+def test_prepayment_window_is_leap_safe():
+    """s 18C(1)(c)(ii) runs 12 calendar months, not 365 days, so a receipt
+    on the first day of the window counts even across a leap year."""
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2029, 3, 1),
+        sg_amount=Decimal("100.00"),
+        received=date(2028, 2, 29),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), date(2029, 4, 1))[0]
+    assert r.verdict == "ON_TIME"
+
+
+def test_identical_rows_are_flagged_as_duplicates():
+    rows = [
+        ContribLine(
+            employee_id="E9",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("100.00"),
+            received=date(2026, 7, 15),
+            row=n,
+        )
+        for n in (2, 3)
+    ]
+    results = assess(rows, load_calendar(), load_gic(), AS_AT)
+    assert all(any("counted 2 times" in c for c in r.caveats) for r in results)
+
+
+def test_console_shows_totals_and_caveats():
+    text = console_summary(run_fixture(), AS_AT, "report.csv", "2026-08-02", load_rates())
+    assert "Total across" in text
+    assert "estimated SG charge $" in text
+    assert "note: " in text  # caveats reach the console, not just the CSV
+
+
+def test_report_columns_add_up():
+    """Each figure is rounded once, so a row's parts sum to its totals."""
+    for r in run_fixture():
+        if r.verdict not in ("LATE", "UNPAID"):
+            continue
+        figures = _rounded_figures(r)
+        assert figures["shortfall"] + figures["nec"] + figures["up_low"] == figures["low"]
+        assert figures["shortfall"] + figures["nec"] + figures["up_high"] == figures["high"]
+
+
+def test_employee_id_that_looks_like_a_formula_is_neutralised(tmp_path):
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        '"=cmd|\'/c calc\'!A1",2026-07-09,100.00,,,no,no,,no\n',
+        encoding="utf-8",
+    )
+    out = tmp_path / "r.csv"
+    main([str(path), "-o", str(out), "--as-at", "2026-08-10"])
+    written = out.read_text(encoding="utf-8")
+    assert "'=cmd" in written
+    assert ",=cmd" not in written
+
+
+def test_sentinel_high_date_is_refused_cleanly(tmp_path, capsys):
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        "E9,2026-07-09,100.00,,9999-12-31,no,no,,no\n",
+        encoding="utf-8",
+    )
+    assert main([str(path), "-o", str(tmp_path / "r.csv")]) == EXIT_ERROR
+    assert "not a real date" in capsys.readouterr().err

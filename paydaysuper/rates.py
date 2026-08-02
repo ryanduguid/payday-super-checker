@@ -26,6 +26,7 @@ class GicQuarter:
     start: date
     end: date
     annual_pct: Decimal
+    seen: str = ""
 
 
 class RatesError(ValueError):
@@ -41,6 +42,16 @@ class GicTable:
     @property
     def last_known(self) -> date:
         return self._quarters[-1].end
+
+    def provenance(self) -> str:
+        """One line naming the coverage, latest rate and check date, so a
+        report can be audited long after it was produced."""
+        latest = self._quarters[-1]
+        checked = f", checked {latest.seen}" if latest.seen else ""
+        return (
+            f"GIC table covers {self._quarters[0].start.isoformat()} to "
+            f"{latest.end.isoformat()} (latest quarter {latest.annual_pct}% p.a.{checked})"
+        )
 
     def daily_rate(self, d: date) -> Decimal:
         divisor = Decimal(days_in_year(d))
@@ -71,6 +82,7 @@ def load_gic() -> GicTable:
                 start=date.fromisoformat(e["from"]),
                 end=date.fromisoformat(e["to"]),
                 annual_pct=Decimal(e["annual_pct"]),
+                seen=e.get("seen", ""),
             )
             for e in doc["quarters"]
         ]

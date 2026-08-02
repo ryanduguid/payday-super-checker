@@ -11,6 +11,14 @@ the instrument itself, and those are marked. ATO law companion rulings LCR 2026/
 to D4 were still drafts on that date, so interpretations sourced from them may shift.
 Confidence ratings and open ambiguities are the researchers' own.
 
+The notes below include instructions the researchers wrote to themselves,
+telling a publisher to re-check certain figures in a browser before release.
+Those instructions stand, and the items they name are the same ones flagged
+above: the GIC rate, the maximum contributions base, the text of LI 2026/20,
+and whether LCR 2026/D1 to D4 have since been finalised. Every figure the
+tool actually uses carries its own source and check date in
+`paydaysuper/data/`.
+
 ## Lane: deadline
 
 ### Enacted legislation — names, numbers, status [confidence: high]

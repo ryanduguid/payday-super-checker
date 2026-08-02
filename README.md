@@ -11,10 +11,16 @@ Built by Ryan Duguid, a provisional member of Chartered Accountants ANZ working 
 Python 3.10 or later. No runtime dependencies.
 
 ```bash
-pip install git+https://github.com/ryanduguid/payday-super-checker.git
+git clone https://github.com/ryanduguid/payday-super-checker.git
 ```
 
-Or clone it and run from the source tree with `python -m paydaysuper.cli`.
+```bash
+cd payday-super-checker && pip install .
+```
+
+Cloning first means you have the sample file the next command uses. To skip
+the clone, `pip install git+https://github.com/ryanduguid/payday-super-checker.git`
+installs the tool alone; point it at your own CSV.
 
 ## Use
 
@@ -25,20 +31,26 @@ payday-super-check examples/sample_payrun.csv --as-at 2026-08-10
 ```
 payday-super-checker: 10 contribution lines, as at 2026-08-10
 
-  ON_TIME: 5  AT_RISK: 1  LATE: 2  UNKNOWN: 1  SKIPPED: 1
+  ON_TIME: 5  AT_RISK: 1  LATE: 2  UNPAID: 1  UNKNOWN: 0  SKIPPED: 1
 
-Late lines (largest estimated exposure first):
-  row 3  EMP002  QE day 2026-07-09  due 2026-07-20  15 days late
+Lines with exposure (largest first):
+  row 5  EMP004  QE day 2026-07-09  due 2026-07-20  UNPAID, 21 days late to as-at date (nothing applied to this payday)
+      shortfall $780.00  notional earnings $5.15  SG charge estimate $785.15 - $1256.24
+      note: the deadline passed on 2026-07-20 and no remittance or fund-receipt date is recorded...
+  row 3  EMP002  QE day 2026-07-09  due 2026-07-20  LATE, 15 days late to fund receipt
       super $540.00 (received, so the shortfall is nil)  notional earnings $2.54  SG charge estimate $2.54 - $4.07
-  row 9  EMP001  QE day 2026-07-23  due 2026-08-04  2 days late
-      super $612.00 (received, so the shortfall is nil)  notional earnings $0.38  SG charge estimate $0.38 - $0.61
+
+  Total across 3 line(s): shortfall $780.00, notional earnings $8.07,
+  estimated SG charge $788.07 - $1260.92.
 ```
 
-(The caveats that follow in the real output are trimmed here.)
+The block above is abridged: the real run lists every exposed line and then a page of assumptions.
 
 Full detail goes to `report.csv`: due date, which deadline rule applied, days late, the final shortfall after any offset, notional earnings, best and worst case uplift, and every warning that applies to that line.
 
-The exit code is 0 when nothing is late, 2 when something is, and 1 on an error, so you can run it from a scheduled job.
+Verdicts are `ON_TIME`, `AT_RISK` (remitted in time but no fund receipt recorded), `LATE`, `UNPAID` (the deadline has passed and nothing is recorded against it), `UNKNOWN` (not due yet, nothing recorded) and `SKIPPED` (defined-benefit interests). `LATE` and `UNPAID` both carry exposure figures.
+
+The exit code is 0 when nothing is exposed, 2 when something is, and 1 on an error, so you can run it from a scheduled job.
 
 ### Options
 
@@ -67,7 +79,11 @@ Required: `employee_id`, `payment_date`, `sg_amount`. Everything else is optiona
 | `next_standard_qe_day` | `next_standard_payday` | The next regular payday, needed to date an out-of-cycle deadline |
 | `db_interest` | `defined_benefit` | Yes for defined-benefit interests, which are skipped |
 
-Dates read as `YYYY-MM-DD` or day-first `DD/MM/YYYY`. Amounts accept `$` and thousands separators. Anything unreadable stops the run and names the row, and so does a truncated row, a duplicated column heading, or a mapping that points at a column your file does not have. A compliance tool that guesses is worse than one that refuses.
+Dates read as `YYYY-MM-DD`, day-first `DD/MM/YYYY`, or `9 Jul 2026`, and a time component is ignored. Amounts accept `$` and thousands separators. Anything unreadable stops the run and names every bad cell at once, and so does a truncated row, a duplicated column heading, or a mapping that points at a column your file does not have. A compliance tool that guesses is worse than one that refuses.
+
+**The amount column must hold super guarantee only.** Salary sacrifice and additional contributions have a different base and a different deadline, so filter them out of the export first or the shortfall will be overstated.
+
+**Where the fund receipt date comes from.** Payroll exports (Xero, MYOB, KeyPay, Employment Hero) give you the payday and the batch remittance date, which is what `remitted` is for and why those lines come back `AT_RISK`. A fund receipt date lives somewhere else: your clearing house's per-contribution settlement or status report, or the fund's own contribution history. Without it the tool tells you what you sent and when, not what the law tests.
 
 ## The rules it applies
 
@@ -77,13 +93,13 @@ All of this is enacted law: the Treasury Laws Amendment (Payday Superannuation) 
 
 **Business days.** SGAA s 6(1) defines a business day as any day that is not a Saturday, a Sunday, or a public holiday for the whole of any State, the ACT or the NT. One national calendar applies to every employer: WA Day stops the clock for a Sydney employer. Regional holidays do not, so the Brisbane Ekka is still a business day even in Brisbane. The bundled calendar covers July 2026 to December 2028.
 
-**20 business days instead of 7** for the first contribution to a particular fund, whether that is a new starter or an existing employee switching funds (s 18C(2) item 1). Later paydays that fall inside that window inherit its end date (item 4), applied per employee.
+**20 business days instead of 7** for the first contribution to a particular fund, whether that is a new starter or an existing employee switching funds (s 18C(2) item 1). Later paydays that fall inside that window inherit its end date (item 4), applied per employee. That alignment is tested only against rows present in the file, so a single pay run checked on its own cannot see an earlier payday's longer window: include each employee's paydays back through any 20-business-day window, or the tool will report lateness the law does not impose.
 
 **Out-of-cycle payments** (bonuses, commissions, back pay) ride the next regular payday's window rather than their own (s 18C(2) item 2, and the Commissioner's determination LI 2026/20). Give the tool `next_standard_payday` or it falls back to the stricter 7-day test. Where both this rule and the new-fund rule apply to the same payment, the later deadline governs.
 
 **When it is late,** notional earnings compound daily at the general interest charge rate from the day after the deadline until the fund receives the money (s 19A), and an administrative uplift of up to 60% applies on top. A late contribution that reaches the fund before the ATO assesses the charge clears the shortfall itself (s 18D), which is why a paid-but-late line shows a small estimate rather than the whole contribution. Pass `--assessment-date` if an assessment has already issued, and the shortfall stays in the figure.
 
-The uplift starts at 60% and falls 20 points for a clean 24-month history, which almost every employer has until 30 June 2028 under the transitional rule, and another 40, 35, 30 or 15 points for a voluntary disclosure lodged within 30, 60, 120 or more than 120 days of the payday. Best case it is nil, worst case 60%. The report shows both ends because the ATO, not this tool, decides which applies.
+The uplift starts at 60% and falls 20 points for a clean 24-month history, which almost every employer has until 30 June 2028 under the transitional rule, and another 40, 35, 30 or 15 points for a voluntary disclosure lodged within 30, 60, 120 or more than 120 days of the payday. The report shows both ends of the range because the ATO, not this tool, decides which applies. Read the low figure carefully: it assumes both a clean history and a voluntary disclosure lodged within 30 days of the payday, so for an old payday with no disclosure already lodged the real floor is higher.
 
 ## What it does not do
 
@@ -110,6 +126,9 @@ Two calendar questions have no clear answer in the Act, and the override file ex
 
 ```bash
 pip install -e ".[dev]"
+```
+
+```bash
 pytest
 ```
 
