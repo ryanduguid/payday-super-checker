@@ -175,6 +175,43 @@ def test_vendor_override_rejects_an_unknown_key():
         detect(MYOB_SUPER, "super", vendor="sage")
 
 
+def test_an_unknown_vendor_is_not_advised_to_type_a_vendor_it_never_mentioned():
+    # COSMETIC FINDING (final re-review). The unknown-vendor message always
+    # ended with the advice written for one specific mistake: naming a real
+    # profile key that is one half of a vendor's pair, which the OTHER file
+    # then refuses. Someone who typed "quickbooks" got told to write
+    # 'myob-ar' instead of 'myob-ar-payroll', two names they had never used
+    # and neither of which this tool has a profile for.
+    with pytest.raises(CsvError) as exc:
+        detect(MYOB_SUPER, "super", vendor="quickbooks")
+    message = str(exc.value)
+    assert "matches no super profile" in message
+    assert "myob" not in message.replace("myob-ar-super", "").replace(
+        "myob-business-super", ""
+    )
+    assert "name the stem" not in message
+    # What is available is still listed. That is the part that answers the
+    # question this user actually asked.
+    assert "xero-super" in message
+
+
+def test_a_vendors_own_key_worn_too_long_is_told_the_stem_it_shares():
+    # The other side of the same gate, and the mistake the advice was
+    # written for: the import command passes ONE --vendor to both files, so
+    # the payroll profile's own key fails on the super file. The stem is
+    # named from what was typed now, rather than the myob pair the sentence
+    # used to hard-code whatever the vendor was.
+    with pytest.raises(CsvError) as exc:
+        detect(MYOB_SUPER, "super", vendor="xero-payroll")
+    message = str(exc.value)
+    assert "matches no super profile" in message
+    assert "'xero'" in message
+    assert "'xero-payroll'" in message
+    assert "myob" not in message.replace("myob-ar-super", "").replace(
+        "myob-business-super", ""
+    )
+
+
 def test_vendor_prefix_matching_exactly_one_profile_resolves_it():
     # "employment-hero" is a prefix of only one super profile's key.
     assert detect(["anything"], "super", vendor="employment-hero").key == "employment-hero-super"
