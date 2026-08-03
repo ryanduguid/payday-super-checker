@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -73,20 +73,61 @@ class GicTable:
         return None
 
 
+def _quarter_label(entry: dict, n: int) -> str:
+    where = f"GIC quarter {n} in {DATA_DIR / 'gic_rates.json'}"
+    span = f"{entry.get('from')} to {entry.get('to')}"
+    return f"{where} ({span})"
+
+
+def _rate(raw: object, where: str) -> Decimal:
+    """A quarterly rate update is hand-edited, and Decimal is happy to build
+    NaN or Infinity from a typo. decimal.InvalidOperation is an
+    ArithmeticError rather than a ValueError, so an unguarded conversion here
+    escapes the CLI's error handling and prints a traceback; a NaN escapes
+    nothing at all and poisons every money figure downstream."""
+    try:
+        value = Decimal(str(raw))
+    except InvalidOperation:
+        raise RatesError(
+            f"{where} has annual_pct {raw!r}, which is not a number. Fix it and "
+            "run again"
+        )
+    if not value.is_finite():
+        raise RatesError(
+            f"{where} has annual_pct {raw!r}; a rate must be a finite number, and "
+            "nan or infinity would silently poison every figure in the report"
+        )
+    return value
+
+
+def _rate_date(raw: object, key: str, where: str) -> date:
+    try:
+        return date.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        raise RatesError(f"{where} has {key} {raw!r}; write it as YYYY-MM-DD")
+
+
 def load_gic() -> GicTable:
-    with open(DATA_DIR / "gic_rates.json", encoding="utf-8") as f:
+    path = DATA_DIR / "gic_rates.json"
+    with open(path, encoding="utf-8") as f:
         doc = json.load(f)
-    return GicTable(
-        [
+    quarters = []
+    for n, e in enumerate(doc["quarters"], start=1):
+        if not isinstance(e, dict):
+            raise RatesError(f"GIC quarter {n} in {path} is not an object")
+        where = _quarter_label(e, n)
+        for key in ("from", "to", "annual_pct"):
+            if key not in e:
+                raise RatesError(f"{where} is missing {key!r}")
+        quarters.append(
             GicQuarter(
-                start=date.fromisoformat(e["from"]),
-                end=date.fromisoformat(e["to"]),
-                annual_pct=Decimal(e["annual_pct"]),
-                seen=e.get("seen", ""),
+                start=_rate_date(e["from"], "from", where),
+                end=_rate_date(e["to"], "to", where),
+                annual_pct=_rate(e["annual_pct"], where),
+                seen=str(e.get("seen", "")),
             )
-            for e in doc["quarters"]
-        ]
-    )
+        )
+    return GicTable(quarters)
 
 
 def load_rates() -> dict:
