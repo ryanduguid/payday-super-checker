@@ -472,6 +472,154 @@ def test_no_super_rows_does_not_vacuously_claim_id_matching():
     assert any("name" in w for w in result.warnings)
 
 
+def test_two_employee_ids_differing_only_in_punctuation_stay_distinct(tmp_path):
+    # CRITICAL regression. `_key` folded ids through
+    # profiles.normalise_header, which strips [^0-9a-z ]+ because it was
+    # written for HEADINGS. Applied to an id it merged E-001 and E001 into
+    # one employee: the single 1112.00 payment recorded against E-001
+    # covered both paydays, both rows were written with remitted
+    # 2026-07-12, the run exited 0, and the workpaper showed Bob Ng -- who
+    # received nothing -- as settled with no exposure at all. Ids are
+    # compared exactly now.
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Employee ID,Date,Pay Period End,Superannuation Guarantee\n"
+        "Ann Ward,E-001,10/07/2026,10/07/2026,612.00\n"
+        "Bob Ng,E001,24/07/2026,24/07/2026,500.00\n",
+        encoding="utf-8",
+    )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Employee ID,Superannuation Category,Period From,Period To,"
+        "Paid Date,Amount\n"
+        "Ann Ward,E-001,Superannuation Guarantee,01/07/2026,31/07/2026,12/07/2026,1112.00\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    report = import_files(payroll_path, super_path, out)
+
+    assert report.key_mode == "id"
+    assert report.unmatched == 1, "Bob Ng's payday received nothing and must say so"
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    ann = next(r for r in rows if r["employee_id"] == "E-001")
+    bob = next(r for r in rows if r["employee_id"] == "E001")
+    assert ann["remitted_date"] == "2026-07-12"
+    assert bob["remitted_date"] == "", "E001 is not E-001; nothing was paid against it"
+
+
+def test_two_names_differing_only_in_punctuation_stay_distinct(tmp_path):
+    # The name fallback folds case and whitespace and stops there. Folding
+    # punctuation as well (what normalise_header does to a heading) merges
+    # O'Brien with OBrien, and one of the two then reads as settled out of
+    # the other's payment.
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "O'Brien,10/07/2026,10/07/2026,612.00\n"
+        "OBrien,24/07/2026,24/07/2026,500.00\n",
+        encoding="utf-8",
+    )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "O'Brien,Superannuation Guarantee,01/07/2026,31/07/2026,12/07/2026,1112.00\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    report = import_files(payroll_path, super_path, out)
+
+    assert report.key_mode == "name"
+    assert report.unmatched == 1
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    obrien = next(r for r in rows if r["employee_id"] == "O'Brien")
+    plain = next(r for r in rows if r["employee_id"] == "OBrien")
+    assert obrien["remitted_date"] == "2026-07-12"
+    assert plain["remitted_date"] == ""
+
+
+def test_a_name_with_no_ascii_letters_imports_instead_of_stopping_the_run(tmp_path):
+    # Same root cause, opposite symptom. normalise_header() returns the
+    # empty string for a name with no ASCII alphanumerics in it, so a
+    # payroll row with a perfectly populated employee column died at join()
+    # with "row 2: the employee column is empty" and no file was written at
+    # all. Chinese, Korean, Greek, Cyrillic and Arabic names all blocked
+    # the entire import. The name is written as escapes because every file
+    # in this repo is ASCII; the fixture on disk is UTF-8.
+    name = "\u5f20\u4f1f"  # a two-character Chinese name
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        f"{name},10/07/2026,10/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        f"{name},Superannuation Guarantee,01/07/2026,10/07/2026,15/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    report = import_files(payroll_path, super_path, out)
+
+    assert report.matched == 1
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    assert rows[0]["employee_id"] == name
+    assert rows[0]["remitted_date"] == "2026-07-15"
+
+
+def test_a_sub_cent_shortfall_is_not_reported_as_a_partial_payment(tmp_path):
+    # CRITICAL regression. join compared raw Decimals while write_canonical
+    # writes money(), quantised to cents, so 540.00 paid against 540.004
+    # owed read as a short payment: the remittance date was blanked and the
+    # checker reported the whole 540.00 as a shortfall with an SG-charge
+    # estimate on top, on a payday where every payable cent arrived on time.
+    result = join(
+        [payroll("A", "2026-07-09", "540.004")],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-15", "540.00")],
+    )
+    assert result.outcomes[0].flag == ""
+    assert result.outcomes[0].remitted == date(2026, 7, 15)
+
+    # And the date survives into the file the checker actually reads.
+    out = tmp_path / "out.csv"
+    write_canonical(result, out)
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    assert rows[0]["sg_amount"] == "540.00"
+    assert rows[0]["remitted_date"] == "2026-07-15"
+
+
+def test_a_sub_cent_excess_is_not_reported_as_an_overpayment():
+    # The mirror case: 540.004 paid against 540.00 owed printed "over:
+    # 540.004 against 540.00, check for salary sacrifice" and sent an
+    # accountant looking for a salary-sacrifice mix-up over four tenths of
+    # a cent.
+    result = join(
+        [payroll("A", "2026-07-09", "540.00")],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-15", "540.004")],
+    )
+    assert result.outcomes[0].flag == ""
+
+
+def test_a_whole_cent_difference_is_still_flagged_both_ways():
+    # Teeth for the two tests above: rounding to cents must not blunt the
+    # comparison itself. One cent short is still partial, one cent over is
+    # still over.
+    short = join(
+        [payroll("A", "2026-07-09", "540.01")],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-15", "540.00")],
+    )
+    assert short.outcomes[0].flag.startswith("partial: ")
+    over = join(
+        [payroll("A", "2026-07-09", "540.00")],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-15", "540.01")],
+    )
+    assert over.outcomes[0].flag.startswith("over: ")
+
+
 def test_decimal_precision_is_exact_not_float():
     # 0.10 + 0.10 + 0.10 == 0.30 exactly under Decimal. Float arithmetic
     # rounds this to 0.30000000000000004 and would misfire an "over" flag
