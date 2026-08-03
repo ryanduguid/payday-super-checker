@@ -85,9 +85,15 @@ def _check_duplicate_headers(headers: list[str], path: str | Path) -> None:
     this module to tell that happened. See the module docstring."""
     groups: dict[str, list[str]] = {}
     for h in headers:
-        key = normalise_header(h)
-        if key:
-            groups.setdefault(key, []).append(h)
+        # A heading that folds away to nothing -- "###", say -- is still a
+        # heading, and csv_io refuses two byte-identical ones. Skipping the
+        # falsy key here made this module's refusal narrower than csv_io's
+        # for exactly those files, contradicting the module docstring's
+        # claim that it is a superset. Such a heading falls back to its own
+        # collapsed text, so two identical ones still collide and two
+        # different ones still do not.
+        key = normalise_header(h) or " ".join(h.split()).casefold()
+        groups.setdefault(key, []).append(h)
     duplicates = {k: v for k, v in groups.items() if len(v) > 1}
     if duplicates:
         detail = "; ".join(
@@ -966,6 +972,23 @@ def write_canonical(result: JoinResult, path: str | Path) -> None:
     The `partial: ...` flag and the row-level warning `import_files` builds
     from it are where the true received amount and date are still visible.
 
+    A payday matched IN FULL comes out blank the same way whenever any
+    super row that matched it carries no vendor date: `join` sets
+    `remitted=None` for that case before this function sees it, so 1000.00
+    owed and 1000.00 matched, 600.00 of it dated, is written with no
+    remitted_date and read by the checker as a 1000.00 shortfall. The
+    reported figure is the same for both cases and so is the remedy -- the
+    row-level warning carries what actually arrived, and someone applies it
+    by hand -- so the console output, the README and this docstring name
+    both rather than only the partial, which is the one that gets noticed.
+
+    The employee label is the key `join` matched on, not `employee_id or
+    employee_name`: under name matching a file where only some rows carry
+    an id would otherwise write the id for those rows and the name for the
+    rest, splitting one person the join had already merged into two
+    identities in the checker's own per-employee grouping. Every row
+    sharing a key writes the same label, the first one seen for that key.
+
     `fund_received_date` and the four flag columns are always written
     blank. No payroll or clearing-house export this tool reads carries a
     fund receipt date or these flags (see the module docstring and
@@ -978,12 +1001,20 @@ def write_canonical(result: JoinResult, path: str | Path) -> None:
     always blank), but running all of them through the one guard is one
     rule with no unstated exception, rather than a rule that only covers
     the field known to carry attacker-controlled text today."""
+    labels: dict[str, str] = {}
+    for outcome in result.outcomes:
+        row = outcome.payroll
+        preferred = (
+            row.employee_id if result.key_mode == "id" else row.employee_name
+        ) or row.employee_id or row.employee_name or ""
+        labels.setdefault(_key(row, result.key_mode), preferred)
+
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         writer.writerow(CANONICAL_HEADER)
         for outcome in result.outcomes:
             row = outcome.payroll
-            label = row.employee_id or row.employee_name or ""
+            label = labels[_key(row, result.key_mode)]
             remitted = (
                 "" if _classify_outcome(outcome) == OUTCOME_PARTIAL else _iso(outcome.remitted)
             )
