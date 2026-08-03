@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from paydaysuper.csv_io import CsvError
-from paydaysuper.importers import read_payroll, read_super
+from paydaysuper.importers import PayrollRow, SuperRow, join, read_payroll, read_super
 
 FIXTURES = Path(__file__).parent / "fixtures" / "importers"
 
@@ -133,3 +133,104 @@ def test_duplicate_normalised_headers_are_refused(tmp_path):
     with pytest.raises(CsvError) as exc:
         read_payroll(path, vendor="myob-ar-payroll")
     assert "superannuation guarantee" in str(exc.value).lower()
+
+
+def payroll(name, payday, amount, period_end=None, row=2):
+    return PayrollRow(None, name, date.fromisoformat(payday),
+                      date.fromisoformat(period_end) if period_end else None,
+                      Decimal(amount), row)
+
+
+def super_row(name, start, end, paid, amount, row=2):
+    return SuperRow(None, name, date.fromisoformat(start), date.fromisoformat(end),
+                    date.fromisoformat(paid), Decimal(amount), row)
+
+
+def test_exact_match_sets_the_remittance_date():
+    result = join([payroll("A", "2026-07-09", "612.00")],
+                  [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "612.00")])
+    assert result.outcomes[0].remitted == date(2026, 7, 14)
+    assert result.outcomes[0].flag == ""
+    assert result.orphans == []
+
+
+def test_split_payment_takes_the_later_date():
+    # The obligation is not met until the whole amount reaches the fund.
+    result = join([payroll("A", "2026-07-09", "612.00")],
+                  [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "300.00", row=2),
+                   super_row("A", "2026-07-01", "2026-07-09", "2026-07-21", "312.00", row=3)])
+    assert result.outcomes[0].remitted == date(2026, 7, 21)
+    assert result.outcomes[0].flag == ""
+
+
+def test_short_payment_is_flagged_partial():
+    result = join([payroll("A", "2026-07-09", "612.00")],
+                  [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "500.00")])
+    assert "partial" in result.outcomes[0].flag
+    assert "500.00" in result.outcomes[0].flag and "612.00" in result.outcomes[0].flag
+
+
+def test_overpayment_is_flagged():
+    result = join([payroll("A", "2026-07-09", "612.00")],
+                  [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "812.00")])
+    assert "over" in result.outcomes[0].flag
+
+
+def test_payday_with_no_super_payment_is_flagged_and_left_blank():
+    result = join([payroll("A", "2026-07-09", "612.00")], [])
+    assert result.outcomes[0].remitted is None
+    assert result.outcomes[0].flag == "no super payment found"
+
+
+def test_super_payment_matching_nothing_becomes_an_orphan():
+    result = join([payroll("A", "2026-07-09", "612.00")],
+                  [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "612.00"),
+                   super_row("B", "2026-07-01", "2026-07-09", "2026-07-14", "99.00", row=3)])
+    assert [o.row for o in result.orphans] == [3]
+
+
+def test_two_identical_paydays_refuse_rather_than_guess():
+    # Assigning the payment to the wrong one moves the exposure to a
+    # different deadline.
+    with pytest.raises(CsvError) as exc:
+        join([payroll("A", "2026-07-09", "612.00", row=2),
+              payroll("A", "2026-07-09", "612.00", row=3)],
+             [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "612.00")])
+    assert "rows 2, 3" in str(exc.value)
+
+
+def test_name_matching_warns():
+    result = join([payroll("A", "2026-07-09", "612.00")],
+                  [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "612.00")])
+    assert result.key_mode == "name"
+    assert any("name" in w for w in result.warnings)
+
+
+def test_a_super_row_is_claimed_by_at_most_one_payroll_row():
+    # One super payment whose period is wide enough to bracket two separate
+    # paydays for the same employee must settle only the first one it is
+    # tried against, not both -- otherwise its amount is double-counted into
+    # two totals and the same dollar looks like it discharged two separate
+    # obligations.
+    result = join(
+        [payroll("A", "2026-07-09", "300.00", row=2),
+         payroll("A", "2026-07-23", "300.00", row=3)],
+        [super_row("A", "2026-07-01", "2026-07-31", "2026-08-01", "300.00", row=2)],
+    )
+    assert result.outcomes[0].remitted == date(2026, 8, 1)
+    assert result.outcomes[0].flag == ""
+    assert result.outcomes[1].remitted is None
+    assert result.outcomes[1].flag == "no super payment found"
+    assert result.orphans == []
+
+
+def test_reversed_super_period_is_refused():
+    # period_start after period_end is a malformed export, not a real
+    # period. Left unchecked, _covers's start <= target <= end check is
+    # false for every target, so the payment would silently become an
+    # invisible orphan and the payday it actually settled would be flagged
+    # as unpaid -- a real payment made to look like a missing one.
+    with pytest.raises(CsvError) as exc:
+        join([payroll("A", "2026-07-09", "612.00")],
+             [super_row("A", "2026-07-09", "2026-07-01", "2026-07-14", "612.00")])
+    assert "row 2" in str(exc.value)
