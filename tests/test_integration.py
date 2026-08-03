@@ -496,6 +496,72 @@ def test_calendar_caveats_describe_the_aligned_deadline():
     assert horizon and aligned.deadline.due.isoformat() in horizon[0]
 
 
+def _past_horizon_line(**kwargs) -> ContribLine:
+    """A QE day whose 7-business-day deadline lands past 31 Dec 2028, where
+    the bundled calendar records no holidays at all."""
+    return ContribLine(
+        employee_id="E9",
+        qe_day=date(2029, 3, 1),
+        sg_amount=Decimal("500.00"),
+        row=2,
+        **kwargs,
+    )
+
+
+def test_receipt_past_the_calendar_horizon_is_not_called_late():
+    cal = load_calendar()
+    line = _past_horizon_line(received=date(2029, 3, 13))
+    r = assess([line], cal, load_gic(), date(2029, 4, 1))[0]
+    assert r.deadline.due > cal.verified_until
+    assert r.verdict == "UNKNOWN"
+    assert r.final_shortfall is None
+    assert r.sgc_high is None
+    assert any("left unassessed" in c for c in r.caveats)
+
+
+def test_receipt_past_the_calendar_horizon_is_not_called_on_time():
+    line = _past_horizon_line(received=date(2029, 3, 2))
+    r = assess([line], load_calendar(), load_gic(), date(2029, 4, 1))[0]
+    assert r.verdict == "UNKNOWN"
+
+
+def test_remittance_past_the_calendar_horizon_is_not_called_at_risk():
+    line = _past_horizon_line(remitted=date(2029, 3, 2))
+    r = assess([line], load_calendar(), load_gic(), date(2029, 4, 1))[0]
+    assert r.verdict == "UNKNOWN"
+    assert any("left unassessed" in c for c in r.caveats)
+
+
+def test_a_deadline_inside_the_horizon_is_still_assessed():
+    """The override only fires past verified_until, not before it."""
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2028, 12, 1),
+        sg_amount=Decimal("500.00"),
+        received=date(2028, 12, 29),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), date(2029, 1, 5))[0]
+    assert r.verdict == "LATE"
+    assert r.final_shortfall == Decimal("0")
+
+
+def test_prepayment_past_the_horizon_keeps_its_verdict():
+    """s 18C(1)(c)(ii) compares the receipt with the QE day and a 12-month
+    calendar window, never with the business-day deadline, so the horizon
+    cannot make that verdict unknowable."""
+    line = _past_horizon_line(received=date(2028, 12, 1))
+    r = assess([line], load_calendar(), load_gic(), date(2029, 4, 1))[0]
+    assert r.verdict == "ON_TIME"
+
+
+def test_horizon_caveat_says_the_calendar_holds_no_holidays():
+    cal = load_calendar()
+    text = cal.check_horizon(date(2029, 1, 1))
+    assert "holds no holidays at all" in text
+    assert "weekends are the only non-business days" in text
+
+
 def test_case_variant_employee_ids_are_flagged_not_merged():
     cal = load_calendar()
     rows = [
