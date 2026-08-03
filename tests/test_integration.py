@@ -11,7 +11,7 @@ from paydaysuper.cli import EXIT_ERROR, EXIT_LATE_FOUND, main
 from paydaysuper.csv_io import load_mapping, parse_rows
 from paydaysuper.deadlines import ContribLine
 from paydaysuper.rates import load_gic, load_rates
-from paydaysuper.report import _rounded_figures, assess, console_summary
+from paydaysuper.report import assess, console_summary
 from paydaysuper.sgc import notional_earnings
 
 from conftest import SAMPLE as FIXTURE
@@ -712,14 +712,31 @@ def test_at_risk_caveats_reach_the_console():
     assert "receipt by the fund" in text
 
 
-def test_report_columns_add_up():
-    """Each figure is rounded once, so a row's parts sum to its totals."""
-    for r in run_fixture():
-        if r.verdict not in ("LATE", "UNPAID"):
+def test_report_columns_add_up(tmp_path):
+    """Each figure is rounded once, so a row's parts sum to its totals.
+
+    Read back off disk, not recomputed: comparing _rounded_figures against
+    the expression that defines it is a tautology, and the property that
+    matters is the one a reader sees in the file."""
+    out = tmp_path / "report.csv"
+    main([str(FIXTURE), "-o", str(out), "--as-at", "2026-08-10"])
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = list(csv.DictReader(f))
+
+    checked = 0
+    for r in rows:
+        if r["verdict"] not in ("LATE", "UNPAID"):
             continue
-        figures = _rounded_figures(r)
-        assert figures["shortfall"] + figures["nec"] + figures["up_low"] == figures["low"]
-        assert figures["shortfall"] + figures["nec"] + figures["up_high"] == figures["high"]
+        checked += 1
+        shortfall = Decimal(r["final_shortfall"])
+        nec = Decimal(r["notional_earnings"])
+        assert shortfall + nec + Decimal(r["uplift_best_case"]) == Decimal(
+            r["sgc_estimate_low"]
+        ), r
+        assert shortfall + nec + Decimal(r["uplift_worst_case"]) == Decimal(
+            r["sgc_estimate_high"]
+        ), r
+    assert checked >= 3
 
 
 def test_employee_id_that_looks_like_a_formula_is_neutralised(tmp_path):
