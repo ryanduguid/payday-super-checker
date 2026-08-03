@@ -657,6 +657,26 @@ def test_console_shows_totals_and_caveats():
     assert "note: " in text  # caveats reach the console, not just the CSV
 
 
+def test_at_risk_caveats_reach_the_console():
+    """An at-risk line is in neither the exposure listing nor the unflagged
+    count, so its caveats used to go nowhere but the CSV."""
+    rows = [
+        ContribLine(
+            employee_id="E9",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("100.00"),
+            remitted=date(2026, 7, 15),
+            row=n,
+        )
+        for n in (2, 3)
+    ]
+    results = assess(rows, load_calendar(), load_gic(), AS_AT)
+    assert all(r.verdict == "AT_RISK" for r in results)
+    text = console_summary(results, AS_AT, "report.csv", "2026-08-02", load_rates())
+    assert "counted 2 times" in text
+    assert "receipt by the fund" in text
+
+
 def test_report_columns_add_up():
     """Each figure is rounded once, so a row's parts sum to its totals."""
     for r in run_fixture():
