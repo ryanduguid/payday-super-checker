@@ -103,18 +103,40 @@ def _build(raw: dict, path: Path) -> Profile:
                 f"profile {path.name}: sg_filter column {sg_raw['column']!r} is not "
                 "one of the mapped columns"
             )
+        include_raw = sg_raw["include"]
+        if not isinstance(include_raw, list) or not include_raw:
+            raise CsvError(
+                f"profile {path.name}: sg_filter 'include' must be a non-empty list "
+                "of values"
+            )
         sg_filter = SgFilter(
             column=str(sg_raw["column"]),
-            include=tuple(str(v) for v in sg_raw["include"]),
+            include=tuple(str(v) for v in include_raw),
+        )
+    if "date_formats" in raw:
+        date_formats_raw = raw["date_formats"]
+        if not isinstance(date_formats_raw, list) or not date_formats_raw:
+            raise CsvError(
+                f"profile {path.name}: 'date_formats' must be a non-empty list of "
+                "formats"
+            )
+        date_formats = tuple(str(f) for f in date_formats_raw)
+    else:
+        date_formats = ()
+    verified_raw = raw.get("verified", False)
+    if not isinstance(verified_raw, bool):
+        raise CsvError(
+            f"profile {path.name}: 'verified' must be true or false, got "
+            f"{type(verified_raw).__name__}"
         )
     return Profile(
         key=_require(raw, "key", path, str),
         name=_require(raw, "name", path, str),
         role=role,
-        verified=bool(raw.get("verified", False)),
+        verified=verified_raw,
         signature=tuple(str(h) for h in _require(raw, "signature", path, list)),
         columns=columns,
-        date_formats=tuple(str(f) for f in raw.get("date_formats", ())),
+        date_formats=date_formats,
         sg_filter=sg_filter,
         notes=str(raw.get("notes", "")),
     )
