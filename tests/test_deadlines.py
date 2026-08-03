@@ -63,6 +63,35 @@ def test_out_of_cycle_without_next_payday_falls_back(cal):
     assert any("cannot be calculated" in n for n in dl.caveats)
 
 
+def test_next_payday_without_the_flag_names_the_item_2_deadline(cal):
+    """A row that supplies the next payday but leaves out_of_cycle blank was
+    given the strict 7-business-day deadline with nothing said about it."""
+    dl = compute_due(
+        line(qe_day=date(2026, 7, 15), next_standard_qe_day=date(2026, 7, 23)), cal
+    )
+    assert dl.pathway == USUAL_7BD
+    assert dl.due == cal.add_business_days(date(2026, 7, 15), 7)
+    caveat = [c for c in dl.caveats if "out_of_cycle=yes" in c]
+    assert caveat, dl.caveats
+    assert cal.add_business_days(date(2026, 7, 23), 7).isoformat() in caveat[0]
+
+
+def test_next_payday_without_the_flag_is_flagged_when_it_is_not_later(cal):
+    dl = compute_due(
+        line(qe_day=date(2026, 7, 15), next_standard_qe_day=date(2026, 7, 1)), cal
+    )
+    assert dl.due == cal.add_business_days(date(2026, 7, 15), 7)
+    assert any("is not after the QE day" in c for c in dl.caveats)
+
+
+def test_out_of_cycle_row_gets_no_missing_flag_caveat(cal):
+    dl = compute_due(
+        line(qe_day=date(2026, 7, 15), out_of_cycle=True, next_standard_qe_day=date(2026, 7, 23)),
+        cal,
+    )
+    assert not any("out_of_cycle=yes" in c for c in dl.caveats)
+
+
 def test_out_of_cycle_next_payday_must_be_later(cal):
     with pytest.raises(ValueError):
         compute_due(
