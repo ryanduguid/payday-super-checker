@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from paydaysuper.cli import EXIT_LATE_FOUND, EXIT_OK
+from paydaysuper.cli import EXIT_ERROR, EXIT_LATE_FOUND, EXIT_OK, MAX_WARNINGS_SHOWN
 from paydaysuper.cli import main as cli_main
 from paydaysuper.csv_io import CsvError, DEFAULT_MAPPING, parse_rows
 from paydaysuper.importers import (
@@ -1463,3 +1463,293 @@ def test_import_files_does_not_warn_when_both_files_have_full_period_columns(tmp
     report = import_files(FIXTURES / "myob_payroll.csv", FIXTURES / "myob_super.csv", out)
     assert not any("period" in w and "payday" in w for w in report.warnings)
     assert not any("pay period column" in w for w in report.warnings)
+
+
+# ---------------------------------------------------------------------------
+# Task 7: the `import` CLI subcommand
+# ---------------------------------------------------------------------------
+
+
+def test_import_subcommand_writes_the_file(tmp_path, capsys):
+    out = tmp_path / "contributions.csv"
+    code = cli_main(
+        [
+            "import",
+            "--payroll",
+            str(FIXTURES / "myob_payroll.csv"),
+            "--super",
+            str(FIXTURES / "myob_super.csv"),
+            "-o",
+            str(out),
+        ]
+    )
+    assert code == EXIT_OK
+    assert out.exists()
+    printed = capsys.readouterr().out
+    assert "myob-ar-super" in printed
+    assert "myob-ar-payroll" in printed
+    assert "unverified" in printed
+    assert "receipt" in printed.lower()
+
+
+def test_import_returns_two_when_a_payday_has_no_payment(tmp_path):
+    src = tmp_path / "payroll.csv"
+    src.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "Test Employee One,09/07/2026,09/07/2026,612.00\n"
+        "Test Employee Three,09/07/2026,09/07/2026,700.00\n",
+        encoding="utf-8",
+    )
+    code = cli_main(
+        [
+            "import",
+            "--payroll",
+            str(src),
+            "--super",
+            str(FIXTURES / "myob_super.csv"),
+            "-o",
+            str(tmp_path / "out.csv"),
+        ]
+    )
+    assert code == EXIT_LATE_FOUND
+
+
+def test_import_clean_file_returns_zero(tmp_path):
+    # The control for the above: the ordinary myob fixtures join cleanly, so
+    # the exit code must be 0, not 2.
+    out = tmp_path / "out.csv"
+    code = cli_main(
+        [
+            "import",
+            "--payroll",
+            str(FIXTURES / "myob_payroll.csv"),
+            "--super",
+            str(FIXTURES / "myob_super.csv"),
+            "-o",
+            str(out),
+        ]
+    )
+    assert code == EXIT_OK
+
+
+def test_existing_invocation_still_works(tmp_path):
+    from conftest import SAMPLE
+
+    out = tmp_path / "report.csv"
+    code = cli_main([str(SAMPLE), "-o", str(out), "--as-at", "2026-09-01"])
+    assert code in (EXIT_OK, EXIT_LATE_FOUND)
+    assert out.exists()
+
+
+def test_import_error_is_printed_without_a_traceback_and_exits_one(tmp_path, capsys):
+    code = cli_main(
+        [
+            "import",
+            "--payroll",
+            str(tmp_path / "does_not_exist.csv"),
+            "--super",
+            str(FIXTURES / "myob_super.csv"),
+            "-o",
+            str(tmp_path / "out.csv"),
+        ]
+    )
+    assert code == EXIT_ERROR
+    captured = capsys.readouterr()
+    assert captured.err.startswith("error:")
+    assert "Traceback" not in captured.err
+    assert not (tmp_path / "out.csv").exists()
+
+
+def test_import_catches_arithmetic_error_from_import_files(tmp_path, capsys, monkeypatch):
+    # decimal.InvalidOperation is an ArithmeticError, not a ValueError, so it
+    # is invisible to a plain `except (CsvError, ValueError)`. Every amount
+    # importers.py builds is already guarded against actually producing one
+    # (see the "too large to be a real amount" checks), so this proves the
+    # CLI's own backstop by forcing the case directly rather than relying on
+    # finding a real input that still triggers it.
+    from decimal import InvalidOperation
+
+    import paydaysuper.importers as importers_module
+
+    def _boom(*args, **kwargs):
+        raise InvalidOperation("synthetic failure for the CLI's own guard")
+
+    monkeypatch.setattr(importers_module, "import_files", _boom)
+
+    code = cli_main(
+        [
+            "import",
+            "--payroll",
+            str(FIXTURES / "myob_payroll.csv"),
+            "--super",
+            str(FIXTURES / "myob_super.csv"),
+            "-o",
+            str(tmp_path / "out.csv"),
+        ]
+    )
+    assert code == EXIT_ERROR
+    captured = capsys.readouterr()
+    assert captured.err.startswith("error:")
+    assert "Traceback" not in captured.err
+
+
+def test_import_prints_the_partial_warning_and_explains_the_blank_remitted_date(
+    tmp_path, capsys
+):
+    # HARD REQUIREMENT. Task 6 shipped with an accepted limitation: the
+    # canonical CSV has no remitted-amount column, so a partially paid
+    # payday is written with a blank remitted_date and the checker reads
+    # that as "none of it arrived". 999.99 of 1000.00 actually landing
+    # would otherwise be reported as a full 1000.00 shortfall. The import
+    # command must print both the specific warning line carrying the true
+    # figures AND a plain-language explanation of why the CSV itself hides
+    # them, so a user who imports and then checks is told, not just left to
+    # find out from an inflated charge estimate.
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "A,09/07/2026,09/07/2026,1000.00\n",
+        encoding="utf-8",
+    )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "A,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,999.99\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    code = cli_main(
+        [
+            "import",
+            "--payroll",
+            str(payroll_path),
+            "--super",
+            str(super_path),
+            "-o",
+            str(out),
+        ]
+    )
+    assert code == EXIT_LATE_FOUND
+    printed = capsys.readouterr().out
+
+    # The actual figures, not just a generic "there was a partial payment".
+    assert "row 2: partial: 999.99 of 1000.00 matched" in printed
+
+    # Plain-language explanation of what that means for remitted_date and
+    # therefore for the checker's verdict -- present regardless of the
+    # warning text's own wording, so this is not the same assertion twice.
+    lowered = printed.lower()
+    assert "remitted_date" in lowered
+    assert "blank" in lowered
+    assert "unpaid" in lowered or "shortfall" in lowered
+
+    # The warning is not buried: it appears before the final counts/summary
+    # line, not scrolled past it.
+    assert printed.index("partial: 999.99 of 1000.00 matched") < printed.index("wrote ")
+
+
+def test_import_caps_the_warning_list_and_says_how_many_more(tmp_path, capsys):
+    # A file with more warnings than the console cares to print in full must
+    # say so, rather than showing thousands of lines or silently truncating.
+    n = 25
+    payroll_lines = ["Employee Name,Date,Pay Period End,Superannuation Guarantee"]
+    super_lines = [
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount"
+    ]
+    for i in range(n):
+        name = f"Employee{i:02d}"
+        payroll_lines.append(f"{name},09/07/2026,09/07/2026,100.00")
+        super_lines.append(
+            f"{name},Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,50.00"
+        )
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text("\n".join(payroll_lines) + "\n", encoding="utf-8")
+    super_path = tmp_path / "super.csv"
+    super_path.write_text("\n".join(super_lines) + "\n", encoding="utf-8")
+
+    out = tmp_path / "contributions.csv"
+    code = cli_main(
+        [
+            "import",
+            "--payroll",
+            str(payroll_path),
+            "--super",
+            str(super_path),
+            "-o",
+            str(out),
+        ]
+    )
+    assert code == EXIT_LATE_FOUND
+    printed = capsys.readouterr().out
+    # n partial warnings plus one name-matching warning (these fixtures have
+    # no employee_id column), so the true total is n + 1.
+    total = n + 1
+    assert f"warnings ({total}):" in printed
+    assert f"... and {total - MAX_WARNINGS_SHOWN} more" in printed
+    # Exactly MAX_WARNINGS_SHOWN warning bullet lines shown, not all n.
+    assert printed.count("partial: 50.00 of 100.00 matched") == MAX_WARNINGS_SHOWN - 1
+
+
+def test_import_distinguishes_orphan_codes_in_the_console_output(tmp_path, capsys):
+    # ORPHAN_PAYDAYS_SETTLED (an overpayment on paydays already settled by
+    # their own payments) and ORPHAN_NO_PAYDAY (a payment for an employee
+    # with no payroll rows at all) are opposite findings for an accountant.
+    # The console output, not just ImportReport, must keep them tellable
+    # apart rather than collapsing to one "2 orphans" figure.
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "A,09/07/2026,09/07/2026,600.00\n"
+        "A,23/07/2026,23/07/2026,600.00\n",
+        encoding="utf-8",
+    )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "A,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,600.00\n"
+        "A,Superannuation Guarantee,15/07/2026,23/07/2026,28/07/2026,600.00\n"
+        "A,Superannuation Guarantee,01/07/2026,31/07/2026,15/08/2026,500.00\n"
+        "B,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,99.00\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    code = cli_main(
+        [
+            "import",
+            "--payroll",
+            str(payroll_path),
+            "--super",
+            str(super_path),
+            "-o",
+            str(out),
+        ]
+    )
+    assert code == EXIT_LATE_FOUND
+    printed = capsys.readouterr().out
+    assert ORPHAN_PAYDAYS_SETTLED in printed
+    assert ORPHAN_NO_PAYDAY in printed
+    # The two counts are distinct entries (1 each), not folded into a single
+    # combined line.
+    assert f"1  {ORPHAN_PAYDAYS_SETTLED}" in printed
+    assert f"1  {ORPHAN_NO_PAYDAY}" in printed
+
+
+def test_import_vendor_flag_forces_a_profile(tmp_path, capsys):
+    out = tmp_path / "contributions.csv"
+    code = cli_main(
+        [
+            "import",
+            "--payroll",
+            str(FIXTURES / "myob_payroll.csv"),
+            "--super",
+            str(FIXTURES / "myob_super.csv"),
+            "-o",
+            str(out),
+            "--vendor",
+            "myob-ar",
+        ]
+    )
+    assert code == EXIT_OK
+    printed = capsys.readouterr().out
+    assert "myob-ar-payroll" in printed
+    assert "myob-ar-super" in printed
