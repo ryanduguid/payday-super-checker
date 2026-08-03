@@ -32,6 +32,7 @@ from paydaysuper.importers import (
     ImportReport,
     PayrollRow,
     SuperRow,
+    _amount,
     import_files,
     join,
     read_payroll,
@@ -2618,3 +2619,293 @@ def test_both_cli_paths_call_the_shared_stdout_reconfigure(tmp_path, monkeypatch
     code = cli_main([str(SAMPLE), "-o", str(report_out), "--as-at", "2026-09-01"])
     assert code == EXIT_LATE_FOUND
     assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# Blocker: amounts are quantised to cents at the read boundary
+# ---------------------------------------------------------------------------
+
+
+SUBCENT_PAYROLL = (
+    "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+    "Test Employee Two,09/07/2026,09/07/2026,{owed}\n"
+    "Test Employee Two,23/07/2026,23/07/2026,600.00\n"
+)
+
+SUBCENT_SUPER = (
+    "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+    "Test Employee Two,Superannuation Guarantee,01/07/2026,09/07/2026,15/07/2026,{first}\n"
+    "Test Employee Two,Superannuation Guarantee,01/07/2026,31/07/2026,{second},600.00\n"
+)
+
+
+def _subcent_files(tmp_path, owed, first, second):
+    """The blocker's reproduction as two real vendor files.
+
+    Payday 09/07 is settled in full on 15/07, five days inside its 20/07
+    deadline, by a super row whose period covers that payday alone. The
+    second super row's period spans 09/07 and 23/07, so it reaches a payday
+    it did not settle. That is harmless only while the payday has no
+    balance left for it to take."""
+    payroll_path = tmp_path / "payroll.csv"
+    super_path = tmp_path / "super.csv"
+    payroll_path.write_text(SUBCENT_PAYROLL.format(owed=owed), encoding="utf-8")
+    super_path.write_text(
+        SUBCENT_SUPER.format(first=first, second=second), encoding="utf-8"
+    )
+    return payroll_path, super_path
+
+
+def _canonical_rows(path):
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        return list(_csv.DictReader(f))
+
+
+def _outcomes_by_row(payroll_path, super_path):
+    payroll_rows, _, _ = read_payroll(payroll_path)
+    super_rows, _, _ = read_super(super_path)
+    return sorted(join(payroll_rows, super_rows).outcomes, key=lambda o: o.payroll.row)
+
+
+def test_a_sub_cent_payroll_figure_does_not_drag_the_remittance_date(tmp_path):
+    # BLOCKER (final re-review). Payroll owed 540.004 and a dated super row
+    # paid 540.00 of it on 15/07. The 0.004 left over stayed in the payday's
+    # unmet balance, and the NEXT super row -- one whose period merely spans
+    # that payday on its way to a later one -- spent its 0.004 there. That
+    # pulled the second row's 30/07 payment date into the match, max() made
+    # it the payday's remittance date, and a payday funded in full five days
+    # inside its deadline reported LATE for the whole $540.00 with an SG
+    # charge estimate on top. Amounts are read to the cent now, so there is
+    # no fraction left for the second payment to spend.
+    payroll_path, super_path = _subcent_files(tmp_path, "540.004", "540.00", "30/07/2026")
+    out = tmp_path / "contributions.csv"
+    report = import_files(payroll_path, super_path, out)
+    rows = _canonical_rows(out)
+    assert rows[0]["payment_date"] == "2026-07-09"
+    assert rows[0]["sg_amount"] == "540.00"
+    assert rows[0]["remitted_date"] == "2026-07-15"
+    assert report.matched == 2
+    # No share of the second payment reached the settled payday at all, so
+    # there is no "0.004 of 600.00 allocated" note to read past either.
+    assert [w for w in report.warnings if "allocated" in w] == []
+
+
+def test_a_sub_cent_payroll_figure_does_not_blank_the_date_when_the_second_row_is_undated(
+    tmp_path,
+):
+    # The same blocker's other face. With the second super row carrying no
+    # payment date, the 0.004 it spent on the settled payday made that
+    # payday's match part-undated, `join` blanked `remitted` outright, and
+    # the checker read a fully funded payday as $540.00 UNPAID. The settled
+    # payday keeps its own 15/07 date now; only the payday that undated
+    # payment really did settle goes without one.
+    payroll_path, super_path = _subcent_files(tmp_path, "540.004", "540.00", "")
+    out = tmp_path / "contributions.csv"
+    import_files(payroll_path, super_path, out)
+    rows = _canonical_rows(out)
+    assert rows[0]["payment_date"] == "2026-07-09"
+    assert rows[0]["remitted_date"] == "2026-07-15"
+    assert rows[1]["payment_date"] == "2026-07-23"
+    assert rows[1]["remitted_date"] == ""
+
+
+def test_the_cent_clean_control_still_reads_the_same(tmp_path):
+    # The control the blocker was found against: the same files but for
+    # 540.00 owed rather than 540.004. It always produced 2026-07-15, and
+    # the fix must not have moved it.
+    payroll_path, super_path = _subcent_files(tmp_path, "540.00", "540.00", "30/07/2026")
+    out = tmp_path / "contributions.csv"
+    import_files(payroll_path, super_path, out)
+    rows = _canonical_rows(out)
+    assert rows[0]["remitted_date"] == "2026-07-15"
+    assert rows[1]["remitted_date"] == "2026-07-30"
+
+
+def test_a_sub_cent_figure_on_the_super_side_triggers_nothing_either(tmp_path):
+    # The mirror image: 540.00 owed, 539.996 paid. Before the read boundary
+    # quantised, that left 0.004 unmet on a payday paid in full to the cent,
+    # and the same later payment dragged in the same wrong date.
+    payroll_path, super_path = _subcent_files(tmp_path, "540.00", "539.996", "30/07/2026")
+    out = tmp_path / "contributions.csv"
+    import_files(payroll_path, super_path, out)
+    rows = _canonical_rows(out)
+    assert rows[0]["remitted_date"] == "2026-07-15"
+    # Not merely the right date: the payday reads as settled in full, with
+    # no partial flag from the four-tenths of a cent that went missing.
+    assert [o.flag for o in _outcomes_by_row(payroll_path, super_path)] == ["", ""]
+
+
+def test_the_blocker_reproduction_checks_clean_end_to_end(tmp_path, capsys):
+    # Through both commands, the way a user meets it: import, then check.
+    # The verdict and the dollar figure are what the blocker got wrong, so
+    # pin those, not only the date in the intermediate file.
+    payroll_path, super_path = _subcent_files(tmp_path, "540.004", "540.00", "30/07/2026")
+    out = tmp_path / "contributions.csv"
+    assert (
+        cli_main(
+            ["import", "--payroll", str(payroll_path), "--super", str(super_path),
+             "-o", str(out)]
+        )
+        == EXIT_OK
+    )
+    capsys.readouterr()
+    code = cli_main([str(out), "-o", str(tmp_path / "report.csv"), "--as-at", "2026-08-03"])
+    printed = capsys.readouterr().out
+    assert code == EXIT_OK
+    assert "LATE: 0" in printed and "UNPAID: 0" in printed
+    assert "shortfall $540.00" not in printed
+    assert "SG charge estimate" not in printed
+
+
+def test_amounts_are_read_to_the_cent_half_up():
+    # ROUND_HALF_UP through report.cents, the same rounding money() applies
+    # on the way out, so the figure read and the figure written are one
+    # rounding of the input rather than two. ROUND_HALF_EVEN, the default a
+    # bare quantize() would take, gives 612.00 for 612.005.
+    assert _amount("540.004", "sg amount", 2) == Decimal("540.00")
+    assert _amount("539.996", "amount", 2) == Decimal("540.00")
+    assert _amount("612.005", "sg amount", 2) == Decimal("612.01")
+    assert _amount("0.005", "amount", 2) == Decimal("0.01")
+    assert _amount("1e2", "amount", 2) == Decimal("100.00")
+    assert _amount("1,234.567", "amount", 2) == Decimal("1234.57")
+    # Cent-clean by construction: the exponent, not only the value, because
+    # that is what stops a later subtraction producing a third decimal.
+    assert _amount("612", "sg amount", 2).as_tuple().exponent == -2
+
+
+def test_an_amount_under_half_a_cent_is_refused_rather_than_rounded_away():
+    # The decision quantising at the read boundary forces. Trimming 540.004
+    # to 540.00 costs a fraction of a cent no report here could ever show
+    # anyway. Rounding 0.004 to 0.00 destroys the row instead: a payment
+    # that still carries a date and still matches a payday while carrying no
+    # money, or a liability that silently becomes a payday owing nothing.
+    # Refused loudly instead, naming the row and the field.
+    with pytest.raises(CsvError, match=r"row 4: amount value '0\.004' is under half a cent"):
+        _amount("0.004", "amount", 4)
+    with pytest.raises(CsvError, match=r"sg amount value '0\.0049' is under half a cent"):
+        _amount("0.0049", "sg amount", 2)
+    # An exact zero is not a rounding casualty. A payday owing no super
+    # guarantee is ordinary, and already has an outcome of its own.
+    assert _amount("0", "sg amount", 2) == Decimal("0.00")
+    assert _amount("0.00", "amount", 2) == Decimal("0.00")
+
+
+def test_a_sub_cent_row_is_refused_through_the_whole_import(tmp_path, capsys):
+    payroll_path, super_path = _subcent_files(tmp_path, "0.004", "540.00", "30/07/2026")
+    code = cli_main(
+        ["import", "--payroll", str(payroll_path), "--super", str(super_path),
+         "-o", str(tmp_path / "contributions.csv")]
+    )
+    assert code == EXIT_ERROR
+    assert "under half a cent" in capsys.readouterr().err
+
+
+def _received(outcome):
+    """What one payroll row was actually allocated, read back off the flag
+    `join` wrote. Anything other than the full sg_amount is named there."""
+    partial = re.match(r"partial: (\S+) of ", outcome.flag)
+    if partial:
+        return Decimal(partial.group(1))
+    over = re.match(r"over: (\S+) against ", outcome.flag)
+    if over:
+        return Decimal(over.group(1))
+    if outcome.flag in ("no super payment found", "no super guarantee owed for this payday"):
+        return Decimal("0")
+    return outcome.payroll.sg_amount
+
+
+def test_unmet_never_holds_a_sub_cent_residue_and_money_is_conserved(monkeypatch):
+    # The invariant the whole fix rests on, checked over the allocator
+    # itself rather than argued from the read boundary alone. `_unmet` is
+    # wrapped, so every balance the allocator actually works with is
+    # inspected, across thousands of randomised joins built from figures
+    # that DO carry sub-cent digits in the file.
+    #
+    # Money conservation and determinism ride along, because the read
+    # boundary now changes a value on its way in: every cent of every super
+    # row that was used lands on exactly one payday, nothing is invented,
+    # and the same rows in any order render identically.
+    import paydaysuper.importers as importers_module
+
+    balances = []
+    real_unmet = importers_module._unmet
+
+    def spy(row, allocated_total):
+        value = real_unmet(row, allocated_total)
+        balances.append(value)
+        return value
+
+    monkeypatch.setattr(importers_module, "_unmet", spy)
+
+    rng = random.Random(20260804)
+    paydays = ["2026-07-09", "2026-07-23", "2026-08-06"]
+    figures = ["540.004", "539.996", "600.00", "612.005", "0.01", "1,234.567", "$ 300.00", "0"]
+    starts = ["2026-07-01", "2026-07-10"]
+    ends = ["2026-07-09", "2026-07-23", "2026-07-31", "2026-08-06", "2026-08-10"]
+    paids = ["2026-07-15", "2026-07-30", None]
+    refused = 0
+    joined = 0
+    inspected = 0  # balances `_unmet` actually produced, over the whole run
+    for trial in range(3000):
+        payroll_rows = [
+            PayrollRow(None, "A", date.fromisoformat(d), date.fromisoformat(d),
+                       _amount(rng.choice(figures), "sg amount", i), i)
+            for i, d in enumerate(paydays, start=2)
+        ]
+        super_rows = []
+        for i in range(2, 2 + rng.randint(1, 4)):
+            paid = rng.choice(paids)
+            super_rows.append(
+                SuperRow(
+                    None, "A",
+                    date.fromisoformat(rng.choice(starts)),
+                    date.fromisoformat(rng.choice(ends)),
+                    date.fromisoformat(paid) if paid else None,
+                    _amount(rng.choice(figures), "amount", i),
+                    i,
+                )
+            )
+        balances.clear()
+        try:
+            result = join(list(payroll_rows), list(super_rows))
+        except CsvError:
+            refused += 1
+            continue  # an ambiguity refusal is a valid outcome, not a residue
+        joined += 1
+
+        inspected += len(balances)
+        for value in balances:
+            assert value == value.quantize(Decimal("0.01")), (trial, value)
+
+        allocated = sum((_received(o) for o in result.outcomes), Decimal("0"))
+        used = sum(
+            (s.amount for s in super_rows if s not in result.orphans), Decimal("0")
+        )
+        assert allocated == used, (trial, allocated, used)
+        assert allocated == allocated.quantize(Decimal("0.01")), (trial, allocated)
+
+        shuffled_payroll = list(payroll_rows)
+        shuffled_super = list(super_rows)
+        rng.shuffle(shuffled_payroll)
+        rng.shuffle(shuffled_super)
+        assert _render(join(shuffled_payroll, shuffled_super)) == _render(result), trial
+    # Guard the guard. A run where nearly everything was refused, or where
+    # every super row happened to land in pass 1 and `_unmet` was never
+    # reached, would sail through the loop above having tested almost
+    # nothing. `_unmet` is only consulted for a payment more than one payday
+    # could claim, which is exactly the shape the blocker needed.
+    assert joined > 1500, (joined, refused)
+    assert inspected > 3000, inspected
+
+
+def test_the_importer_reads_excels_accounting_format_too(tmp_path):
+    # csv_io._parse_amount's regression, on the importer's side of the same
+    # shared pattern. The two parsers exist to agree about what a figure
+    # means, so a file the checker reads and the importer refuses is exactly
+    # the drift they were built to prevent.
+    payroll_path, super_path = _subcent_files(tmp_path, "$ 540.00", "$  540.00", "30/07/2026")
+    out = tmp_path / "contributions.csv"
+    import_files(payroll_path, super_path, out)
+    rows = _canonical_rows(out)
+    assert rows[0]["sg_amount"] == "540.00"
+    assert rows[0]["remitted_date"] == "2026-07-15"
