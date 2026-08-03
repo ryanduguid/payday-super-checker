@@ -18,28 +18,28 @@ The rules below were researched against primary sources and then re-checked by a
 - Out-of-cycle QE (s 18C(2) item 2, LI 2026/20): deadline = end of the usual period of the first later standard QE day; fallback to own 7-business-day period when none exists.
 - Exceptional circumstances (s 18C(2) item 3): supported via config flag only, not auto-detected.
 - SGC on lateness (s 16B(2)): final shortfall + notional earnings component + administrative uplift (+ choice loading, out of scope). NEC: daily compounding at GIC rate on base shortfall, from the day **after** the last on-time day, until final shortfall nil or day before assessment (s 19A; LCR 2026/D3 example). Uplift: 60% of (shortfalls + NEC), reduced 20pp clean-history (reg 13C, transitional lookback from 1 Jul 2026) and 40/35/30/15pp by voluntary-disclosure timing (reg 13D). Floor 0%.
-- SG rate 12% (s 17A(2)). MCB annual, $270,830 for 2026-27 (s 10A(5)-(6)) — warning only, needs cumulative FY data.
-- GIC 11.43% p.a. (daily = annual/365) for Jul–Sep 2026; quarterly reset → dated rate table.
+- SG rate 12% (s 17A(2)). MCB annual, $270,830 for 2026-27 (s 10A(5)-(6)) - warning only, needs cumulative FY data.
+- GIC 11.43% p.a. (daily = annual/365) for Jul-Sep 2026; quarterly reset -> dated rate table.
 
 ## Architecture
 
-`paydaysuper/` package, Python ≥3.10, **stdlib-only runtime**. Units:
+`paydaysuper/` package, Python >=3.10, **stdlib-only runtime**. Units:
 
-- `calendar.py` — loads bundled `paydaysuper/data/business_days.json` (+ optional user override JSON), `is_business_day(date)`, `add_business_days(date, n)`, horizon warning when computation leaves the verified range. Past that range the table holds no holidays at all, so `report.assess` returns `UNKNOWN` rather than a verdict the calendar cannot support.
-- `deadlines.py` — pure functions implementing the four s 18C pathways; input = line facts, output = `Deadline(due, pathway, notes, caveats)`, where notes explain which rule applied and caveats mean the answer itself may be wrong. Item 4 alignment is applied per employee after per-line computation, and calendar caveats are attached after that so they describe the final date.
-- `sgc.py` — pure functions: `notional_earnings(shortfall_cents, late_period)` iterating daily GIC compounding across quarter boundaries from `paydaysuper/data/gic_rates.json`; `uplift_scenarios(...)` returning the reg 13C/13D matrix. All money in integer cents; no rounding rule hardcoded (none verified) — output cents exact.
-- `csv_io.py` — column mapping (CLI flags or JSON config), date parsing (ISO + DD/MM/YYYY), validation with loud errors. Payroll exports vary too much to guess at: a value the parser cannot read is named, never coerced.
-- `report.py` — console summary + `report.csv` (verdict, due date, pathway, days late and the date it was measured to, shortfall, NEC, uplift range low/high, caveats and notes per line), plus totals across every exposed line.
-- `cli.py` — argparse entry (`payday-super-check pay.csv --map field=column ...`), `--as-at` for the interest end date (default: today) and `--assessment-date` for the s 18D cut-off, exits non-zero when LATE or UNPAID lines exist (scheduling-friendly).
+- `calendar.py` - loads bundled `paydaysuper/data/business_days.json` (+ optional user override JSON), `is_business_day(date)`, `add_business_days(date, n)`, horizon warning when computation leaves the verified range. Past that range the table holds no holidays at all, so `report.assess` returns `UNKNOWN` rather than a verdict the calendar cannot support.
+- `deadlines.py` - pure functions implementing the four s 18C pathways; input = line facts, output = `Deadline(due, pathway, notes, caveats)`, where notes explain which rule applied and caveats mean the answer itself may be wrong. Item 4 alignment is applied per employee after per-line computation, and calendar caveats are attached after that so they describe the final date.
+- `sgc.py` - pure functions: `notional_earnings(shortfall_cents, late_period)` iterating daily GIC compounding across quarter boundaries from `paydaysuper/data/gic_rates.json`; `uplift_scenarios(...)` returning the reg 13C/13D matrix. All money in integer cents; no rounding rule hardcoded (none verified) - output cents exact.
+- `csv_io.py` - column mapping (CLI flags or JSON config), date parsing (ISO + DD/MM/YYYY), validation with loud errors. Payroll exports vary too much to guess at: a value the parser cannot read is named, never coerced.
+- `report.py` - console summary + `report.csv` (verdict, due date, pathway, days late and the date it was measured to, shortfall, NEC, uplift range low/high, caveats and notes per line), plus totals across every exposed line.
+- `cli.py` - argparse entry (`payday-super-check pay.csv --map field=column ...`), `--as-at` for the interest end date (default: today) and `--assessment-date` for the s 18D cut-off, exits non-zero when LATE or UNPAID lines exist (scheduling-friendly).
 
 Verdicts:
 
-- `ON_TIME` — received by the due date, or a valid pre-payment inside the 12-month window.
-- `LATE` — received or remitted after the due date, or funded only by a pre-payment too old to apply.
-- `AT_RISK` — remitted by the due date with no fund-receipt date. The statutory test is receipt, so this is not a pass.
-- `UNPAID` — the due date has passed and nothing at all is recorded. Carries the full shortfall plus interest.
-- `UNKNOWN` — nothing to assess. Three ways in: nothing recorded and not yet due; the row carries no SG amount, so no dates on it can put anything at risk; or the deadline falls past the calendar's verified horizon, where the holiday table is empty and lateness cannot be decided either way.
-- `SKIPPED` — defined-benefit interests, where the contribution is notional (s 18A(3)).
+- `ON_TIME` - received by the due date, or a valid pre-payment inside the 12-month window.
+- `LATE` - received or remitted after the due date, or funded only by a pre-payment too old to apply.
+- `AT_RISK` - remitted by the due date with no fund-receipt date. The statutory test is receipt, so this is not a pass.
+- `UNPAID` - the due date has passed and nothing at all is recorded. Carries the full shortfall plus interest.
+- `UNKNOWN` - nothing to assess. Three ways in: nothing recorded and not yet due; the row carries no SG amount, so no dates on it can put anything at risk; or the deadline falls past the calendar's verified horizon, where the holiday table is empty and lateness cannot be decided either way.
+- `SKIPPED` - defined-benefit interests, where the contribution is notional (s 18A(3)).
 
 `LATE` and `UNPAID` carry exposure figures. Remittance-based results always carry the assumed-receipt caveat.
 
@@ -47,14 +47,14 @@ Pre-1 Jul 2026 QE days: hard error (old quarterly law, out of scope).
 
 ## Data files
 
-- `data/business_days.json` — non-business days 2026-07-01 → 2028-12-31: national union of whole-of-jurisdiction holidays. Generated by `tools/generate_calendar.py` (dev-time only, python-holidays pinned, PUBLIC category, Ekka and other sub-state entries filtered), then hand-curated. Each entry: date, name, jurisdictions, `provisional: true` for rule-derived unproclaimed dates (VIC Grand Final Friday, WA King's Birthday futures). CLI warns when a deadline depends on a provisional date. Part-day holidays counted as business days (documented ambiguity, override file available). Melbourne Cup: non-business day by default, documented caveat.
-- `data/gic_rates.json` — dated quarterly GIC annual rates, source URL + seen-date per entry; staleness warning when as-at date beyond last entry's quarter.
-- `data/rates.json` — SG rate, MCB, concessional cap per FY, dated.
+- `data/business_days.json` - non-business days 2026-07-01 -> 2028-12-31: national union of whole-of-jurisdiction holidays. Generated by `tools/generate_calendar.py` (dev-time only, python-holidays pinned, PUBLIC category, Ekka and other sub-state entries filtered), then hand-curated. Each entry: date, name, jurisdictions, `provisional: true` for rule-derived unproclaimed dates (VIC Grand Final Friday, WA King's Birthday futures). CLI warns when a deadline depends on a provisional date. Part-day holidays counted as business days (documented ambiguity, override file available). Melbourne Cup: non-business day by default, documented caveat.
+- `data/gic_rates.json` - dated quarterly GIC annual rates, source URL + seen-date per entry; staleness warning when as-at date beyond last entry's quarter.
+- `data/rates.json` - SG rate, MCB, concessional cap per FY, dated.
 
 ## Testing
 
 pytest, stdlib `unittest`-free. Anchor cases:
-- ATO example: first QE day 9 Jul 2026 → extended due 7 Aug 2026.
+- ATO example: first QE day 9 Jul 2026 -> extended due 7 Aug 2026.
 - LCR 2026/D3 example: QE day 8 Jun 2027, usual period ends 18 Jun 2027, NEC starts 19 Jun 2027.
 - Ekka 12 Aug 2026 counted as business day; WA Day / whole-of-state holidays not.
 - Item 4 overlap: payday 2 inside a 20-day window inherits its end.
