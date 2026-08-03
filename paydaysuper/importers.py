@@ -179,6 +179,18 @@ def _amount(value: str, field: str, row: int) -> Decimal:
         raise CsvError(f"row {row}: cannot read {field} value {value!r} as an amount")
     if not amount.is_finite():
         raise CsvError(f"row {row}: cannot read {field} value {value!r} as an amount")
+    if amount.adjusted() > 15:
+        # Mirrors csv_io._parse_amount's own guard: beyond this the value
+        # cannot be rounded to cents under the default decimal context (28
+        # significant digits), and no super contribution is this large.
+        # Without this check here, `write_canonical`'s `money()` call is
+        # the first place such a value would be quantized, raising a raw
+        # decimal.InvalidOperation that is not a CsvError and so escapes
+        # the CLI's `except (CsvError, ..., ValueError)` -- a value this
+        # module accepted and the checker itself would refuse must be
+        # refused here, at the point closest to the bad input, not left to
+        # fail unpredictably downstream.
+        raise CsvError(f"row {row}: {field} value {value!r} is too large to be a real amount")
     if amount < 0:
         raise CsvError(f"row {row}: {field} is negative ({value!r})")
     return amount
@@ -750,6 +762,12 @@ def join(
 
         total = sum((amount for _, amount, _ in entries), Decimal("0"))
         flag_parts: list[str] = []
+        # `_classify_outcome`, below `join` in this module, reads the exact
+        # literal text built here -- "no super payment found" above, and
+        # the "partial: "/"over: " prefixes on the next two lines -- to
+        # bucket an outcome for `ImportReport`. Reword any of the three and
+        # that classification silently stops matching; a test would catch
+        # the drift, but the coupling is otherwise invisible from here.
         if total < row.sg_amount:
             flag_parts.append(f"partial: {total} of {row.sg_amount} matched")
         elif total > row.sg_amount:
@@ -825,49 +843,13 @@ def _iso(value: date | None) -> str:
     return value.isoformat() if value else ""
 
 
-def write_canonical(result: JoinResult, path: str | Path) -> None:
-    """Write the canonical contributions CSV that
-    `paydaysuper.csv_io.parse_rows` reads unmodified with its default
-    mapping: `CANONICAL_HEADER` is exactly the set of values in
-    `csv_io.DEFAULT_MAPPING`, in the same field order.
-
-    `fund_received_date` and the four flag columns are always written
-    blank. No payroll or clearing-house export this tool reads carries a
-    fund receipt date or these flags (see the module docstring and
-    `join`'s), and inventing any of them would silently move a deadline --
-    the worst defect this feature could ship.
-
-    Every field is passed through `csv_safe`, not only employee_id. Money
-    and date fields built here cannot start with a formula-lead character
-    today (amounts are never negative, dates are ISO, the flag columns are
-    always blank), but running all of them through the one guard is one
-    rule with no unstated exception, rather than a rule that only covers
-    the field known to carry attacker-controlled text today."""
-    with open(path, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
-        writer.writerow(CANONICAL_HEADER)
-        for outcome in result.outcomes:
-            row = outcome.payroll
-            label = row.employee_id or row.employee_name or ""
-            values = [
-                label,
-                _iso(row.payday),
-                money(row.sg_amount),
-                _iso(outcome.remitted),
-                "",  # fund_received_date: no vendor export carries a receipt date
-                "",  # first_contribution_to_fund
-                "",  # out_of_cycle
-                "",  # next_standard_payday
-                "",  # defined_benefit
-            ]
-            writer.writerow(csv_safe(v) for v in values)
-
-
-# How one PAYROLL row's join outcome is classified for `ImportReport`'s
-# counts. Deliberately separate from the ORPHAN_* constants above: those
-# classify an unused SUPER row, these classify a payroll row, and the two
-# answer different questions for different readers. Plain strings, not an
-# enum, to match ORPHAN_*'s own style and stay trivially printable.
+# How one PAYROLL row's join outcome is classified, both for
+# `ImportReport`'s counts and (see `write_canonical`) for deciding what is
+# safe to write into the canonical CSV. Deliberately separate from the
+# ORPHAN_* constants above: those classify an unused SUPER row, these
+# classify a payroll row, and the two answer different questions for
+# different readers. Plain strings, not an enum, to match ORPHAN_*'s own
+# style and stay trivially printable.
 OUTCOME_MATCHED = "matched"
 OUTCOME_OWES_NOTHING = "owes nothing"
 OUTCOME_UNDATED = "matched, no fund-receipt evidence"
@@ -877,7 +859,7 @@ OUTCOME_UNMATCHED = "unmatched"
 
 
 def _classify_outcome(outcome: MatchOutcome) -> str:
-    """Bucket one payroll row's join outcome for `ImportReport`'s counts.
+    """Bucket one payroll row's join outcome.
 
     Order matters: more than one bucket can be literally true of the same
     outcome (a partial match can also be missing a fund-receipt date on the
@@ -898,6 +880,64 @@ def _classify_outcome(outcome: MatchOutcome) -> str:
     if outcome.remitted is None:
         return OUTCOME_UNDATED
     return OUTCOME_MATCHED
+
+
+def write_canonical(result: JoinResult, path: str | Path) -> None:
+    """Write the canonical contributions CSV that
+    `paydaysuper.csv_io.parse_rows` reads unmodified with its default
+    mapping: `CANONICAL_HEADER` is exactly the set of values in
+    `csv_io.DEFAULT_MAPPING`, in the same field order.
+
+    `remitted_date` is left blank for an `OUTCOME_PARTIAL` row, even though
+    `outcome.remitted` may carry a real date. `join` already applies this
+    exact rule to a split contribution that is entirely undated -- it sets
+    `remitted=None` "because reporting the known date of the other part as
+    remitted would read as fully settled while some of the money has no
+    evidence of arriving at all" (see `join`'s docstring above). A short
+    payment is the identical case: the canonical CSV has one column for the
+    whole payday's contribution, `sg_amount` is the full liability, and
+    writing a real paid date next to the full liability tells the checker
+    the payday was settled in full. It was not -- `join` already flagged it
+    `partial: ...` -- so the date is withheld here rather than carried
+    through. `sg_amount` itself is never touched: it is what was OWED, not
+    what arrived, and shrinking it to the amount received would understate
+    the liability instead of just hiding evidence of when part of it paid.
+    The `partial: ...` flag and the row-level warning `import_files` builds
+    from it are where the true received amount and date are still visible.
+
+    `fund_received_date` and the four flag columns are always written
+    blank. No payroll or clearing-house export this tool reads carries a
+    fund receipt date or these flags (see the module docstring and
+    `join`'s), and inventing any of them would silently move a deadline --
+    the worst defect this feature could ship.
+
+    Every field is passed through `csv_safe`, not only employee_id. Money
+    and date fields built here cannot start with a formula-lead character
+    today (amounts are never negative, dates are ISO, the flag columns are
+    always blank), but running all of them through the one guard is one
+    rule with no unstated exception, rather than a rule that only covers
+    the field known to carry attacker-controlled text today."""
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow(CANONICAL_HEADER)
+        for outcome in result.outcomes:
+            row = outcome.payroll
+            label = row.employee_id or row.employee_name or ""
+            remitted = (
+                "" if _classify_outcome(outcome) == OUTCOME_PARTIAL else _iso(outcome.remitted)
+            )
+            values = [
+                label,
+                _iso(row.payday),
+                money(row.sg_amount),
+                remitted,
+                "",  # fund_received_date: no vendor export carries a receipt date
+                "",  # first_contribution_to_fund
+                "",  # out_of_cycle
+                "",  # next_standard_payday
+                "",  # defined_benefit
+            ]
+            writer.writerow(csv_safe(v) for v in values)
 
 
 @dataclass
