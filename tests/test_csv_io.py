@@ -74,6 +74,67 @@ def test_a_thousands_separator_is_still_read(tmp_path):
     assert parse_rows(path, *load_mapping(None))[0].sg_amount == Decimal("1234567.89")
 
 
+def test_a_space_after_the_dollar_sign_is_read(tmp_path):
+    # REGRESSION (final re-review). Excel's accounting format puts the sign
+    # flush left and the figure flush right, so a pasted cell reads
+    # "$ 612.00". Removing the "$" left the space behind in the text the new
+    # AMOUNT_TEXT pattern was matched against, and the file was refused with
+    # a message blaming a comma for a space. It parsed at fd58595 and parses
+    # again.
+    path = write_csv(tmp_path, 'E1,2026-07-09,"$ 612.00",,,no,no,,no')
+    assert parse_rows(path, *load_mapping(None))[0].sg_amount == Decimal("612.00")
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        # Every amount shape that parsed at fd58595, the commit before the
+        # separator rule arrived, with the value it produced then. The rule
+        # is about WHERE a comma or space sits; narrowing the pattern past
+        # that quietly took four unrelated shapes with it, all of which a
+        # spreadsheet or an ERP extract does emit.
+        ("612.00", "612.00"),
+        ("612", "612"),
+        ("$612.00", "612.00"),
+        ("$ 612.00", "612.00"),
+        ("$  612.00", "612.00"),
+        (" 612.00 ", "612.00"),
+        ("$612.00 ", "612.00"),
+        ("1,234.00", "1234.00"),
+        ("$1,234.00", "1234.00"),
+        ("$ 1,234.00", "1234.00"),
+        ("$  1,234.00", "1234.00"),
+        ("1 234.00", "1234.00"),
+        ("1,234,567.89", "1234567.89"),
+        ("1 234 567.89", "1234567.89"),
+        ("12,345", "12345"),
+        (".50", "0.50"),
+        ("612.", "612"),
+        ("+612.00", "612.00"),
+        ("1e2", "1E+2"),
+        ("1E2", "1E+2"),
+        ("1e+2", "1E+2"),
+        ("1.5e3", "1.5E+3"),
+        ("1,000e2", "1.000E+5"),
+    ],
+)
+def test_every_amount_shape_that_parsed_before_the_separator_rule_still_parses(
+    tmp_path, text, expected
+):
+    path = write_csv(tmp_path, f'E1,2026-07-09,"{text}",,,no,no,,no')
+    assert parse_rows(path, *load_mapping(None))[0].sg_amount == Decimal(expected)
+
+
+@pytest.mark.parametrize("text", ["612,00", "1,23", "1234,567", "12,34,567", "1,,234"])
+def test_a_separator_out_of_the_thousands_position_stays_refused(tmp_path, text):
+    # The other side of the same pattern, and the reason it exists: each of
+    # these parsed at fd58595 and each read a hundred or a thousand times
+    # the figure the file meant.
+    path = write_csv(tmp_path, f'E1,2026-07-09,"{text}",,,no,no,,no')
+    with pytest.raises(CsvError, match="is refused"):
+        parse_rows(path, *load_mapping(None))
+
+
 def test_impossible_date_is_rejected_with_row_number(tmp_path):
     path = write_csv(tmp_path, "E1,31/02/2026,600.00,,,no,no,,no")
     with pytest.raises(CsvError, match="row 2"):
