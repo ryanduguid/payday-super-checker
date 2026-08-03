@@ -65,6 +65,52 @@ def test_read_super_surfaces_the_resolved_columns_for_this_file():
     assert resolved["period_end"] == "Period To"
 
 
+def test_a_date_outside_the_profiles_own_formats_still_reads(tmp_path):
+    # SURVIVING MUTATION (branch review). Deleting _date's parse_date_text
+    # fallback broke nothing: every fixture date matches its own profile's
+    # date_formats, so the fallback had no test at all. myob-ar declares
+    # only %d/%m/%Y and %d/%m/%y, and "9 Jul 2026" is a date the checker
+    # itself reads -- refusing it here would fail a file the second command
+    # would have accepted.
+    path = tmp_path / "payroll.csv"
+    path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "Test Employee One,9 Jul 2026,9 Jul 2026,612.00\n",
+        encoding="utf-8",
+    )
+    rows, profile, _ = read_payroll(path, vendor="myob-ar-payroll")
+    assert "%d %b %Y" not in profile.date_formats, "the profile must not read it directly"
+    assert rows[0].payday == date(2026, 7, 9)
+    assert rows[0].period_end == date(2026, 7, 9)
+
+
+def test_a_negative_amount_is_refused_by_both_readers(tmp_path):
+    # SURVIVING MUTATION (branch review). Deleting the negative-amount
+    # refusal broke nothing, and Task 5's controller correction leans on it
+    # explicitly: the round-4 implementer's concern that join could receive
+    # a negative super amount was dismissed BECAUSE _amount raises on any
+    # negative, so nothing negative reaches the allocation code through the
+    # real path. A negative there subtracts from a payday's balance and
+    # conjures money onto another one.
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "Test Employee One,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,-612.00\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CsvError, match="negative"):
+        read_super(super_path, vendor="myob-ar-super")
+
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "Test Employee One,09/07/2026,09/07/2026,(612.00)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CsvError, match="negative"):
+        read_payroll(payroll_path, vendor="myob-ar-payroll")
+
+
 def test_read_payroll_reads_payday_and_amount():
     rows, profile, _ = read_payroll(FIXTURES / "myob_payroll.csv")
     assert profile.key == "myob-ar-payroll"
@@ -828,6 +874,44 @@ def test_covers_defends_itself_against_a_period_less_row():
     assert _covers(s, date(2026, 7, 9)) is False
 
 
+def test_an_overpayment_cannot_be_carried_onto_a_later_payday(tmp_path):
+    # SURVIVING MUTATION (branch review). Removing the max(Decimal("0"), ...)
+    # clamp in _unmet broke nothing, and it is not semantically equivalent:
+    # it is the guard the round-2 critical fix was built on.
+    #
+    # Payday 1 owes 500.00 and receives 800.00 on its own. Payday 2 owes
+    # 500.00, and a later payment of 400.00 spans both. With the clamp,
+    # payday 1's unmet balance is 0, so payday 2 takes 400.00 of the 400.00
+    # and reads "partial: 400.00 of 500.00 matched" with its remitted date
+    # withheld. Without it, payday 1's balance is -300.00, `remaining -=
+    # share` ADDS that 300 back to the pot, and payday 2 reads "over:
+    # 700.00 against 500.00" with a remittance date written: 300.00 of an
+    # overpayment on one payday is conjured onto the next and flips it from
+    # a reported shortfall to reported settled.
+    payday_1 = payroll("A", "2026-07-09", "500.00", row=2)
+    payday_2 = payroll("A", "2026-07-23", "500.00", row=3)
+    result = join(
+        [payday_1, payday_2],
+        [
+            # Covers payday 1 alone, and overpays it.
+            super_row("A", "2026-07-01", "2026-07-09", "2026-07-10", "800.00", row=2),
+            # Spans both paydays. Its period end is neither payday, so the
+            # period-end priority stays out of it and allocation runs
+            # oldest first, which is what reaches payday 1's balance.
+            super_row("A", "2026-07-01", "2026-07-31", "2026-07-24", "400.00", row=3),
+        ],
+    )
+    first, second = result.outcomes
+    assert first.flag.startswith("over: 800.00 against 500.00")
+    assert second.flag == "partial: 400.00 of 500.00 matched"
+
+    out = tmp_path / "out.csv"
+    write_canonical(result, out)
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    assert rows[1]["remitted_date"] == "", "a short-paid payday is not settled"
+
+
 def test_global_cap_prevents_a_settled_row_from_starving_another():
     # The review's own reproduction: payroll rows 2 (payday 2026-07-09,
     # sg 600.00) and 3 (payday 2026-07-23, sg 600.00). Super row 2 pays
@@ -968,6 +1052,31 @@ def test_a_payment_matching_only_a_zero_sg_row_is_an_orphan_not_a_silent_credit(
     )
     assert result.outcomes[0].flag == "no super guarantee owed for this payday"
     assert [o.row for o in result.orphans] == [2]
+
+
+def test_a_zero_amount_payment_covering_two_paydays_says_it_has_nothing_to_give():
+    # SURVIVING MUTATION (branch review). Changing ORPHAN_NO_AMOUNT to
+    # ORPHAN_NO_PAYDAY in _why_orphaned broke nothing: the only test
+    # touching this code asserted `ORPHAN_NO_AMOUNT not in codes`, a
+    # negative that passes either way. The branch is reachable -- a super
+    # row of 0.00 covering two paydays that both still owe -- and the two
+    # codes say opposite things to an accountant. "no payday matched" sends
+    # someone looking for a missing payroll row; the payroll rows are right
+    # there and it is the payment that is empty.
+    result = join(
+        [payroll("A", "2026-07-09", "500.00", row=2),
+         payroll("A", "2026-07-23", "500.00", row=3)],
+        [super_row("A", "2026-07-01", "2026-07-31", "2026-07-24", "0.00", row=2)],
+    )
+    assert [o.flag for o in result.outcomes] == [
+        "no super payment found",
+        "no super payment found",
+    ]
+    assert len(result.orphan_reasons) == 1
+    reason = result.orphan_reasons[0]
+    assert reason.code == ORPHAN_NO_AMOUNT
+    assert reason.code != ORPHAN_NO_PAYDAY
+    assert "carries no amount" in reason.message
 
 
 def test_pass2_allocation_is_independent_of_input_order_exhaustive():
