@@ -29,7 +29,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from .csv_io import CsvError, parse_date_text
+from .csv_io import MISSING, CsvError, parse_date_text
 from .profiles import Profile, detect, normalise_header, resolve_columns
 
 # A separator is allowed only where a thousands separator belongs. Stripping
@@ -76,7 +76,7 @@ def _check_duplicate_headers(headers: list[str], path: str | Path) -> None:
     duplicates = {k: v for k, v in groups.items() if len(v) > 1}
     if duplicates:
         detail = "; ".join(
-            f"{sorted(set(headings))} both read as {key!r}"
+            f"{sorted(headings)} all read as {key!r}"
             for key, headings in sorted(duplicates.items())
         )
         raise CsvError(
@@ -90,11 +90,11 @@ def _check_duplicate_headers(headers: list[str], path: str | Path) -> None:
 def _read_dicts(path: str | Path) -> tuple[list[str], list[dict[str, str]]]:
     try:
         with open(path, newline="", encoding="utf-8-sig") as f:
-            reader = csv.DictReader(f)
+            reader = csv.DictReader(f, restval=MISSING)
             if reader.fieldnames is None:
                 raise CsvError(f"{path} has no header row")
             headers = [h for h in reader.fieldnames if h and h.strip()]
-            rows = [dict(r) for r in reader]
+            raw_rows = list(reader)
     except UnicodeDecodeError as exc:
         raise CsvError(
             f"{path} is not UTF-8 text (byte {exc.object[exc.start]:#04x} at position "
@@ -102,6 +102,44 @@ def _read_dicts(path: str | Path) -> tuple[list[str], list[dict[str, str]]]:
             "re-save it as 'CSV UTF-8 (Comma delimited)' and run again."
         )
     _check_duplicate_headers(headers, path)
+
+    # A row with the wrong number of fields is never read as data: a
+    # misaligned row (an unescaped comma inside a name, say) shifts every
+    # later column one place left, so an amount this tool reports could
+    # actually be a different column's value read under the wrong name.
+    # csv_io.py's _parse_rows refuses exactly this; mirrored here with the
+    # same restval sentinel technique, because an empty string is a
+    # legitimate cell value and cannot also mean "this row never supplied a
+    # value for this column at all".
+    problems: list[str] = []
+    rows: list[dict[str, str]] = []
+    for i, raw in enumerate(raw_rows, start=2):  # row 1 is the header
+        short = sorted(k for k, v in raw.items() if v is MISSING and k)
+        if short:
+            problems.append(
+                f"row {i} stops early and supplies no value for {short}. A truncated "
+                "row is not the same as a blank field, so it is not assumed empty."
+            )
+            continue
+        surplus = [v for v in (raw.get(None) or []) if v and v.strip()]
+        if surplus:
+            problems.append(
+                f"row {i} carries more values than the header has columns: "
+                f"{surplus}. They would be dropped, so the row is refused instead."
+            )
+            continue
+        rows.append({k: (v or "") for k, v in raw.items() if k is not None})
+
+    if problems:
+        shown = problems[:20]
+        more = (
+            f" ... and {len(problems) - 20} more problem(s)."
+            if len(problems) > 20
+            else ""
+        )
+        raise CsvError(
+            f"{len(problems)} problem(s) in {path}:\n  - " + "\n  - ".join(shown) + more
+        )
     if not rows:
         raise CsvError(f"{path} has a header but no data rows")
     return headers, rows
