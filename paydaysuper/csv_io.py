@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -40,6 +41,15 @@ DEFAULT_MAPPING = {
 
 TRUE_WORDS = {"y", "yes", "true", "1", "t"}
 FALSE_WORDS = {"", "n", "no", "false", "0", "f"}
+
+# What an amount may look like once "$" and surrounding space are gone. A
+# comma or space is read as a separator only where a THOUSANDS separator
+# belongs: stripping every comma regardless of position turns the European
+# decimal 612,00 into 61200, a hundredfold overstatement of a shortfall in
+# a file this tool invites you to hand-edit. `importers.py` reads this same
+# constant, so one package cannot ship two amount parsers that disagree
+# about what a figure means.
+AMOUNT_TEXT = re.compile(r"^-?\d{1,3}(?:[ ,]\d{3})*(?:\.\d+)?$|^-?\d+(?:\.\d+)?$")
 
 
 class CsvError(ValueError):
@@ -145,11 +155,12 @@ def _parse_date(value: str, field: str, row: int) -> date:
 
 
 def _parse_amount(value: str, field: str, row: int) -> Decimal:
-    text = value.strip().replace("$", "").replace(",", "").replace(" ", "")
+    text = value.strip().replace("$", "")
     if text.startswith("(") and text.endswith(")"):
-        text = "-" + text[1:-1]
+        text = "-" + text[1:-1].strip()
+    loose = text.replace(",", "").replace(" ", "")
     try:
-        amount = Decimal(text)
+        amount = Decimal(loose)
         finite = amount.is_finite()
     except (InvalidOperation, ValueError):
         raise CsvError(f"row {row}: cannot read {field} value {value!r} as an amount")
@@ -161,6 +172,14 @@ def _parse_amount(value: str, field: str, row: int) -> Decimal:
         # decimal context, and no super contribution is this large.
         raise CsvError(
             f"row {row}: {field} value {value!r} is too large to be a real amount"
+        )
+    if not AMOUNT_TEXT.match(text):
+        # Checked after the magnitude guard so an out-of-range figure still
+        # gets the message that names its real problem.
+        raise CsvError(
+            f"row {row}: cannot read {field} value {value!r} as an amount. A comma or "
+            "space is only read as a thousands separator, so 612,00 is refused rather "
+            "than read as 61200."
         )
     if amount < 0:
         raise CsvError(f"row {row}: {field} is negative ({value!r})")

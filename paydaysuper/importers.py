@@ -23,13 +23,18 @@ read as data.
 from __future__ import annotations
 
 import csv
-import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from .csv_io import MISSING, CsvError, parse_date_text
+from .csv_io import (
+    AMOUNT_TEXT,
+    LATEST_SANE_YEAR,
+    MISSING,
+    CsvError,
+    parse_date_text,
+)
 from .profiles import (
     Profile,
     detect,
@@ -40,8 +45,10 @@ from .profiles import (
 from .report import cents, csv_safe, money
 
 # A separator is allowed only where a thousands separator belongs. Stripping
-# every comma turns the European decimal 612,00 into 61200.
-_AMOUNT = re.compile(r"^-?\d{1,3}(?:[ ,]\d{3})*(?:\.\d+)?$|^-?\d+(?:\.\d+)?$")
+# every comma turns the European decimal 612,00 into 61200. The pattern
+# lives in csv_io so this module and the checker's own reader cannot drift
+# apart on what an amount is; see csv_io.AMOUNT_TEXT.
+_AMOUNT = AMOUNT_TEXT
 
 
 @dataclass(frozen=True)
@@ -156,14 +163,32 @@ def _date(value: str, field: str, row: int, formats: tuple[str, ...]) -> date | 
     text = (value or "").strip()
     if not text:
         return None
+    parsed: date | None = None
     for fmt in formats:
         try:
-            return datetime.strptime(text, fmt).date()
+            parsed = datetime.strptime(text, fmt).date()
+            break
         except ValueError:
             continue
-    parsed = parse_date_text(text)
+    if parsed is None:
+        # The profile's own formats first, then every format the checker
+        # accepts. A vendor that writes one column ISO and another
+        # day-first still reads, instead of failing on a date a human can
+        # see is a date.
+        parsed = parse_date_text(text)
     if parsed is None:
         raise CsvError(f"row {row}: cannot read {field} value {value!r} as a date")
+    if parsed.year > LATEST_SANE_YEAR:
+        # The same ceiling csv_io._parse_date applies, for the same reason
+        # _amount's magnitude guard mirrors csv_io's: a value this module
+        # accepts and the checker would refuse must be refused HERE, at the
+        # point closest to the bad input. Without it, an ERP sentinel of
+        # 31/12/9999 imported with exit 0 and "matched 2", and the very
+        # next command refused the file this one had just written.
+        raise CsvError(
+            f"row {row}: {field} value {value!r} is not a real date. Leave placeholder "
+            "dates such as 9999-12-31 blank instead"
+        )
     return parsed
 
 
