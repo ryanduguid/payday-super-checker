@@ -1,3 +1,4 @@
+import csv as _csv
 import itertools
 import random
 from datetime import date
@@ -6,38 +7,82 @@ from pathlib import Path
 
 import pytest
 
-from paydaysuper.csv_io import CsvError
+from paydaysuper.cli import EXIT_LATE_FOUND, EXIT_OK
+from paydaysuper.cli import main as cli_main
+from paydaysuper.csv_io import CsvError, DEFAULT_MAPPING, parse_rows
 from paydaysuper.importers import (
+    CANONICAL_HEADER,
+    ORPHAN_NO_AMOUNT,
     ORPHAN_NO_PAYDAY,
+    ORPHAN_NOTHING_OWED,
     ORPHAN_PAYDAYS_SETTLED,
+    OUTCOME_MATCHED,
+    OUTCOME_OVER,
+    OUTCOME_OWES_NOTHING,
+    OUTCOME_PARTIAL,
+    OUTCOME_UNDATED,
+    OUTCOME_UNMATCHED,
+    ImportReport,
     PayrollRow,
     SuperRow,
+    import_files,
     join,
     read_payroll,
     read_super,
+    write_canonical,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "importers"
 
 
 def test_read_super_keeps_only_super_guarantee():
-    rows, profile = read_super(FIXTURES / "myob_super.csv")
+    rows, profile, _ = read_super(FIXTURES / "myob_super.csv")
     assert profile.key == "myob-ar-super"
     assert len(rows) == 2, "salary sacrifice row was not excluded"
     assert {r.amount for r in rows} == {Decimal("612.00"), Decimal("540.00")}
 
 
 def test_read_super_reads_australian_day_first_dates():
-    rows, _ = read_super(FIXTURES / "myob_super.csv")
+    rows, _, _ = read_super(FIXTURES / "myob_super.csv")
     assert rows[0].paid_date == date(2026, 7, 14)
     assert rows[0].period_end == date(2026, 7, 9)
 
 
+def test_read_super_surfaces_the_resolved_columns_for_this_file():
+    # import_files derives join()'s payroll_has_period_end/
+    # super_has_period_start/super_has_period_end from exactly this: which
+    # canonical fields resolve_columns found headings for in THIS file, not
+    # a per-row fact. The myob-ar-super fixture has both period columns.
+    _, _, resolved = read_super(FIXTURES / "myob_super.csv")
+    assert resolved["period_start"] == "Period From"
+    assert resolved["period_end"] == "Period To"
+
+
 def test_read_payroll_reads_payday_and_amount():
-    rows, profile = read_payroll(FIXTURES / "myob_payroll.csv")
+    rows, profile, _ = read_payroll(FIXTURES / "myob_payroll.csv")
     assert profile.key == "myob-ar-payroll"
     assert rows[0].payday == date(2026, 7, 9)
     assert rows[0].sg_amount == Decimal("612.00")
+
+
+def test_read_payroll_surfaces_the_resolved_columns_for_this_file():
+    _, _, resolved = read_payroll(FIXTURES / "myob_payroll.csv")
+    assert resolved["period_end"] == "Pay Period End"
+
+
+def test_read_payroll_resolved_columns_omit_an_absent_period_end(tmp_path):
+    # A payroll file with no pay period end column at all must not resolve
+    # one: import_files reads its absence from here to warn through join's
+    # payroll_has_period_end, and a false positive would silence that
+    # warning on a file that actually needs it.
+    path = tmp_path / "no_period_end.csv"
+    path.write_text(
+        "Employee Name,Date,Superannuation Guarantee\n"
+        "Test Employee One,09/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    _, _, resolved = read_payroll(path, vendor="myob-ar-payroll")
+    assert "period_end" not in resolved
 
 
 def test_super_file_without_a_contribution_type_column_is_refused(tmp_path):
@@ -964,3 +1009,319 @@ def test_the_whole_result_is_byte_identical_under_shuffled_inputs():
             rng.shuffle(shuffled_payroll)
             rng.shuffle(shuffled_super)
             assert _render(join(shuffled_payroll, shuffled_super)) == expected
+
+
+# ---------------------------------------------------------------------------
+# Task 6: write_canonical / ImportReport / import_files
+# ---------------------------------------------------------------------------
+
+
+def test_canonical_output_feeds_the_normal_check(tmp_path):
+    out = tmp_path / "contributions.csv"
+    report = import_files(FIXTURES / "myob_payroll.csv", FIXTURES / "myob_super.csv", out)
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    assert [r["employee_id"] for r in rows] == ["Test Employee One", "Test Employee Two"]
+    assert rows[0]["payment_date"] == "2026-07-09"
+    assert rows[0]["sg_amount"] == "612.00"
+    assert rows[0]["remitted_date"] == "2026-07-14"
+    assert rows[0]["fund_received_date"] == ""  # no vendor export carries it
+    # The other three flag columns are equally unsourced from any vendor
+    # export and must be equally blank, not just the fund receipt date.
+    assert rows[0]["first_contribution_to_fund"] == ""
+    assert rows[0]["out_of_cycle"] == ""
+    assert rows[0]["next_standard_payday"] == ""
+    assert rows[0]["defined_benefit"] == ""
+    assert report.matched == 2
+    assert report.clean is True
+    assert isinstance(report, ImportReport)
+
+
+def test_write_canonical_writes_the_exact_header_and_blank_flag_columns(tmp_path):
+    result = join(
+        [payroll("A", "2026-07-09", "612.00")],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "612.00")],
+    )
+    out = tmp_path / "out.csv"
+    write_canonical(result, out)
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        reader = _csv.reader(f)
+        header = next(reader)
+        row = next(reader)
+    assert header == CANONICAL_HEADER
+    assert row == ["A", "2026-07-09", "612.00", "2026-07-14", "", "", "", "", ""]
+
+
+def test_write_canonical_rounds_sg_amount_half_up_like_the_rest_of_the_tool(tmp_path):
+    # report.money() elsewhere in this codebase rounds ROUND_HALF_UP. A
+    # bare Decimal.quantize() call with no rounding mode defaults to
+    # ROUND_HALF_EVEN and would write 612.00 here instead of 612.01 --
+    # a different figure for the same money, depending only on which
+    # function happened to format it. Pinned so that regression cannot
+    # creep back in silently.
+    result = join(
+        [payroll("A", "2026-07-09", "612.005")],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "612.005")],
+    )
+    out = tmp_path / "out.csv"
+    write_canonical(result, out)
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    assert rows[0]["sg_amount"] == "612.01"
+
+
+def test_write_canonical_header_matches_the_checkers_default_mapping():
+    # CANONICAL_HEADER must be exactly csv_io.DEFAULT_MAPPING's values, in
+    # the same field order, or the round trip below only works by accident
+    # of dict ordering rather than by construction.
+    assert CANONICAL_HEADER == list(DEFAULT_MAPPING.values())
+
+
+def test_a_formula_in_an_employee_name_is_guarded(tmp_path):
+    src = tmp_path / "payroll.csv"
+    src.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "=cmd()|'/c calc',09/07/2026,09/07/2026,612.00\n"
+        "-00123,09/07/2026,09/07/2026,540.00\n",
+        encoding="utf-8",
+    )
+    sup = tmp_path / "super.csv"
+    sup.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "=cmd()|'/c calc',Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,612.00\n"
+        "-00123,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,540.00\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    import_files(src, sup, out)
+    text = out.read_text(encoding="utf-8-sig")
+    assert "'=cmd()" in text, "formula lead was not neutralised"
+    assert "-00123" in text and "'-00123" not in text, "a plain code was mangled"
+
+
+def test_canonical_csv_round_trips_through_parse_rows_and_the_real_cli(tmp_path):
+    # Requirement: the canonical CSV must be readable by the existing
+    # checker without modification. Proven two ways -- through the reader
+    # function directly, with the default mapping and nothing special-cased
+    # for this tool's own output, and separately through the actual CLI
+    # entry point end to end.
+    out = tmp_path / "contributions.csv"
+    import_files(FIXTURES / "myob_payroll.csv", FIXTURES / "myob_super.csv", out)
+
+    lines = parse_rows(out, DEFAULT_MAPPING)
+    assert len(lines) == 2
+    assert {l.employee_id for l in lines} == {"Test Employee One", "Test Employee Two"}
+    assert {l.sg_amount for l in lines} == {Decimal("612.00"), Decimal("540.00")}
+    assert all(l.remitted is not None for l in lines)
+    assert all(l.received is None for l in lines)  # never invented
+
+    report_out = tmp_path / "report.csv"
+    code = cli_main([str(out), "-o", str(report_out), "--as-at", "2026-08-10"])
+    assert code in (EXIT_OK, EXIT_LATE_FOUND), "the real CLI choked on our own output"
+    with open(report_out, newline="", encoding="utf-8") as f:
+        report_rows = [r for r in _csv.DictReader(f) if r["employee_id"] != "NOTE"]
+    assert len(report_rows) == 2
+    assert {r["employee_id"] for r in report_rows} == {
+        "Test Employee One",
+        "Test Employee Two",
+    }
+
+
+def test_output_refuses_to_overwrite_the_payroll_input(tmp_path):
+    payroll = tmp_path / "payroll.csv"
+    payroll.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "Test Employee One,09/07/2026,09/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    super_ = tmp_path / "super.csv"
+    super_.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "Test Employee One,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CsvError) as exc:
+        import_files(payroll, super_, payroll)
+    assert "overwrite" in str(exc.value)
+    # Refused before anything was written -- the original file survives
+    # untouched, not truncated then abandoned mid-write.
+    assert "612.00" in payroll.read_text(encoding="utf-8")
+
+
+def test_output_refuses_to_overwrite_the_super_input(tmp_path):
+    payroll = tmp_path / "payroll.csv"
+    payroll.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "Test Employee One,09/07/2026,09/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    super_ = tmp_path / "super.csv"
+    super_.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "Test Employee One,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CsvError) as exc:
+        import_files(payroll, super_, super_)
+    assert "overwrite" in str(exc.value)
+    assert "Superannuation Guarantee" in super_.read_text(encoding="utf-8")
+
+
+def test_report_distinguishes_orphan_codes_not_just_a_count(tmp_path):
+    # ORPHAN_PAYDAYS_SETTLED (an overpayment on paydays already settled by
+    # their own payments) and ORPHAN_NO_PAYDAY (a payment for an employee
+    # with no payroll rows at all) are opposite findings for an accountant.
+    # A report that only counted orphans could not tell them apart.
+    payroll = tmp_path / "payroll.csv"
+    payroll.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "A,09/07/2026,09/07/2026,600.00\n"
+        "A,23/07/2026,23/07/2026,600.00\n",
+        encoding="utf-8",
+    )
+    super_ = tmp_path / "super.csv"
+    super_.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "A,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,600.00\n"
+        "A,Superannuation Guarantee,15/07/2026,23/07/2026,28/07/2026,600.00\n"
+        "A,Superannuation Guarantee,01/07/2026,31/07/2026,15/08/2026,500.00\n"
+        "B,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,99.00\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    report = import_files(payroll, super_, out)
+
+    assert report.orphans == 2
+    assert report.orphan_counts == {ORPHAN_PAYDAYS_SETTLED: 1, ORPHAN_NO_PAYDAY: 1}
+    codes = {r.code for r in report.orphan_reasons}
+    assert codes == {ORPHAN_PAYDAYS_SETTLED, ORPHAN_NO_PAYDAY}
+    assert ORPHAN_NO_AMOUNT not in codes and ORPHAN_NOTHING_OWED not in codes
+    # Both paydays settled cleanly; neither invented an over: from the
+    # overpayment, matching join()'s own contract.
+    assert report.matched == 2
+    assert report.clean is False
+    settled_message = next(
+        r.message for r in report.orphan_reasons if r.code == ORPHAN_PAYDAYS_SETTLED
+    )
+    assert "already settled" in settled_message
+    assert any("already settled" in w for w in report.warnings)
+    assert any("matched no payday" in w for w in report.warnings)
+
+
+def test_outcome_counts_cover_every_payroll_row_exactly_once():
+    # Every payroll row must land in exactly one bucket -- the brief's own
+    # first draft silently dropped zero-sg-amount and undated-but-fully-
+    # matched rows from every bucket, so the counts stopped summing to the
+    # number of rows without raising anything.
+    payroll_rows = [
+        payroll("A", "2026-07-09", "612.00", row=2),   # matched, dated
+        payroll("A", "2026-07-23", "0.00", row=3),      # owes nothing
+        payroll("A", "2026-08-06", "612.00", row=4),    # undated
+        payroll("A", "2026-08-20", "300.00", row=5),    # partial
+        payroll("A", "2026-09-03", "300.00", row=6),    # over
+        payroll("A", "2026-09-17", "612.00", row=7),    # unmatched
+    ]
+    super_rows = [
+        super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "612.00", row=2),
+        super_row("A", "2026-07-25", "2026-08-06", None, "612.00", row=3),
+        super_row("A", "2026-08-08", "2026-08-20", "2026-08-25", "150.00", row=4),
+        super_row("A", "2026-08-22", "2026-09-03", "2026-09-08", "612.00", row=5),
+    ]
+    result = join(payroll_rows, super_rows)
+
+    from paydaysuper.importers import _classify_outcome
+
+    counts: dict[str, int] = {}
+    for outcome in result.outcomes:
+        counts[_classify_outcome(outcome)] = counts.get(_classify_outcome(outcome), 0) + 1
+
+    assert sum(counts.values()) == len(payroll_rows)
+    assert counts[OUTCOME_MATCHED] == 1
+    assert counts[OUTCOME_OWES_NOTHING] == 1
+    assert counts[OUTCOME_UNDATED] == 1
+    assert counts[OUTCOME_PARTIAL] == 1
+    assert counts[OUTCOME_OVER] == 1
+    assert counts[OUTCOME_UNMATCHED] == 1
+
+
+def test_import_report_clean_is_false_for_a_partial_payment(tmp_path):
+    # `clean` must catch a partial match too, not only orphans -- the two
+    # earlier `clean` assertions in this file happen to both go through the
+    # orphans branch, so this pins the outcome_counts branch on its own.
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "Test Employee One,09/07/2026,09/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "Test Employee One,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,300.00\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    report = import_files(payroll_path, super_path, out)
+    assert report.partial == 1
+    assert report.clean is False
+
+
+def test_import_report_clean_is_true_for_a_wholly_ordinary_file(tmp_path):
+    out = tmp_path / "contributions.csv"
+    report = import_files(FIXTURES / "myob_payroll.csv", FIXTURES / "myob_super.csv", out)
+    assert report.clean is True
+    assert report.orphans == 0
+    assert report.orphan_reasons == []
+
+
+def test_import_files_derives_payroll_has_period_end_from_the_file(tmp_path):
+    # No pay period end column at all in the payroll file. join() must be
+    # told this is a structural fact about the file, not left to its
+    # True default, so the "could be missed" warning actually fires.
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Date,Superannuation Guarantee\n"
+        "Test Employee One,09/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "Test Employee One,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    report = import_files(payroll_path, super_path, out, vendor="myob-ar")
+    assert any(
+        "period" in w and "payday" in w for w in report.warnings
+    ), report.warnings
+
+
+def test_import_files_derives_super_has_period_columns_from_the_file(tmp_path):
+    # No pay period columns at all in the super file. join() must see this
+    # as a structural fact so its strongest warning fires -- a period-less
+    # super row is treated as covering every payday for the employee.
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "Test Employee One,09/07/2026,09/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Superannuation Category,Paid Date,Amount\n"
+        "Test Employee One,Superannuation Guarantee,14/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    report = import_files(payroll_path, super_path, out, vendor="myob-ar")
+    assert any("no pay period columns" in w for w in report.warnings), report.warnings
+
+
+def test_import_files_does_not_warn_when_both_files_have_full_period_columns(tmp_path):
+    # The control for the two tests above: the ordinary myob fixtures have
+    # every period column, so neither structural warning should fire.
+    out = tmp_path / "contributions.csv"
+    report = import_files(FIXTURES / "myob_payroll.csv", FIXTURES / "myob_super.csv", out)
+    assert not any("period" in w and "payday" in w for w in report.warnings)
+    assert not any("pay period column" in w for w in report.warnings)

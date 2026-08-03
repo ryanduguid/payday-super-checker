@@ -31,6 +31,7 @@ from pathlib import Path
 
 from .csv_io import MISSING, CsvError, parse_date_text
 from .profiles import Profile, detect, normalise_header, resolve_columns
+from .report import csv_safe, money
 
 # A separator is allowed only where a thousands separator belongs. Stripping
 # every comma turns the European decimal 612,00 into 61200.
@@ -190,7 +191,18 @@ def _cell(row: dict[str, str], resolved: dict[str, str], field: str) -> str:
     return (row.get(heading) or "").strip()
 
 
-def read_super(path: str | Path, vendor: str | None = None) -> tuple[list[SuperRow], Profile]:
+def read_super(
+    path: str | Path, vendor: str | None = None
+) -> tuple[list[SuperRow], Profile, dict[str, str]]:
+    """Read a super payments export.
+
+    Returns the rows, the profile that matched, and the canonical-field-to-
+    heading mapping `resolve_columns` found for THIS file's headers. The
+    third element exists so a caller such as `import_files` can tell "this
+    file's period_start/period_end columns are structurally absent" from
+    "this row's period cell happened to be blank" -- `join`'s
+    `super_has_period_start`/`super_has_period_end` need exactly that
+    file-level fact, and it is gone once the rows below are built."""
     headers, raw_rows = _read_dicts(path)
     profile = detect(headers, "super", vendor)
     resolved = resolve_columns(profile, headers)
@@ -227,10 +239,16 @@ def read_super(path: str | Path, vendor: str | None = None) -> tuple[list[SuperR
             if profile.sg_filter
             else f"{path} has no usable rows"
         )
-    return rows, profile
+    return rows, profile, resolved
 
 
-def read_payroll(path: str | Path, vendor: str | None = None) -> tuple[list[PayrollRow], Profile]:
+def read_payroll(
+    path: str | Path, vendor: str | None = None
+) -> tuple[list[PayrollRow], Profile, dict[str, str]]:
+    """Read a payroll export. Returns the rows, the matched profile, and the
+    canonical-field-to-heading mapping `resolve_columns` found for this
+    file's headers -- see `read_super`'s docstring for why the third
+    element exists."""
     headers, raw_rows = _read_dicts(path)
     profile = detect(headers, "payroll", vendor)
     resolved = resolve_columns(profile, headers)
@@ -255,7 +273,7 @@ def read_payroll(path: str | Path, vendor: str | None = None) -> tuple[list[Payr
                 row=i,
             )
         )
-    return rows, profile
+    return rows, profile, resolved
 
 
 @dataclass
@@ -788,3 +806,211 @@ def join(
         OrphanReason(s, *_why_orphaned(coverage[id(s)], allocated_total)) for s in orphans
     ]
     return JoinResult(outcomes, orphans, key_mode, warnings, orphan_reasons)
+
+
+CANONICAL_HEADER = [
+    "employee_id",
+    "payment_date",
+    "sg_amount",
+    "remitted_date",
+    "fund_received_date",
+    "first_contribution_to_fund",
+    "out_of_cycle",
+    "next_standard_payday",
+    "defined_benefit",
+]
+
+
+def _iso(value: date | None) -> str:
+    return value.isoformat() if value else ""
+
+
+def write_canonical(result: JoinResult, path: str | Path) -> None:
+    """Write the canonical contributions CSV that
+    `paydaysuper.csv_io.parse_rows` reads unmodified with its default
+    mapping: `CANONICAL_HEADER` is exactly the set of values in
+    `csv_io.DEFAULT_MAPPING`, in the same field order.
+
+    `fund_received_date` and the four flag columns are always written
+    blank. No payroll or clearing-house export this tool reads carries a
+    fund receipt date or these flags (see the module docstring and
+    `join`'s), and inventing any of them would silently move a deadline --
+    the worst defect this feature could ship.
+
+    Every field is passed through `csv_safe`, not only employee_id. Money
+    and date fields built here cannot start with a formula-lead character
+    today (amounts are never negative, dates are ISO, the flag columns are
+    always blank), but running all of them through the one guard is one
+    rule with no unstated exception, rather than a rule that only covers
+    the field known to carry attacker-controlled text today."""
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow(CANONICAL_HEADER)
+        for outcome in result.outcomes:
+            row = outcome.payroll
+            label = row.employee_id or row.employee_name or ""
+            values = [
+                label,
+                _iso(row.payday),
+                money(row.sg_amount),
+                _iso(outcome.remitted),
+                "",  # fund_received_date: no vendor export carries a receipt date
+                "",  # first_contribution_to_fund
+                "",  # out_of_cycle
+                "",  # next_standard_payday
+                "",  # defined_benefit
+            ]
+            writer.writerow(csv_safe(v) for v in values)
+
+
+# How one PAYROLL row's join outcome is classified for `ImportReport`'s
+# counts. Deliberately separate from the ORPHAN_* constants above: those
+# classify an unused SUPER row, these classify a payroll row, and the two
+# answer different questions for different readers. Plain strings, not an
+# enum, to match ORPHAN_*'s own style and stay trivially printable.
+OUTCOME_MATCHED = "matched"
+OUTCOME_OWES_NOTHING = "owes nothing"
+OUTCOME_UNDATED = "matched, no fund-receipt evidence"
+OUTCOME_PARTIAL = "partial"
+OUTCOME_OVER = "over"
+OUTCOME_UNMATCHED = "unmatched"
+
+
+def _classify_outcome(outcome: MatchOutcome) -> str:
+    """Bucket one payroll row's join outcome for `ImportReport`'s counts.
+
+    Order matters: more than one bucket can be literally true of the same
+    outcome (a partial match can also be missing a fund-receipt date on the
+    portion that did arrive), and the more specific, more actionable
+    classification must win. A short payment is reported as partial even
+    though part of what it did receive has no receipt evidence either --
+    "you are short" is the more urgent fact than "and also go find dates
+    for the rest"."""
+    row = outcome.payroll
+    if row.sg_amount == 0:
+        return OUTCOME_OWES_NOTHING
+    if outcome.flag == "no super payment found":
+        return OUTCOME_UNMATCHED
+    if outcome.flag.startswith("partial: "):
+        return OUTCOME_PARTIAL
+    if outcome.flag.startswith("over: "):
+        return OUTCOME_OVER
+    if outcome.remitted is None:
+        return OUTCOME_UNDATED
+    return OUTCOME_MATCHED
+
+
+@dataclass
+class ImportReport:
+    """What did and did not join, from one `import_files` run.
+
+    `outcome_counts` is keyed by the `OUTCOME_*` constants above, one entry
+    per payroll row. `orphan_reasons` is `JoinResult.orphan_reasons`
+    unchanged -- the full detail behind every unused super payment, one
+    entry per orphan, in the same order as the orphans themselves -- so
+    nothing here collapses the four `ORPHAN_*` codes to a bare count: an
+    overpayment on already-settled paydays (`ORPHAN_PAYDAYS_SETTLED`) and a
+    payment that matched no payday at all (`ORPHAN_NO_PAYDAY`) read as
+    opposite findings to an accountant and must stay tellable apart."""
+
+    payroll_profile: Profile
+    super_profile: Profile
+    outcome_counts: dict[str, int]
+    orphan_reasons: list[OrphanReason]
+    key_mode: str
+    warnings: list[str]
+
+    @property
+    def matched(self) -> int:
+        return self.outcome_counts.get(OUTCOME_MATCHED, 0)
+
+    @property
+    def partial(self) -> int:
+        return self.outcome_counts.get(OUTCOME_PARTIAL, 0)
+
+    @property
+    def unmatched(self) -> int:
+        return self.outcome_counts.get(OUTCOME_UNMATCHED, 0)
+
+    @property
+    def orphans(self) -> int:
+        """Total orphaned super payments, across all four ORPHAN_* codes.
+        See `orphan_reasons` for the breakdown this number alone loses."""
+        return len(self.orphan_reasons)
+
+    @property
+    def orphan_counts(self) -> dict[str, int]:
+        """`orphan_reasons` tallied by ORPHAN_* code."""
+        counts: dict[str, int] = {}
+        for reason in self.orphan_reasons:
+            counts[reason.code] = counts.get(reason.code, 0) + 1
+        return counts
+
+    @property
+    def clean(self) -> bool:
+        unclean_outcomes = (
+            OUTCOME_UNDATED,
+            OUTCOME_PARTIAL,
+            OUTCOME_OVER,
+            OUTCOME_UNMATCHED,
+        )
+        return not (
+            any(self.outcome_counts.get(bucket) for bucket in unclean_outcomes)
+            or self.orphan_reasons
+        )
+
+
+def import_files(
+    payroll_path: str | Path,
+    super_path: str | Path,
+    out_path: str | Path,
+    vendor: str | None = None,
+) -> ImportReport:
+    """Read a payroll export and a super payments export, join them, write
+    the canonical contributions CSV to `out_path`, and return a summary of
+    what did and did not join.
+
+    `payroll_has_period_end`/`super_has_period_start`/`super_has_period_end`
+    are derived here, not left to `join`'s defaults, from whether
+    `resolve_columns` found that field in EACH file's own headers -- a
+    file-level fact `read_payroll`/`read_super` surface via their third
+    return value, because it is gone once the rows are built into
+    `PayrollRow`/`SuperRow` objects (a `None` field on a row is then
+    indistinguishable from "this file never had the column at all")."""
+    out = Path(out_path).resolve()
+    for source in (payroll_path, super_path):
+        if Path(source).resolve() == out:
+            raise CsvError(
+                f"the output would overwrite {source}. Choose a different path with -o."
+            )
+
+    payroll_rows, payroll_profile, payroll_resolved = read_payroll(payroll_path, vendor)
+    super_rows, super_profile, super_resolved = read_super(super_path, vendor)
+    result = join(
+        payroll_rows,
+        super_rows,
+        payroll_has_period_end="period_end" in payroll_resolved,
+        super_has_period_start="period_start" in super_resolved,
+        super_has_period_end="period_end" in super_resolved,
+    )
+    write_canonical(result, out)
+
+    outcome_counts: dict[str, int] = {}
+    for outcome in result.outcomes:
+        bucket = _classify_outcome(outcome)
+        outcome_counts[bucket] = outcome_counts.get(bucket, 0) + 1
+
+    warnings = list(result.warnings)
+    warnings.extend(f"row {o.payroll.row}: {o.flag}" for o in result.outcomes if o.flag)
+    warnings.extend(
+        f"super row {r.super_row.row}: {r.message}" for r in result.orphan_reasons
+    )
+
+    return ImportReport(
+        payroll_profile=payroll_profile,
+        super_profile=super_profile,
+        outcome_counts=outcome_counts,
+        orphan_reasons=result.orphan_reasons,
+        key_mode=result.key_mode,
+        warnings=warnings,
+    )
