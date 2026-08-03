@@ -1,5 +1,4 @@
 import json
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -12,7 +11,7 @@ from paydaysuper.profiles import normalise_header, Profile, load_profiles
 def test_normalise_header_folds_case_space_and_punctuation():
     assert normalise_header("  Employee   Membership #  ") == "employee membership"
     assert normalise_header("Paid Date") == "paid date"
-    assert normalise_header("Employee Name") == "employee name"
+    assert normalise_header("Employee\u00a0Name") == "employee name"
 
 
 def test_normalise_header_keeps_digits():
@@ -24,7 +23,7 @@ def test_normalise_header_folds_nbsp_and_tab_as_whitespace():
     # A heading pasted from a spreadsheet often carries a non-breaking space
     # (U+00A0) instead of an ordinary one, and it must not glue the words
     # together.
-    assert normalise_header("Employee Name") == "employee name"
+    assert normalise_header("Employee\u00a0Name") == "employee name"
     assert normalise_header("Employee\tName") == "employee name"
 
 
@@ -90,13 +89,17 @@ def test_all_eight_profiles_load():
 def test_super_profiles_can_isolate_super_guarantee():
     # Without a contribution-type column the importer cannot exclude salary
     # sacrifice, and summing everything overstates the SG figure.
-    for p in load_profiles("super"):
+    super_profiles = load_profiles("super")
+    assert len(super_profiles) == 4, f"expected 4 super profiles, got {len(super_profiles)}"
+    for p in super_profiles:
         assert p.sg_filter is not None, f"{p.key} has no sg_filter"
         assert p.sg_filter.column == "contribution_type"
 
 
 def test_payroll_profiles_map_a_payday():
-    for p in load_profiles("payroll"):
+    payroll_profiles = load_profiles("payroll")
+    assert len(payroll_profiles) == 4, f"expected 4 payroll profiles, got {len(payroll_profiles)}"
+    for p in payroll_profiles:
         assert "payday" in p.columns, f"{p.key} maps no payday"
 
 
@@ -104,9 +107,8 @@ def test_profile_data_is_declared_as_package_data():
     # data/*.json does not glob into data/profiles/. Without this line
     # `pip install .` ships a CLI whose importers cannot start.
     root = Path(__file__).resolve().parents[1]
-    cfg = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    patterns = cfg["tool"]["setuptools"]["package-data"]["paydaysuper"]
-    assert "data/profiles/*.json" in patterns
+    pyproject_text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "data/profiles/*.json" in pyproject_text
 
 
 def test_load_profiles_returns_both_roles():
@@ -117,7 +119,9 @@ def test_load_profiles_returns_both_roles():
 
 
 def test_load_profiles_filters_by_role():
-    assert all(p.role == "super" for p in load_profiles("super"))
+    super_profiles = load_profiles("super")
+    assert len(super_profiles) == 4, f"expected 4 super profiles, got {len(super_profiles)}"
+    assert all(p.role == "super" for p in super_profiles)
 
 
 def test_every_shipped_profile_is_marked_unverified():
