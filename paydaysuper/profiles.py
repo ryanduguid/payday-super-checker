@@ -229,16 +229,26 @@ def detect(headers: list[str], role: str, vendor: str | None = None) -> Profile:
             return exact[0]
         prefixed = [p for p in profiles if p.key.startswith(f"{vendor}-")]
         if len(prefixed) > 1:
+            # Advice that has to work for the `import` command, which passes
+            # ONE --vendor to the payroll file and the super file together:
+            # "name the exact profile key" was followed and then failed on
+            # the other file, because myob-ar-payroll is not a super profile.
+            # The stem both of a vendor's profiles share is the answer.
             raise CsvError(
                 f"--vendor {vendor!r} matches more than one {role} profile: "
-                f"{sorted(p.key for p in prefixed)}. Name the exact profile key "
-                "with --vendor to pick one."
+                f"{sorted(p.key for p in prefixed)}. Lengthen it until it picks one, "
+                "keeping the part both files' profiles share -- 'myob-ar' rather than "
+                "'myob', which picks myob-ar-payroll and myob-ar-super together. The "
+                "import command passes one --vendor to both files."
             )
         if prefixed:
             return prefixed[0]
         raise CsvError(
             f"--vendor {vendor!r} matches no {role} profile. Available: "
-            f"{sorted(p.key for p in profiles)}"
+            f"{sorted(p.key for p in profiles)}. The import command passes one --vendor "
+            "to the payroll file and the super file together, so name the stem both of "
+            "a vendor's profiles start with -- 'myob-ar', not 'myob-ar-payroll', which "
+            "is not a super profile and fails on the second file."
         )
     scored = [(score(p, headers), p) for p in profiles]
     live = [(s, p) for s, p in scored if s is not None]

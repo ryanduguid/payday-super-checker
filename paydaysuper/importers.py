@@ -35,6 +35,7 @@ from .csv_io import (
     CsvError,
     parse_date_text,
 )
+from .deadlines import REGIME_START
 from .profiles import (
     Profile,
     detect,
@@ -1000,6 +1001,37 @@ def write_canonical(result: JoinResult, path: str | Path) -> None:
             writer.writerow(csv_safe(v) for v in values)
 
 
+def _pre_regime_warnings(payroll_rows: list[PayrollRow]) -> list[str]:
+    """Warn about paydays the checker will refuse the whole file over.
+
+    A payroll export spanning 30 June -- the normal shape of a
+    financial-year export -- imports without complaint, and the check then
+    dies with "N row(s) have a QE day before 1 Jul 2026 ... Remove them and
+    run again" and writes no report at all. The README promises two
+    commands turn an export into a checked report, and this is where that
+    promise dead-ends, so the first command says it rather than leaving the
+    second to.
+
+    A warning, not a refusal: the rows are real payroll data and the file
+    written here is still the workpaper the user edits. Naming the rows is
+    the point -- they are what has to come out."""
+    early = [r for r in payroll_rows if r.payday < REGIME_START]
+    if not early:
+        return []
+    shown = ", ".join(str(r.row) for r in early[:20])
+    more = f" and {len(early) - 20} more" if len(early) > 20 else ""
+    earliest = min(r.payday for r in early).isoformat()
+    return [
+        f"{len(early)} payroll row(s) have a payday before "
+        f"{REGIME_START.isoformat()} (row(s) {shown}{more}; earliest {earliest}), and "
+        "the check refuses any file containing one: those paydays are governed by the "
+        "old quarterly SG law, which this tool does not model. They are written to the "
+        "output anyway, because they are real payroll rows -- delete them from it, or "
+        "re-export from the start of the financial year in which payday super applies, "
+        "before running the check."
+    ]
+
+
 @dataclass
 class ImportReport:
     """What did and did not join, from one `import_files` run.
@@ -1100,7 +1132,7 @@ def import_files(
         bucket = _classify_outcome(outcome)
         outcome_counts[bucket] = outcome_counts.get(bucket, 0) + 1
 
-    warnings = list(result.warnings)
+    warnings = _pre_regime_warnings(payroll_rows) + list(result.warnings)
     warnings.extend(f"row {o.payroll.row}: {o.flag}" for o in result.outcomes if o.flag)
     warnings.extend(
         f"super row {r.super_row.row}: {r.message}" for r in result.orphan_reasons
