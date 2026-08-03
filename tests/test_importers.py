@@ -2909,3 +2909,30 @@ def test_the_importer_reads_excels_accounting_format_too(tmp_path):
     rows = _canonical_rows(out)
     assert rows[0]["sg_amount"] == "540.00"
     assert rows[0]["remitted_date"] == "2026-07-15"
+
+
+def test_a_vendor_that_matches_nothing_is_not_told_to_type_myob(tmp_path, capsys):
+    # COSMETIC (final re-review). `--vendor quickbooks` matched no profile
+    # and was answered with the advice written for someone who typed a real
+    # profile key that was too long: "name the stem both of a vendor's
+    # profiles start with -- 'myob-ar', not 'myob-ar-payroll'". Neither name
+    # in that sentence has anything to do with what was typed. The advice
+    # belongs only where the name typed really is one of this vendor's own
+    # keys worn too long.
+    code = cli_main(
+        [
+            "import",
+            "--payroll", str(FIXTURES / "myob_payroll.csv"),
+            "--super", str(FIXTURES / "myob_super.csv"),
+            "-o", str(tmp_path / "contributions.csv"),
+            "--vendor", "quickbooks",
+        ]
+    )
+    err = capsys.readouterr().err
+    assert code == EXIT_ERROR
+    assert "matches no payroll profile" in err
+    assert "'myob-ar'" not in err
+    assert "name the stem" not in err
+    # The list of what IS available survives: it is the part that answers
+    # the question actually asked.
+    assert "xero-payroll" in err

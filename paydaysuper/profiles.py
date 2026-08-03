@@ -221,6 +221,23 @@ def score(profile: Profile, headers: list[str]) -> int | None:
     return len(resolve_columns(profile, headers))
 
 
+def _vendor_stem(vendor: str, profiles: list[Profile]) -> str | None:
+    """The longest leading dash-delimited part of `vendor` that a profile in
+    THIS role does answer to, or None when the name shares nothing with any
+    of them.
+
+    What tells 'myob-ar-payroll' handed to the super reader (a real key of
+    this vendor's, just the wrong half of the pair, and 'myob-ar' is the
+    answer) apart from 'quickbooks' (a vendor with no profiles at all,
+    which no stem of any length will help)."""
+    parts = vendor.split("-")
+    for cut in range(len(parts) - 1, 0, -1):
+        stem = "-".join(parts[:cut])
+        if any(p.key == stem or p.key.startswith(f"{stem}-") for p in profiles):
+            return stem
+    return None
+
+
 def detect(headers: list[str], role: str, vendor: str | None = None) -> Profile:
     profiles = load_profiles(role)
     if vendor is not None:
@@ -243,13 +260,25 @@ def detect(headers: list[str], role: str, vendor: str | None = None) -> Profile:
             )
         if prefixed:
             return prefixed[0]
-        raise CsvError(
+        message = (
             f"--vendor {vendor!r} matches no {role} profile. Available: "
-            f"{sorted(p.key for p in profiles)}. The import command passes one --vendor "
-            "to the payroll file and the super file together, so name the stem both of "
-            "a vendor's profiles start with -- 'myob-ar', not 'myob-ar-payroll', which "
-            "is not a super profile and fails on the second file."
+            f"{sorted(p.key for p in profiles)}."
         )
+        stem = _vendor_stem(vendor, profiles)
+        if stem is not None:
+            # Only where the name typed really is one of this vendor's keys
+            # worn too long, which is the mistake this advice answers: the
+            # user named the payroll profile and the super file refused it.
+            # `--vendor quickbooks` matches nothing and shares nothing, so
+            # it used to be told to type 'myob-ar', a vendor it had not
+            # mentioned and does not have a profile for either.
+            message += (
+                " The import command passes one --vendor to the payroll file and the "
+                f"super file together, so name the stem both of a vendor's profiles "
+                f"start with -- {stem!r}, not {vendor!r}, which is not a {role} "
+                "profile and fails on the second file."
+            )
+        raise CsvError(message)
     scored = [(score(p, headers), p) for p in profiles]
     live = [(s, p) for s, p in scored if s is not None]
     if not live:
