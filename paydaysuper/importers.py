@@ -919,7 +919,14 @@ def _iso(value: date | None) -> str:
 # style and stay trivially printable.
 OUTCOME_MATCHED = "matched"
 OUTCOME_OWES_NOTHING = "owes nothing"
-OUTCOME_UNDATED = "matched, no fund-receipt evidence"
+# "no remittance date", not "no fund-receipt evidence": fund_received_date
+# is blank on EVERY row this module writes, so naming a fund receipt here
+# described the one thing that is never true of one row and not another.
+# What this bucket means is that the payday was matched in full and at
+# least one super row behind the match carries no vendor payment date, so
+# `join` blanked `remitted` and the checker will read the payday as
+# unfunded.
+OUTCOME_UNDATED = "matched, no remittance date"
 OUTCOME_PARTIAL = "partial"
 OUTCOME_OVER = "over"
 OUTCOME_UNMATCHED = "unmatched"
@@ -929,7 +936,7 @@ def _classify_outcome(outcome: MatchOutcome) -> str:
     """Bucket one payroll row's join outcome.
 
     Order matters: more than one bucket can be literally true of the same
-    outcome (a partial match can also be missing a fund-receipt date on the
+    outcome (a partial match can also be missing a remittance date on the
     portion that did arrive), and the more specific, more actionable
     classification must win. A short payment is reported as partial even
     though part of what it did receive has no receipt evidence either --

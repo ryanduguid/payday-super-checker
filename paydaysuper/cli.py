@@ -138,7 +138,7 @@ MAX_WARNINGS_SHOWN = 20
 # are never capped either.
 _ROW_LEVEL_WARNING = re.compile(r"^(row|super row) \d+: ")
 
-# A partial, over-payment or missing-fund-receipt-date warning carries the
+# A partial, over-payment or missing-remittance-date warning carries the
 # ONLY surviving record of a figure the canonical CSV cannot hold:
 # write_canonical leaves remitted_date blank for an OUTCOME_PARTIAL row
 # regardless, and an OUTCOME_UNDATED row's remitted_date is blank for the
@@ -233,13 +233,16 @@ def import_main(argv: list[str]) -> int:
         # payday turns into a checker report calling it a full 1000.00
         # shortfall, with an SG-charge estimate to match, and the only place
         # the true 999.99 survives is the warning line below.
-        "A partially paid payday is written the same as a completely unpaid "
-        "one: remitted_date is left blank, because the canonical file has no "
-        "column for a part payment, so the checker will treat it as a full "
-        "shortfall. The amount that actually arrived is not lost -- it is in "
-        "the warning lines below, written as \"partial: <received> of <owed> "
-        "matched\" -- apply that figure by hand until the file format can "
-        "carry it directly.",
+        "Two kinds of payday are written the same as a completely unpaid "
+        "one, with remitted_date left blank, and the checker treats both as "
+        "a full shortfall. A partly paid payday, because the canonical file "
+        "has no column for a part payment. And a payday matched IN FULL "
+        "where any of the super rows behind the match carries no payment "
+        "date, because a date covering only part of the money would read as "
+        "proof the whole of it went. Neither figure is lost -- both are in "
+        "the warning lines below, written as \"partial: <received> of "
+        "<owed> matched\" and as \"... has no payment date on record\" -- "
+        "apply them by hand until the file format can carry them directly.",
     ]
 
     if report.warnings:
@@ -254,7 +257,7 @@ def import_main(argv: list[str]) -> int:
         lines.extend(f"  - {w}" for w in structural)
         carries_a_figure = [w for w in row_level if _UNCAPPABLE_WARNING.search(w)]
         other = [w for w in row_level if not _UNCAPPABLE_WARNING.search(w)]
-        # Every partial, over-payment or missing-fund-receipt-date warning,
+        # Every partial, over-payment or missing-remittance-date warning,
         # always -- never truncated.
         lines.extend(f"  - {w}" for w in carries_a_figure)
         shown_other = other[:MAX_WARNINGS_SHOWN]
@@ -263,7 +266,7 @@ def import_main(argv: list[str]) -> int:
         if remaining_other > 0:
             lines.append(
                 f"  ... and {remaining_other} more (none of them a partial, "
-                "over-payment or missing-fund-receipt-date figure -- those are "
+                "over-payment or missing-remittance-date figure -- those are "
                 "always shown in full above)"
             )
 
@@ -283,7 +286,7 @@ def import_main(argv: list[str]) -> int:
     lines += [
         "",
         f"paydays: matched {counts.get(OUTCOME_MATCHED, 0)}, "
-        f"no fund-receipt date {counts.get(OUTCOME_UNDATED, 0)}, "
+        f"no remittance date {counts.get(OUTCOME_UNDATED, 0)}, "
         f"partial {counts.get(OUTCOME_PARTIAL, 0)}, "
         f"over {counts.get(OUTCOME_OVER, 0)}, "
         f"owes nothing {counts.get(OUTCOME_OWES_NOTHING, 0)}, "

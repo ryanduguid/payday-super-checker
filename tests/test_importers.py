@@ -1979,6 +1979,57 @@ def test_import_prints_the_partial_warning_and_explains_the_blank_remitted_date(
     assert printed.index("partial: 999.99 of 1000.00 matched") < printed.index("wrote ")
 
 
+def test_import_explains_the_blank_date_on_a_fully_matched_undated_payday(
+    tmp_path, capsys
+):
+    # IMPORTANT regression. The documented limitation covered half the cases
+    # that produce it. A payday matched IN FULL, where any super row behind
+    # the match carries no vendor date, also gets a blank remitted_date and
+    # is reported as a full shortfall -- and the console caveat, the README
+    # and write_canonical's docstring all described only the partial case.
+    # 1000.00 owed, 1000.00 matched, 600.00 of it dated: UNPAID, shortfall
+    # $1000.00. Same consequence, same remedy, and it was named nowhere.
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "A,09/07/2026,09/07/2026,1000.00\n",
+        encoding="utf-8",
+    )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "A,Superannuation Guarantee,01/07/2026,09/07/2026,15/07/2026,600.00\n"
+        "A,Superannuation Guarantee,01/07/2026,09/07/2026,,400.00\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    code = cli_main(
+        ["import", "--payroll", str(payroll_path), "--super", str(super_path),
+         "-o", str(out)]
+    )
+    assert code == EXIT_LATE_FOUND
+    printed = capsys.readouterr().out
+
+    # The figures, and the caveat covering this case rather than only the
+    # partial one -- "matched in full" is what distinguishes the two, so
+    # the caveat has to say something to that effect before the warnings.
+    assert "row 2: 400.00 of 1000.00 matched has no payment date on record" in printed
+    caveat = printed[: printed.index("warnings (")].lower()
+    assert "in full" in caveat, "the caveat still describes only the partial case"
+    assert "remitted_date" in caveat and "blank" in caveat
+
+    # And the summary counts it as what it is: a missing REMITTANCE date.
+    # fund_received_date is blank on every row this command writes, so
+    # calling it a fund-receipt problem named the one thing that is never
+    # true of one row and not another.
+    assert "no remittance date 1" in printed
+    assert "no fund-receipt date" not in printed
+
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    assert rows[0]["sg_amount"] == "1000.00" and rows[0]["remitted_date"] == ""
+
+
 def test_import_never_truncates_a_partial_warning_however_many_there_are(
     tmp_path, capsys
 ):
@@ -2227,7 +2278,7 @@ def test_import_caps_only_non_partial_warnings_at_a_pinned_literal(tmp_path, cap
     assert printed.count("matched no payday") == 20
     assert (
         "... and 5 more (none of them a partial, over-payment or "
-        "missing-fund-receipt-date figure -- those are always shown in full "
+        "missing-remittance-date figure -- those are always shown in full "
         "above)" in printed
     )
 
