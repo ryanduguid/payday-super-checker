@@ -1,3 +1,4 @@
+import codecs
 import csv
 from datetime import date
 from decimal import Decimal
@@ -877,6 +878,46 @@ def test_item4_caveat_keeps_an_out_of_cycle_lines_own_deadline():
     assert caveat, aligned.caveats
     assert "2026-08-06" in caveat[0]
     assert "2026-08-04" not in caveat[0]
+
+
+def test_report_csv_carries_a_bom_and_round_trips_a_non_ascii_id(tmp_path):
+    """Excel on a cp1252 box mis-decodes a BOM-less UTF-8 CSV, so a
+    non-ASCII employee id stops joining back to payroll. The reader takes
+    utf-8-sig either way, so a report fed back in still parses."""
+    # Capital N with tilde, built from its code point so this file stays ASCII.
+    employee = "EMP" + chr(0x00D1) + "001"
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        f"{employee},2026-07-09,100.00,,2026-07-15,no,no,,no\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "r.csv"
+    main([str(path), "-o", str(out), "--as-at", "2026-08-10"])
+
+    assert out.read_bytes().startswith(codecs.BOM_UTF8)
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[0]["row"] == "2"  # the BOM is not glued to the first heading
+    assert rows[0]["employee_id"] == employee
+
+    # Feeding the report back through the tool's own reader: it strips the
+    # BOM, so the id survives the round trip byte for byte.
+    reparsed = tmp_path / "again.csv"
+    reparsed.write_bytes(
+        codecs.BOM_UTF8
+        + (
+            "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+            "first_contribution_to_fund,out_of_cycle,next_standard_payday,"
+            "defined_benefit\n"
+            f"{rows[0]['employee_id']},{rows[0]['qe_day']},{rows[0]['sg_amount']},,,"
+            "no,no,,no\n"
+        ).encode("utf-8")
+    )
+    lines = parse_rows(reparsed, *load_mapping(None))
+    assert lines[0].employee_id == employee
+    assert lines[0].qe_day == date(2026, 7, 9)
 
 
 def test_ordinary_employee_ids_are_not_rewritten(tmp_path):
