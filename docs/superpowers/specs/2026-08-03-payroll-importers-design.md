@@ -62,12 +62,12 @@ Out of scope: clearing-house confirmation files, API integrations, and any chang
 The importer is a front end that writes the existing canonical CSV. It does not touch `csv_io.py`, `deadlines.py`, `sgc.py` or `report.py`, so the audited calculation path stays as it is. The CSV it writes is also the workpaper: an accountant can read it, correct a receipt date, and run the check on the corrected file.
 
 ```
-payroll export ─┐
-                ├─> importers.py ─> contributions.csv ─> existing check path
-super export   ─┘        │
-                    profiles.py
-                         │
-                 data/profiles/*.json
+payroll export --+
+                 +--> importers.py --> contributions.csv --> existing check path
+super export   --+          |
+                        profiles.py
+                             |
+                     data/profiles/*.json
 ```
 
 ### paydaysuper/profiles.py
