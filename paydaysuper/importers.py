@@ -30,8 +30,14 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from .csv_io import MISSING, CsvError, parse_date_text
-from .profiles import Profile, detect, normalise_header, resolve_columns
-from .report import csv_safe, money
+from .profiles import (
+    Profile,
+    detect,
+    normalise_header,
+    normalise_name,
+    resolve_columns,
+)
+from .report import cents, csv_safe, money
 
 # A separator is allowed only where a thousands separator belongs. Stripping
 # every comma turns the European decimal 612,00 into 61200.
@@ -336,8 +342,26 @@ class JoinResult:
 
 
 def _key(row, mode: str) -> str:
-    value = row.employee_id if mode == "id" else row.employee_name
-    return normalise_header(value or "")
+    """The identity the two files are matched on.
+
+    An id is compared EXACTLY, with nothing folded. Ids are opaque codes,
+    not prose: `E-001` and `E001` are two different employees at plenty of
+    employers, and folding punctuation out of them merges the two into one
+    record. That merge understates -- the first employee's payment settles
+    the second employee's payday, and the workpaper reports someone who
+    received nothing as owing nothing -- which is the one direction the
+    rest of this design refuses to fail in.
+
+    The documented name fallback folds case and whitespace and nothing
+    else (`profiles.normalise_name`), so `O'Brien` and `OBrien` stay two
+    people and a name written in any script keeps a non-empty key. The old
+    code sent both id and name through `profiles.normalise_header`, whose
+    own docstring says it folds HEADINGS: it strips `[^0-9a-z ]+`, so a
+    name with no ASCII alphanumerics in it came back empty and `join`
+    below refused the whole import over a populated employee column."""
+    if mode == "id":
+        return row.employee_id or ""
+    return normalise_name(row.employee_name or "")
 
 
 def _covers(s: SuperRow, target: date) -> bool:
@@ -768,9 +792,20 @@ def join(
         # bucket an outcome for `ImportReport`. Reword any of the three and
         # that classification silently stops matching; a test would catch
         # the drift, but the coupling is otherwise invisible from here.
-        if total < row.sg_amount:
+        # Compared TO THE CENT on both sides, because that is the figure
+        # that leaves this module: `write_canonical` writes
+        # `money(row.sg_amount)`, quantised to cents, and the checker reads
+        # the file back at that precision. Comparing raw Decimals reported
+        # 540.00 paid against 540.004 owed as a short payment, blanked the
+        # remittance date, and turned a payday where every payable cent
+        # arrived on time into a $540.00 shortfall with an SG-charge
+        # estimate on top. The flag text keeps the unrounded figures: they
+        # are what the two files actually say.
+        paid_to_cents = cents(total)
+        owed_to_cents = cents(row.sg_amount)
+        if paid_to_cents < owed_to_cents:
             flag_parts.append(f"partial: {total} of {row.sg_amount} matched")
-        elif total > row.sg_amount:
+        elif paid_to_cents > owed_to_cents:
             flag_parts.append(
                 f"over: {total} against {row.sg_amount}, check for salary sacrifice "
                 "in the contribution types"
