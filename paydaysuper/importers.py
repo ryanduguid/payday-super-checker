@@ -280,7 +280,20 @@ def _key(row, mode: str) -> str:
 
 
 def _covers(s: SuperRow, target: date) -> bool:
-    """Whether a super row's period includes a target date.
+    """Whether a super row's period includes a target date, inclusive of
+    both ends.
+
+    An exclusive start was tried (round 3) to stop one period's end being
+    repeated as the next period's start from re-claiming the earlier
+    payday. It broke the opposite, equally normal convention -- a period
+    that starts ON the payday it settles, or a payday that lands on a
+    period's own start date -- turning a clean match into a false orphan.
+    Fixing the boundary belongs to the two-pass allocation in `join`, not
+    to a stricter date comparison here: pass 1 lets an unambiguous single-
+    coverage payment settle its payday before any period-overlap payment
+    is even considered, so a shared boundary date that pass 1 already
+    resolved has zero balance left to be fought over in pass 2. See
+    `join`'s docstring.
 
     The sole real call site (`_coverage`) never reaches this with both
     period fields `None` -- a period-less row's ambiguity is resolved
@@ -288,24 +301,12 @@ def _covers(s: SuperRow, target: date) -> bool:
     direct caller could, so this defends itself instead of letting
     `None <= target` raise `TypeError`. `False` is the defensible answer:
     without any period at all, claiming this row covers one specific date
-    would be a guess.
-
-    The start boundary is exclusive and the end boundary inclusive, unless
-    the period is a single day (period_start == period_end, including when
-    only one field was ever supplied and the other defaulted to match it),
-    in which case that single day has to match on its own. Exclusive start
-    matters because export files routinely repeat the previous period's end
-    as the next period's start (a fortnight ending 3 July is immediately
-    followed by one starting 3 July): with an inclusive start, the second
-    period would re-claim the first period's payday too, turning a clean
-    1:1 pairing into a false multi-coverage case."""
+    would be a guess."""
     if s.period_start is None and s.period_end is None:
         return False
     start = s.period_start or s.period_end
     end = s.period_end or s.period_start
-    if start == end:
-        return start == target
-    return start < target <= end
+    return start <= target <= end
 
 
 def _check_reversed_periods(super_rows: list[SuperRow]) -> None:
@@ -341,15 +342,23 @@ def _coverage(s: SuperRow, candidates: list[PayrollRow]) -> list[PayrollRow]:
     return [r for r in candidates if _covers(s, r.effective_period_end)]
 
 
-def _check_defensible(s: SuperRow, covered: list[PayrollRow]) -> None:
+def _check_defensible(s: SuperRow, competing: list[PayrollRow]) -> None:
     """Refuse only where apportionment cannot produce a defensible answer:
-    two or more of the payroll rows a super row covers are indistinguishable
-    in every field that affects the outcome -- same payday, same effective
-    period end, same sg_amount. Anything else (different payday, different
-    period, or different amount) sorts and apportions instead; see
-    `_allocate`."""
+    two or more of the payroll rows still competing for this super row's
+    money are indistinguishable in every field that affects the outcome --
+    same payday, same effective period end, same sg_amount. Anything else
+    (different payday, different period, different amount, or a row that
+    is no longer competing at all because something else already met its
+    balance) sorts and apportions instead; see `_allocate`.
+
+    `competing` -- not the super row's raw structural coverage -- because a
+    row whose balance is already fully met by an earlier allocation is not
+    actually contested by this payment even if the super row's period
+    still technically spans its payday. Refusing over a row that needs
+    nothing from this payment would be a false alarm, not a defensible
+    caution."""
     groups: dict[tuple[date, date, Decimal], list[PayrollRow]] = {}
-    for r in covered:
+    for r in competing:
         groups.setdefault((r.payday, r.effective_period_end, r.sg_amount), []).append(r)
     for rows in groups.values():
         if len(rows) <= 1:
@@ -378,11 +387,25 @@ def _check_defensible(s: SuperRow, covered: list[PayrollRow]) -> None:
         )
 
 
-def _allocate(s: SuperRow, covered: list[PayrollRow]) -> list[tuple[PayrollRow, Decimal]]:
+def _unmet(row: PayrollRow, allocated_total: dict[int, Decimal]) -> Decimal:
+    """How much of a payroll row's sg_amount has not yet been covered by
+    anything allocated to it so far, from any super row, in either pass.
+    Never negative: a row that has already received its full sg_amount (or
+    more, from an overpayment) has nothing left to be short of."""
+    return max(Decimal("0"), row.sg_amount - allocated_total.get(id(row), Decimal("0")))
+
+
+def _allocate(
+    s: SuperRow, covered: list[PayrollRow], allocated_total: dict[int, Decimal]
+) -> list[tuple[PayrollRow, Decimal]]:
     """Spread a super row's amount across the payroll rows it covers, oldest
-    payday first, each taking at most its own sg_amount; any amount left
-    over after every covered row is satisfied lands on the last row that
-    received an allocation.
+    payday first, each taking at most its own UNMET balance -- what is left
+    of its sg_amount after everything already allocated to it, from any
+    super row, in either pass -- not its full sg_amount regardless of what
+    it has already received. A row already settled by something else takes
+    nothing here, however wide this payment's own period reaches; any
+    amount left over once every covered row's balance is satisfied lands
+    on the last row that received an allocation.
 
     Sorting by `(payday, effective_period_end, row)` is a total order over
     distinct payroll rows -- row numbers are unique within one file, so the
@@ -395,7 +418,7 @@ def _allocate(s: SuperRow, covered: list[PayrollRow]) -> list[tuple[PayrollRow, 
     for row in ordered:
         if remaining <= 0:
             break
-        share = min(remaining, row.sg_amount)
+        share = min(remaining, _unmet(row, allocated_total))
         if share > 0:
             allocations.append((row, share))
         remaining -= share
@@ -414,6 +437,30 @@ def join(
     super_has_period_end: bool = True,
 ) -> JoinResult:
     """Match payroll rows to the super payments that settled them.
+
+    Two passes decide what each super row contributes, run in this order
+    for every employee together (not employee by employee, since the
+    passes and the sort inside each are already scoped by coverage):
+
+    Pass 1 -- every super row whose period covers exactly one payroll row
+    settles that row first, for its full amount (an overpayment here still
+    shows up as `over:` later; nothing here is capped). This is what
+    resolves a shared period boundary cleanly: if one super row's period
+    covers a payday on its own, it settles that payday before any wider,
+    multi-payday super row is even considered, so by the time pass 2 looks
+    at a payment whose period happens to also reach that same payday, the
+    payday's balance is already at zero and there is nothing left to
+    apportion to it.
+
+    Pass 2 -- every super row whose period covers more than one payroll
+    row apportions its amount across them, oldest payday first, each
+    capped at its UNMET balance (`sg_amount` minus everything already
+    allocated to it, from any super row, in either pass -- not its full
+    `sg_amount` regardless of what it already has). Pass-2 super rows are
+    processed in a fixed order, sorted by `(paid_date or date.max, row)`,
+    so which row's balance is already reduced by the time a later pass-2
+    payment is considered never depends on the order `super_rows` was
+    passed in.
 
     `payroll_has_period_end`, `super_has_period_start` and
     `super_has_period_end` describe whether the *file*, not any one row,
@@ -483,31 +530,67 @@ def join(
         coverage[id(s)] = _coverage(s, candidates)
 
     # contributions[id(payroll_row)] collects every (super_row, amount,
-    # note) a payroll row received, whether from a plain 1:1 match or as
-    # its share of an apportioned payment, so the totalling below (partial/
-    # over/remitted) never has to care which kind it was looking at.
+    # note) a payroll row received, whether from a plain pass-1 match or as
+    # its share of a pass-2 apportioned payment, so the totalling below
+    # (partial/over/remitted) never has to care which kind it was looking
+    # at. allocated_total[id(payroll_row)] is the running sum backing
+    # `_unmet`, updated as each pass completes so pass 2 always sees the
+    # true balance left over from pass 1 and from every pass-2 super row
+    # already processed before it.
     contributions: dict[int, list[tuple[SuperRow, Decimal, str]]] = {}
+    allocated_total: dict[int, Decimal] = {}
     used_super_ids: set[int] = set()
 
-    for s in super_rows:
+    def _credit(row: PayrollRow, s: SuperRow, share: Decimal, note: str) -> None:
+        contributions.setdefault(id(row), []).append((s, share, note))
+        allocated_total[id(row)] = allocated_total.get(id(row), Decimal("0")) + share
+
+    pass1 = [s for s in super_rows if len(coverage[id(s)]) == 1]
+    for s in pass1:
+        row = coverage[id(s)][0]
+        if row.sg_amount == 0:
+            # A super row whose period matches only a payroll row that
+            # owes nothing has no defensible recipient at all; leaving it
+            # unclaimed (an orphan) is more honest than crediting a row
+            # that is about to be reported as owing zero regardless.
+            continue
+        _credit(row, s, s.amount, "")
+        used_super_ids.add(id(s))
+
+    pass2 = [s for s in super_rows if len(coverage[id(s)]) > 1]
+    for s in sorted(pass2, key=lambda s: (s.paid_date or date.max, s.row)):
         covered = coverage[id(s)]
-        if not covered:
-            continue
-        if len(covered) == 1:
-            row = covered[0]
-            contributions.setdefault(id(row), []).append((s, s.amount, ""))
-            used_super_ids.add(id(s))
-            continue
-        _check_defensible(s, covered)
-        allocations = _allocate(s, covered)
-        note = f"allocated from a payment covering {len(covered)} paydays"
+        competing = [r for r in covered if _unmet(r, allocated_total) > 0]
+        _check_defensible(s, competing)
+        allocations = _allocate(s, covered, allocated_total)
+        # A super row only reads as a SHARED payment if more than one
+        # payroll row was actually still contesting its money at the
+        # moment it was processed. A row whose balance pass 1 (or an
+        # earlier pass-2 super row) already zeroed out is not competing
+        # for anything here, even if this payment's own period still
+        # structurally reaches its payday -- see `join`'s docstring on the
+        # shared-boundary case this resolves.
+        shared = len(competing) > 1
+        paid_str = s.paid_date.isoformat() if s.paid_date is not None else "no date on record"
         for row, share in allocations:
-            contributions.setdefault(id(row), []).append((s, share, note))
+            note = (
+                f"{share} of {s.amount} allocated from super row {s.row} (paid "
+                f"{paid_str}), one of {len(competing)} paydays that payment covered"
+                if shared
+                else ""
+            )
+            _credit(row, s, share, note)
         if allocations:
             used_super_ids.add(id(s))
 
     outcomes: list[MatchOutcome] = []
     for row in payroll_rows:
+        if row.sg_amount == 0:
+            outcomes.append(
+                MatchOutcome(row, None, "no super guarantee owed for this payday", None)
+            )
+            continue
+
         entries = contributions.get(id(row), [])
         if not entries:
             outcomes.append(MatchOutcome(row, None, "no super payment found", None))
@@ -522,7 +605,11 @@ def join(
                 f"over: {total} against {row.sg_amount}, check for salary sacrifice "
                 "in the contribution types"
             )
-        flag_parts.extend(sorted({note for _, _, note in entries if note}))
+        # One note per contributing super row, never deduplicated by text:
+        # two different shared payments can produce identical-looking
+        # notes only by coincidence of amount/row/date, and even then they
+        # are two separate payments that both belong in the flag.
+        flag_parts.extend(note for _, _, note in entries if note)
 
         # The deadline tests receipt: a matched row without a paid date is
         # not evidence the fund got the money. This applies even when only
