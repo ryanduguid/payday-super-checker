@@ -316,7 +316,9 @@ def test_notional_earnings_stop_before_an_assessment():
     assert any("day before the assessment" in w for w in r.warnings)
 
 
-def test_zero_amount_late_line_does_not_claim_a_receipt():
+def test_zero_amount_late_line_does_not_claim_a_receipt(tmp_path, capsys):
+    """A nil row has no exposure behind it whatever its dates say, so a late
+    remittance date cannot make it LATE or drive the exit code."""
     line = ContribLine(
         employee_id="E0",
         qe_day=date(2026, 7, 9),
@@ -325,9 +327,58 @@ def test_zero_amount_late_line_does_not_claim_a_receipt():
         row=2,
     )
     results = assess([line], load_calendar(), load_gic(), AS_AT)
+    assert results[0].verdict == "UNKNOWN"
+    assert results[0].final_shortfall is None
+    assert any("records no SG amount" in c for c in results[0].caveats)
+
     text = console_summary(results, AS_AT, "report.csv", "2026-08-02", load_rates())
-    assert "shortfall $0.00" in text
+    assert "Lines with exposure" not in text
     assert "received, so the shortfall is nil" not in text
+
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        "E0,2026-07-09,0.00,2026-08-01,,no,no,,no\n",
+        encoding="utf-8",
+    )
+    assert main([str(path), "-o", str(tmp_path / "r.csv"), "--as-at", "2026-08-10"]) == 0
+
+
+def test_zero_amount_line_with_a_late_receipt_is_not_late():
+    """The receipt branch of the ladder is guarded by the same one test."""
+    line = ContribLine(
+        employee_id="E0",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("0.00"),
+        received=date(2026, 8, 1),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+    assert r.verdict == "UNKNOWN"
+    assert r.sgc_high is None
+
+
+def test_overdue_nil_row_is_not_told_the_deadline_has_not_passed():
+    """A nil row whose deadline has gone used to fall through to the
+    not-yet-due branch and be told in writing that it had not."""
+    line = ContribLine(
+        employee_id="E0", qe_day=date(2026, 7, 9), sg_amount=Decimal("0.00"), row=2
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+    assert r.verdict == "UNKNOWN"
+    assert any("the deadline passed on 2026-07-20" in c for c in r.caveats)
+    assert not any("the deadline has not" in c for c in r.caveats)
+
+
+def test_nil_row_before_its_deadline_still_says_so():
+    line = ContribLine(
+        employee_id="E0", qe_day=date(2026, 8, 6), sg_amount=Decimal("0.00"), row=2
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+    assert r.verdict == "UNKNOWN"
+    assert any("records no SG amount" in c for c in r.caveats)
+    assert not any("the deadline passed" in c for c in r.caveats)
 
 
 def test_report_records_the_assessment_assumption(tmp_path):
