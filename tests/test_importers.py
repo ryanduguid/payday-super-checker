@@ -210,36 +210,103 @@ def test_name_matching_warns():
     assert any("name" in w for w in result.warnings)
 
 
-def test_a_super_row_bracketing_two_paydays_is_refused_not_guessed():
-    # One super payment whose period is wide enough to bracket two separate
-    # paydays for the same employee is genuinely ambiguous: picking the
-    # first one in the input list (silently, by list order) would settle
-    # whichever payday happens to come first in the file, not necessarily
-    # the one the payment was actually for, and the two paydays carry
-    # different deadlines (2026-07-20 and 2026-08-04). Reordering the CSV
-    # must never be able to change which one gets flagged as unpaid, so
-    # this refuses instead of guessing.
-    with pytest.raises(CsvError) as exc:
-        join(
-            [payroll("A", "2026-07-09", "300.00", row=2),
-             payroll("A", "2026-07-23", "300.00", row=3)],
+def _by_row(result):
+    return {o.payroll.row: o for o in result.outcomes}
+
+
+def test_a_super_row_bracketing_two_paydays_apportions_oldest_first():
+    # Round-2's ruling was "refuse rather than guess" here. The owner
+    # changed that ruling: this shape is the ordinary monthly/quarterly
+    # remittance an employer who pays fortnightly produces routinely, and a
+    # checker that aborts on the single most common cadence in Australian
+    # payroll tells that employer nothing. Reworked reproduction A: super
+    # 300.00 covering paydays 2026-07-09 (sg 612.00) and 2026-07-23
+    # (sg 540.00). Oldest-first apportionment gives the whole 300.00 to the
+    # 9 July row (a partial, since 300.00 < 612.00) and nothing is left for
+    # 23 July, which is flagged unpaid rather than silently dropped. This
+    # must hold identically regardless of which order the two payroll rows
+    # are passed to join in -- the ordering that decides the outcome is the
+    # sort inside join, never the caller's list order.
+    for payroll_rows in (
+        [payroll("A", "2026-07-09", "612.00", row=2), payroll("A", "2026-07-23", "540.00", row=3)],
+        [payroll("A", "2026-07-23", "540.00", row=3), payroll("A", "2026-07-09", "612.00", row=2)],
+    ):
+        result = join(
+            payroll_rows,
             [super_row("A", "2026-07-01", "2026-07-31", "2026-08-28", "300.00", row=2)],
         )
-    message = str(exc.value)
-    assert "super row 2" in message  # names the super row itself
-    assert "rows 2, 3" in message  # and every payroll row it could settle
+        outcomes = _by_row(result)
+        assert outcomes[2].remitted == date(2026, 8, 28)
+        assert "partial: 300.00 of 612.00 matched" in outcomes[2].flag
+        assert "allocated from a payment covering 2 paydays" in outcomes[2].flag
+        assert outcomes[3].remitted is None
+        assert outcomes[3].flag == "no super payment found"
+        assert result.orphans == []
 
 
-def test_ambiguous_coverage_is_refused_regardless_of_amount():
-    # Matching never looks at amount -- only employee and period coverage --
-    # so the ambiguity check must not either. Two payroll rows with
-    # DIFFERENT amounts but the same period end, bracketed by one super row,
-    # are exactly as ambiguous as two with the same amount.
-    with pytest.raises(CsvError) as exc:
-        join([payroll("A", "2026-07-09", "612.00", row=2),
-              payroll("A", "2026-07-09", "500.00", row=3)],
-             [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "612.00")])
-    assert "rows 2, 3" in str(exc.value)
+def test_ambiguous_coverage_apportions_deterministically_regardless_of_amount():
+    # Reworked reproduction B: rows 612.00 (row 2) and 500.00 (row 3) share
+    # a payday and period end, one 612.00 super payment covers both.
+    # Matching never looks at amount, so the tie between them is broken by
+    # row number (the payroll row's position in its own file, not by
+    # whichever order the two rows happen to be passed to join in) -- row 2
+    # always wins the payment in full, row 3 is always left unpaid, and
+    # neither list order ever manufactures a false "over:" flag.
+    for payroll_rows in (
+        [payroll("A", "2026-07-09", "612.00", row=2), payroll("A", "2026-07-09", "500.00", row=3)],
+        [payroll("A", "2026-07-09", "500.00", row=3), payroll("A", "2026-07-09", "612.00", row=2)],
+    ):
+        result = join(
+            payroll_rows,
+            [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "612.00")],
+        )
+        outcomes = _by_row(result)
+        # Exact equality, not a substring check, pins the flag content --
+        # a false "over:" would fail these assertions outright rather than
+        # slip past a check that also happens to match "over" inside
+        # "covering".
+        assert outcomes[2].remitted == date(2026, 7, 14)
+        assert outcomes[2].flag == "allocated from a payment covering 2 paydays"
+        assert outcomes[3].remitted is None
+        assert outcomes[3].flag == "no super payment found"
+
+
+def test_one_payment_covering_three_fortnightly_paydays_is_apportioned_not_aborted():
+    # The exact shape the owner's ruling exists to fix: a single monthly
+    # remittance settling three fortnightly paydays for one employee. This
+    # must not raise -- it must allocate to all three and flag each one
+    # with how many paydays the payment covered.
+    result = join(
+        [payroll("A", "2026-07-09", "600.00", row=2),
+         payroll("A", "2026-07-23", "600.00", row=3),
+         payroll("A", "2026-08-06", "600.00", row=4)],
+        [super_row("A", "2026-07-01", "2026-08-11", "2026-08-15", "1800.00", row=2)],
+    )
+    outcomes = _by_row(result)
+    for row_number in (2, 3, 4):
+        assert outcomes[row_number].remitted == date(2026, 8, 15)
+        assert outcomes[row_number].flag == "allocated from a payment covering 3 paydays"
+    assert result.orphans == []
+
+
+def test_touching_period_boundaries_pair_cleanly_one_to_one():
+    # A normal export convention: one period's end date is repeated as the
+    # next period's start date (a fortnight ending 3 July, immediately
+    # followed by one starting 3 July). An inclusive start would let the
+    # second super row re-claim the first payday too, manufacturing a false
+    # multi-coverage case out of an unambiguous 1:1 file.
+    result = join(
+        [payroll("A", "2026-07-03", "612.00", row=2),
+         payroll("A", "2026-07-10", "540.00", row=3)],
+        [super_row("A", "2026-06-27", "2026-07-03", "2026-07-08", "612.00", row=2),
+         super_row("A", "2026-07-03", "2026-07-10", "2026-07-15", "540.00", row=3)],
+    )
+    outcomes = _by_row(result)
+    assert outcomes[2].remitted == date(2026, 7, 8)
+    assert outcomes[2].flag == ""
+    assert outcomes[3].remitted == date(2026, 7, 15)
+    assert outcomes[3].flag == ""
+    assert result.orphans == []
 
 
 def test_two_identical_paydays_without_a_covering_super_payment_are_not_refused():
@@ -363,6 +430,20 @@ def test_super_missing_one_period_column_warns():
     assert any("single day" in w for w in result.warnings)
 
 
+def test_super_missing_both_period_columns_warns():
+    # An XOR on super_has_period_start != super_has_period_end fires for
+    # "only one missing" but stays silent for "both missing" -- passing
+    # False for both must still warn, with wording that fits the shape
+    # (no period at all, not "collapses to a single day").
+    result = join(
+        [payroll("A", "2026-07-09", "612.00")],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "612.00")],
+        super_has_period_start=False,
+        super_has_period_end=False,
+    )
+    assert any("no pay period columns" in w for w in result.warnings)
+
+
 def test_pay_in_arrears_without_a_period_end_column_misses_silently_unless_warned():
     # A perfectly valid arrears-paid file: the payday lands after the pay
     # period it covers. Without a period_end column the join has only the
@@ -391,3 +472,56 @@ def test_claimed_tracks_object_identity_not_row_number():
     assert result.outcomes[0].remitted == date(2026, 7, 14)
     assert result.outcomes[0].flag == ""
     assert [o.row for o in result.orphans] == [2]
+
+
+def test_period_less_super_row_refusal_names_the_super_file_as_the_cause():
+    # A period-less super row covering two genuinely-identical payroll rows
+    # is refused (same rule as any other indistinguishable pair), but the
+    # message must name the super file's missing pay period column(s) as
+    # the cause -- it is the reason this row was treated as covering both
+    # paydays in the first place -- not tell the user to fix the payroll
+    # file, which did nothing wrong.
+    s = SuperRow(None, "A", None, None, date(2026, 7, 14), Decimal("612.00"), 2)
+    with pytest.raises(CsvError) as exc:
+        join(
+            [payroll("A", "2026-07-09", "612.00", row=2),
+             payroll("A", "2026-07-09", "612.00", row=3)],
+            [s],
+        )
+    message = str(exc.value)
+    assert "super file is missing its pay period column" in message
+    assert "rows 2, 3" in message
+
+
+def test_last_known_paid_date_is_kept_when_remitted_is_blanked():
+    # Blanking remitted on a partly-undated group is correct, but it must
+    # not discard the one date the user does have: MatchOutcome carries it
+    # separately, and the flag names it so someone chasing the fund has
+    # somewhere to start.
+    result = join(
+        [payroll("A", "2026-07-09", "612.00")],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "300.00", row=2),
+         super_row("A", "2026-07-01", "2026-07-09", None, "312.00", row=3)],
+    )
+    outcome = result.outcomes[0]
+    assert outcome.remitted is None
+    assert outcome.last_known_paid_date == date(2026, 7, 14)
+    assert "2026-07-14" in outcome.flag
+
+
+def test_last_known_paid_date_is_none_when_nothing_is_dated():
+    result = join(
+        [payroll("A", "2026-07-09", "612.00")],
+        [super_row("A", "2026-07-01", "2026-07-09", None, "612.00")],
+    )
+    assert result.outcomes[0].last_known_paid_date is None
+
+
+def test_covers_defends_itself_against_a_period_less_row():
+    # _coverage guards the only real call site, so this never fires in
+    # practice today, but _covers must not raise TypeError for a future
+    # direct caller that hands it a period-less row.
+    from paydaysuper.importers import _covers
+
+    s = SuperRow(None, "A", None, None, date(2026, 7, 14), Decimal("612.00"), 2)
+    assert _covers(s, date(2026, 7, 9)) is False
