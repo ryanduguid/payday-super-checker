@@ -1,0 +1,16 @@
+{
+  "key": "myob-business-payroll",
+  "name": "MYOB Business - Payroll activity",
+  "role": "payroll",
+  "verified": false,
+  "signature": ["Employee", "Payment date"],
+  "columns": {
+    "employee_name": ["Employee", "Employee name"],
+    "employee_id": ["Employee ID"],
+    "payday": ["Payment date", "Date"],
+    "period_end": ["Pay period end", "Period to"],
+    "amount": ["Superannuation guarantee", "Superannuation", "Super"]
+  },
+  "date_formats": ["%d/%m/%Y", "%Y-%m-%d"],
+  "notes": "MYOB publishes no column list for this report."
+}

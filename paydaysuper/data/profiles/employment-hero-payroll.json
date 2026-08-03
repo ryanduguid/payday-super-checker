@@ -1,0 +1,16 @@
+{
+  "key": "employment-hero-payroll",
+  "name": "Employment Hero / KeyPay - Detailed Activity Report",
+  "role": "payroll",
+  "verified": false,
+  "signature": ["Employee", "Date Paid"],
+  "columns": {
+    "employee_name": ["Employee", "Employee Name"],
+    "employee_id": ["Employee Id", "External Id", "Payroll Id"],
+    "payday": ["Date Paid", "Payment Date"],
+    "period_end": ["Pay Period Ending", "Period End"],
+    "amount": ["Super Guarantee", "Superannuation", "Employer Contributions"]
+  },
+  "date_formats": ["%d/%m/%Y", "%Y-%m-%d"],
+  "notes": "From 1 July 2026 Employment Hero renames its OTE report to OTE/QE and adds a QE column, because qualifying earnings replace ordinary time earnings as the SG base."
+}

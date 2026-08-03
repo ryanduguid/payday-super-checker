@@ -30,7 +30,7 @@ payday-super-check = "paydaysuper.cli:main"
 packages = ["paydaysuper"]
 
 [tool.setuptools.package-data]
-paydaysuper = ["data/*.json"]
+paydaysuper = ["data/*.json", "data/profiles/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

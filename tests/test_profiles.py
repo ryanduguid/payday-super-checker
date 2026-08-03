@@ -1,10 +1,12 @@
 import json
+import tomllib
+from pathlib import Path
 
 import pytest
 
 from paydaysuper import profiles
 from paydaysuper.csv_io import CsvError
-from paydaysuper.profiles import normalise_header
+from paydaysuper.profiles import normalise_header, Profile, load_profiles
 
 
 def test_normalise_header_folds_case_space_and_punctuation():
@@ -71,3 +73,53 @@ def test_verified_as_a_string_raises_csv_error(tmp_path, monkeypatch):
     _write_profile(tmp_path, {"verified": "false"})
     with pytest.raises(CsvError):
         profiles.load_profiles()
+
+
+EXPECTED_KEYS = {
+    "xero-payroll", "xero-super",
+    "myob-ar-payroll", "myob-ar-super",
+    "myob-business-payroll", "myob-business-super",
+    "employment-hero-payroll", "employment-hero-super",
+}
+
+
+def test_all_eight_profiles_load():
+    assert {p.key for p in load_profiles()} == EXPECTED_KEYS
+
+
+def test_super_profiles_can_isolate_super_guarantee():
+    # Without a contribution-type column the importer cannot exclude salary
+    # sacrifice, and summing everything overstates the SG figure.
+    for p in load_profiles("super"):
+        assert p.sg_filter is not None, f"{p.key} has no sg_filter"
+        assert p.sg_filter.column == "contribution_type"
+
+
+def test_payroll_profiles_map_a_payday():
+    for p in load_profiles("payroll"):
+        assert "payday" in p.columns, f"{p.key} maps no payday"
+
+
+def test_profile_data_is_declared_as_package_data():
+    # data/*.json does not glob into data/profiles/. Without this line
+    # `pip install .` ships a CLI whose importers cannot start.
+    root = Path(__file__).resolve().parents[1]
+    cfg = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    patterns = cfg["tool"]["setuptools"]["package-data"]["paydaysuper"]
+    assert "data/profiles/*.json" in patterns
+
+
+def test_load_profiles_returns_both_roles():
+    profiles = load_profiles()
+    assert profiles, "no profiles shipped"
+    assert {p.role for p in profiles} == {"payroll", "super"}
+    assert all(isinstance(p, Profile) for p in profiles)
+
+
+def test_load_profiles_filters_by_role():
+    assert all(p.role == "super" for p in load_profiles("super"))
+
+
+def test_every_shipped_profile_is_marked_unverified():
+    # Flip a profile to verified only after it has met a real export.
+    assert all(p.verified is False for p in load_profiles())
