@@ -161,3 +161,69 @@ def load_profiles(role: str | None = None) -> list[Profile]:
     if role is None:
         return profiles
     return [p for p in profiles if p.role == role]
+
+
+def _index(headers: list[str]) -> dict[str, str]:
+    """Normalised heading to the heading as it appears in the file."""
+    found: dict[str, str] = {}
+    for h in headers:
+        if h is None:
+            continue
+        key = normalise_header(h)
+        if key and key not in found:
+            found[key] = h
+    return found
+
+
+def resolve_columns(profile: Profile, headers: list[str]) -> dict[str, str]:
+    """Canonical field to the heading this file actually uses. A field whose
+    headings are all absent is left out, not set to None: the caller decides
+    whether it can proceed without it."""
+    found = _index(headers)
+    resolved = {}
+    for field, candidates in profile.columns.items():
+        for candidate in candidates:
+            actual = found.get(normalise_header(candidate))
+            if actual is not None:
+                resolved[field] = actual
+                break
+    return resolved
+
+
+def score(profile: Profile, headers: list[str]) -> int | None:
+    """How well this profile fits, or None when a signature heading is
+    missing. A missing signature heading is disqualifying, not a low score."""
+    found = _index(headers)
+    for heading in profile.signature:
+        if normalise_header(heading) not in found:
+            return None
+    return len(resolve_columns(profile, headers))
+
+
+def detect(headers: list[str], role: str, vendor: str | None = None) -> Profile:
+    profiles = load_profiles(role)
+    if vendor is not None:
+        for profile in profiles:
+            if profile.key == vendor or profile.key.startswith(f"{vendor}-"):
+                return profile
+        raise CsvError(
+            f"--vendor {vendor!r} matches no {role} profile. Available: "
+            f"{sorted(p.key for p in profiles)}"
+        )
+    scored = [(score(p, headers), p) for p in profiles]
+    live = [(s, p) for s, p in scored if s is not None]
+    if not live:
+        wanted = "; ".join(
+            f"{p.key} wanted {list(p.signature)}" for _, p in sorted(scored, key=lambda x: x[1].key)
+        )
+        raise CsvError(
+            f"no {role} profile recognises these columns: {headers}. Candidates: "
+            f"{wanted}. Force one with --vendor, or map the columns by hand."
+        )
+    live.sort(key=lambda x: (-x[0], x[1].key))
+    if len(live) > 1 and live[0][0] == live[1][0]:
+        raise CsvError(
+            f"could not tell {live[0][1].key} from {live[1][1].key} for this {role} "
+            f"file: both match {live[0][0]} column(s). Force one with --vendor."
+        )
+    return live[0][1]

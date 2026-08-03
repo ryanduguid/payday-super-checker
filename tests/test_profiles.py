@@ -6,6 +6,7 @@ import pytest
 from paydaysuper import profiles
 from paydaysuper.csv_io import CsvError
 from paydaysuper.profiles import normalise_header, Profile, load_profiles
+from paydaysuper.profiles import detect, resolve_columns, score
 
 
 def test_normalise_header_folds_case_space_and_punctuation():
@@ -127,3 +128,56 @@ def test_load_profiles_filters_by_role():
 def test_every_shipped_profile_is_marked_unverified():
     # Flip a profile to verified only after it has met a real export.
     assert all(p.verified is False for p in load_profiles())
+
+
+MYOB_SUPER = ["Employee Name", "Superannuation Category", "Period From", "Period To", "Paid Date", "Amount"]
+
+
+def test_score_is_none_when_a_signature_heading_is_missing():
+    profile = next(p for p in load_profiles("super") if p.key == "myob-ar-super")
+    assert score(profile, ["Employee Name", "Amount"]) is None
+
+
+def test_detect_picks_the_profile_whose_signature_fits():
+    assert detect(MYOB_SUPER, "super").key == "myob-ar-super"
+
+
+def test_detect_refuses_when_nothing_matches_and_names_what_was_wanted():
+    with pytest.raises(CsvError) as exc:
+        detect(["Name", "Total"], "super")
+    message = str(exc.value)
+    assert "Name" in message and "Total" in message
+    assert "myob-ar-super" in message
+
+
+def test_detect_refuses_a_tie_rather_than_guessing():
+    # Xero's Superannuation Payments report and MYOB Business's Superannuation
+    # payments report both use Employee, Contribution Type (or Payment date)
+    # and Amount, and both accept "Payment Date" as the paid_date heading.
+    # A file with exactly these four columns is a genuine tie: xero-super and
+    # myob-business-super each resolve 4 fields, and picking one would guess
+    # which vendor actually produced the file. Verified against the real
+    # shipped profiles: employment-hero-super and myob-ar-super both fail
+    # their signature check on this header row (no Status / no Employee Name
+    # + Paid Date), so only the tied pair is live.
+    tied = ["Employee", "Contribution Type", "Amount", "Payment Date"]
+    with pytest.raises(CsvError) as exc:
+        detect(tied, "super")
+    assert "could not tell" in str(exc.value)
+
+
+def test_vendor_override_skips_detection():
+    assert detect(["anything"], "super", vendor="myob-ar-super").key == "myob-ar-super"
+
+
+def test_vendor_override_rejects_an_unknown_key():
+    with pytest.raises(CsvError):
+        detect(MYOB_SUPER, "super", vendor="sage")
+
+
+def test_resolve_columns_returns_the_actual_heading():
+    profile = detect(MYOB_SUPER, "super")
+    resolved = resolve_columns(profile, MYOB_SUPER)
+    assert resolved["paid_date"] == "Paid Date"
+    assert resolved["contribution_type"] == "Superannuation Category"
+    assert "employee_id" not in resolved  # MYOB export has no Card ID column
