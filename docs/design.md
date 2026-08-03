@@ -25,7 +25,7 @@ The rules below were researched against primary sources and then re-checked by a
 
 `paydaysuper/` package, Python ≥3.10, **stdlib-only runtime**. Units:
 
-- `calendar.py` — loads bundled `paydaysuper/data/business_days.json` (+ optional user override JSON), `is_business_day(date)`, `add_business_days(date, n)`, horizon warning when computation leaves verified range.
+- `calendar.py` — loads bundled `paydaysuper/data/business_days.json` (+ optional user override JSON), `is_business_day(date)`, `add_business_days(date, n)`, horizon warning when computation leaves the verified range. Past that range the table holds no holidays at all, so `report.assess` returns `UNKNOWN` rather than a verdict the calendar cannot support.
 - `deadlines.py` — pure functions implementing the four s 18C pathways; input = line facts, output = `Deadline(due, pathway, notes, caveats)`, where notes explain which rule applied and caveats mean the answer itself may be wrong. Item 4 alignment is applied per employee after per-line computation, and calendar caveats are attached after that so they describe the final date.
 - `sgc.py` — pure functions: `notional_earnings(shortfall_cents, late_period)` iterating daily GIC compounding across quarter boundaries from `paydaysuper/data/gic_rates.json`; `uplift_scenarios(...)` returning the reg 13C/13D matrix. All money in integer cents; no rounding rule hardcoded (none verified) — output cents exact.
 - `csv_io.py` — column mapping (CLI flags or JSON config), date parsing (ISO + DD/MM/YYYY), validation with loud errors. Payroll exports vary too much to guess at: a value the parser cannot read is named, never coerced.
@@ -38,7 +38,7 @@ Verdicts:
 - `LATE` — received or remitted after the due date, or funded only by a pre-payment too old to apply.
 - `AT_RISK` — remitted by the due date with no fund-receipt date. The statutory test is receipt, so this is not a pass.
 - `UNPAID` — the due date has passed and nothing at all is recorded. Carries the full shortfall plus interest.
-- `UNKNOWN` — nothing recorded and not yet due, so there is nothing to assess.
+- `UNKNOWN` — nothing to assess. Three ways in: nothing recorded and not yet due; the row carries no SG amount, so no dates on it can put anything at risk; or the deadline falls past the calendar's verified horizon, where the holiday table is empty and lateness cannot be decided either way.
 - `SKIPPED` — defined-benefit interests, where the contribution is notional (s 18A(3)).
 
 `LATE` and `UNPAID` carry exposure figures. Remittance-based results always carry the assumed-receipt caveat.
