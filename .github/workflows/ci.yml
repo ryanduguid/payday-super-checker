@@ -39,9 +39,22 @@ jobs:
       - name: install the wheel and run it
         run: |
           python -m venv /tmp/venv
-          /tmp/venv/bin/pip install --find-links dist payday-super-checker
+          # --no-index, or pip is free to resolve the name from PyPI and
+          # test a release nobody built in this job.
+          /tmp/venv/bin/pip install --no-index --find-links dist payday-super-checker
           /tmp/venv/bin/payday-super-check examples/sample_payrun.csv \
             -o /tmp/report.csv --as-at 2026-08-10 || [ $? -eq 2 ]
+          # The import path reads data/profiles/*.json, package data the
+          # check path never touches, so a wheel that ships the law files
+          # and drops the profiles passes every step above and still cannot
+          # import a payroll export. Run both commands of the documented
+          # two-command flow, the second against the first's output.
+          /tmp/venv/bin/payday-super-check import \
+            --payroll tests/fixtures/importers/myob_payroll.csv \
+            --super tests/fixtures/importers/myob_super.csv \
+            -o /tmp/contributions.csv || [ $? -eq 2 ]
+          /tmp/venv/bin/payday-super-check /tmp/contributions.csv \
+            -o /tmp/report_from_import.csv --as-at 2026-08-10 || [ $? -eq 2 ]
       - name: the shipped tests must pass from the sdist
         run: |
           mkdir /tmp/sdist && tar -xzf dist/*.tar.gz -C /tmp/sdist --strip-components=1

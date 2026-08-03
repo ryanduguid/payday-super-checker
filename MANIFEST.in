@@ -2,6 +2,10 @@ include LICENSE
 include README.md
 recursive-include paydaysuper/data *.json
 recursive-include tests *.py
+# The importer fixtures are test data, not sample data: without them the
+# shipped suite fails 15 tests with FileNotFoundError, which is exactly
+# what CI's package job runs from inside the sdist.
+recursive-include tests/fixtures *.csv
 recursive-include examples *.json *.csv
 recursive-include tools *.py
 recursive-include docs *.md
