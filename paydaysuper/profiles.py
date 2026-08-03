@@ -203,9 +203,18 @@ def score(profile: Profile, headers: list[str]) -> int | None:
 def detect(headers: list[str], role: str, vendor: str | None = None) -> Profile:
     profiles = load_profiles(role)
     if vendor is not None:
-        for profile in profiles:
-            if profile.key == vendor or profile.key.startswith(f"{vendor}-"):
-                return profile
+        exact = [p for p in profiles if p.key == vendor]
+        if exact:
+            return exact[0]
+        prefixed = [p for p in profiles if p.key.startswith(f"{vendor}-")]
+        if len(prefixed) > 1:
+            raise CsvError(
+                f"--vendor {vendor!r} matches more than one {role} profile: "
+                f"{sorted(p.key for p in prefixed)}. Name the exact profile key "
+                "with --vendor to pick one."
+            )
+        if prefixed:
+            return prefixed[0]
         raise CsvError(
             f"--vendor {vendor!r} matches no {role} profile. Available: "
             f"{sorted(p.key for p in profiles)}"
