@@ -62,6 +62,59 @@ def test_mis_grouped_amount_is_refused(tmp_path):
         read_super(path, vendor="myob-ar-super")
 
 
+def test_misaligned_row_is_refused_not_silently_shifted():
+    # Reproduces a real MYOB export shape: an unescaped comma inside an
+    # employee name shifts every later column one place left. Without a
+    # guard, the true amount (612.00) lands in the discarded surplus
+    # bucket, the contribution-type cell reads "Employee One" instead of
+    # "Superannuation Guarantee", the SG filter drops the row as not-SG,
+    # and read_super silently returns one row and $100.00 instead of two
+    # rows and $712.00 -- an understated shortfall with no exception at
+    # all. This must be refused outright instead.
+    with pytest.raises(CsvError) as exc:
+        read_super(FIXTURES / "myob_super_misaligned.csv", vendor="myob-ar-super")
+    message = str(exc.value)
+    assert "row 3" in message
+    assert "612.00" in message  # the shifted amount, named as a surplus value
+
+
+def test_truncated_row_is_refused_not_read_as_blank(tmp_path):
+    # A row that stops early (fewer fields than the header) is not the
+    # same as a row whose trailing cell is genuinely blank: without a
+    # guard, csv.DictReader's default restval silently reads the missing
+    # Amount as None, and downstream code cannot tell "blank" from "the
+    # export was cut off here".
+    path = tmp_path / "truncated.csv"
+    path.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "Test Employee One,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CsvError) as exc:
+        read_super(path, vendor="myob-ar-super")
+    message = str(exc.value)
+    assert "row 2" in message
+    assert "Amount" in message
+
+
+def test_duplicate_header_refused_even_when_profile_never_maps_it(tmp_path):
+    # test_duplicate_normalised_headers_are_refused collides on a heading
+    # the profile does map ("Superannuation Guarantee"), so it would pass
+    # just as well if the guard only checked resolved/mapped fields. Two
+    # "Notes" columns that no MYOB profile maps at all prove the check runs
+    # over the whole header row, not only the fields resolve_columns cares
+    # about.
+    path = tmp_path / "dup_unmapped.csv"
+    path.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount,Notes,Notes\n"
+        "Test Employee One,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,612.00,foo,bar\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CsvError) as exc:
+        read_super(path, vendor="myob-ar-super")
+    assert "notes" in str(exc.value).lower()
+
+
 def test_duplicate_normalised_headers_are_refused(tmp_path):
     # "Superannuation Guarantee" and "Superannuation  Guarantee" (extra
     # space) are different literal strings, so csv_io.py's exact-match
