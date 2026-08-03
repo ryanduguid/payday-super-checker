@@ -1659,6 +1659,52 @@ def test_import_files_does_not_warn_when_both_files_have_full_period_columns(tmp
     assert not any("pay period column" in w for w in report.warnings)
 
 
+def test_a_payroll_file_spanning_30_june_warns_instead_of_dead_ending(tmp_path, capsys):
+    # IMPORTANT regression. A financial-year export spans 1 July, which is
+    # the ordinary shape of the file a user reaches for. It imported with
+    # exit 0 and no warning at all, and the check then died with "1 row(s)
+    # have a QE day before 1 Jul 2026 ... Remove them and run again" and
+    # wrote no report -- so README's "two commands turn a payroll export
+    # into a checked report" was false for any full-year export. The
+    # importer knows REGIME_START; it says so now, names the rows, and says
+    # what to do about them.
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "Test Employee One,25/06/2026,25/06/2026,540.00\n"
+        "Test Employee One,10/07/2026,10/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "Test Employee One,Superannuation Guarantee,20/06/2026,25/06/2026,26/06/2026,540.00\n"
+        "Test Employee One,Superannuation Guarantee,01/07/2026,10/07/2026,15/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    report = import_files(payroll_path, super_path, out)
+    warning = next(w for w in report.warnings if "before 2026-07-01" in w)
+    assert "row(s) 2" in warning, warning
+    assert "delete them" in warning
+
+    # It reaches the console, and ahead of the per-row detail: this is the
+    # one warning that decides whether the second command runs at all.
+    code = cli_main(
+        ["import", "--payroll", str(payroll_path), "--super", str(super_path),
+         "-o", str(out)]
+    )
+    assert code in (EXIT_OK, EXIT_LATE_FOUND)
+    printed = capsys.readouterr().out
+    assert "before 2026-07-01" in printed
+
+    # And the dead-end the warning is about is real: the check refuses the
+    # file this run just wrote. If REGIME_START ever moves, or the checker
+    # stops refusing, this half fails and the warning gets revisited.
+    assert cli_main([str(out), "-o", str(tmp_path / "report.csv")]) == EXIT_ERROR
+    assert "before 1 Jul 2026" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # Task 7: the `import` CLI subcommand
 # ---------------------------------------------------------------------------
@@ -2208,6 +2254,37 @@ def test_import_vendor_flag_forces_a_profile(tmp_path, capsys):
         ]
     )
     assert code == EXIT_ERROR
+
+
+def test_the_vendor_advice_is_followable_for_a_two_file_command(tmp_path, capsys):
+    # IMPORTANT regression. profiles.detect's message was written for a
+    # single-file caller: "--vendor myob" answered "Name the exact profile
+    # key with --vendor to pick one", and a user who did exactly that got
+    # "--vendor 'myob-ar-payroll' matches no super profile", because
+    # import_files passes ONE vendor string to both readers. Only the shared
+    # stem works. Walk the chain a user walks and pin that each step points
+    # at something that does.
+    def run(vendor):
+        return cli_main(
+            [
+                "import",
+                "--payroll", str(FIXTURES / "myob_payroll.csv"),
+                "--super", str(FIXTURES / "myob_super.csv"),
+                "-o", str(tmp_path / "contributions.csv"),
+                "--vendor", vendor,
+            ]
+        )
+
+    assert run("myob") == EXIT_ERROR
+    err = capsys.readouterr().err
+    assert "myob-ar" in err
+    assert "exact profile key" not in err, "the advice that cannot be followed"
+
+    assert run("myob-ar-payroll") == EXIT_ERROR
+    err = capsys.readouterr().err
+    assert "'myob-ar'" in err
+
+    assert run("myob-ar") == EXIT_OK
 
 
 def test_import_names_the_failing_file_in_an_os_error(tmp_path, capsys):
