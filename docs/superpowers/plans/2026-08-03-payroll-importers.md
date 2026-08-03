@@ -1740,6 +1740,6 @@ git commit -m "docs: import subcommand and its two honest limits"
 
 **Placeholders.** None. Every code step carries the code.
 
-**Type consistency.** `read_payroll` and `read_super` both return `(rows, Profile)`. `join` takes the row lists only and returns `JoinResult`. `import_files` returns `ImportReport`. `CANONICAL_HEADER` matches the nine columns in `examples/sample_payrun.csv`. `csv_safe` is imported from `report.py`, not redefined.
+**Type consistency.** ~~`read_payroll` and `read_super` both return `(rows, Profile)`. `join` takes the row lists only~~ **Interface drift (noted 2026-08-04).** Both readers return `(rows, Profile, resolved_columns)`, and `join` takes three keyword-only flags saying whether each file HAS its period columns -- see the Task 4, 5 and 6 drift notes above, which record why. `join` returns `JoinResult`. `import_files` returns `ImportReport`. `CANONICAL_HEADER` matches the nine columns in `examples/sample_payrun.csv`. `csv_safe` is imported from `report.py`, not redefined.
 
 **Known rough edge.** `test_detect_refuses_a_tie_rather_than_guessing` depends on two shipped profiles scoring equally on a synthetic header list. Task 3 Step 4 says to adjust the fixture headings until they do, rather than delete the test.
