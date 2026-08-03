@@ -200,6 +200,43 @@ def _date(value: str, field: str, row: int, formats: tuple[str, ...]) -> date | 
 
 
 def _amount(value: str, field: str, row: int) -> Decimal:
+    """Read one amount cell, to the cent.
+
+    Every figure that leaves this module is a cent figure: `write_canonical`
+    writes `money(...)`, the checker reads the file back at that precision,
+    and the report it produces is in dollars and cents. Quantising HERE, at
+    the read boundary, is what makes `PayrollRow.sg_amount` and
+    `SuperRow.amount` cent-clean by construction, so no arithmetic
+    downstream can leave a sub-cent residue for the allocator to spend.
+
+    A payroll row of 540.004 settled by a super payment of 540.00 used to
+    leave `_unmet` holding 0.004. The next super row whose period reached
+    that payday spent the 0.004 on it, and its own later payment date then
+    became the payday's remittance date: a payday whose every payable cent
+    arrived five days inside the deadline reported LATE with the full
+    540.00 as a shortfall and an SG-charge estimate on top, or, where that
+    second payment carried no date, UNPAID for the same 540.00. Comparing
+    to the cent at the point of the verdict fixed the verdict and left the
+    residue in place to move a date; there is no residue to move now.
+
+    ROUND_HALF_UP through `report.cents`, the same rounding `money()`
+    applies on the way out, so the figure this reads and the figure it
+    writes are the same number rather than two roundings of one input.
+
+    Rounding is per row, and a row is the unit of obligation: one payroll
+    row is one payday's liability for one employee, one super row is one
+    payment. Nothing here is ever summed across rows to reach a verdict, so
+    quantising each row on its own is the same granularity the law and the
+    report already work at. What it costs is under half a cent per row, and
+    the alternative is the defect above.
+
+    A value that is not zero in the file but rounds to zero is refused
+    rather than rounded, because that is the one case where quantising
+    would destroy the row instead of trimming it: a payment worth 0.004
+    would become a 0.00 payment that still carries a date and still matches
+    a payday, and a 0.004 liability would become a payday owing nothing. An
+    exact 0 in the file is untouched -- a payday that genuinely owes no
+    super guarantee is ordinary, and already has its own outcome."""
     text = (value or "").strip().replace("$", "").strip()
     if text.startswith("(") and text.endswith(")"):
         text = "-" + text[1:-1]
@@ -231,7 +268,15 @@ def _amount(value: str, field: str, row: int) -> Decimal:
         raise CsvError(f"row {row}: {field} value {value!r} is too large to be a real amount")
     if amount < 0:
         raise CsvError(f"row {row}: {field} is negative ({value!r})")
-    return amount
+    rounded = cents(amount)
+    if rounded == 0 and amount != 0:
+        raise CsvError(
+            f"row {row}: {field} value {value!r} is under half a cent, so reading it "
+            "to the cent leaves the row carrying no money at all. Every figure this "
+            "tool matches, writes and reports is a cent figure. Round it yourself, or "
+            "take the row out."
+        )
+    return rounded
 
 
 def _cell(row: dict[str, str], resolved: dict[str, str], field: str) -> str:
@@ -508,7 +553,17 @@ def _unmet(row: PayrollRow, allocated_total: dict[int, Decimal]) -> Decimal:
     """How much of a payroll row's sg_amount has not yet been covered by
     anything allocated to it so far, from any super row, in either pass.
     Never negative: a row that has already received its full sg_amount (or
-    more, from an overpayment) has nothing left to be short of."""
+    more, from an overpayment) has nothing left to be short of.
+
+    Never sub-cent either, for any input. `sg_amount` and every super row's
+    `amount` are quantised to cents by `_amount` as they are read, and
+    every step between there and here is exact Decimal arithmetic on cent
+    figures: a share is `min` of two of them, `remaining` is one of them
+    less the shares taken off it, and the leftover added to the newest
+    allocation is what is left of one. Subtraction and `min` over cent
+    figures cannot produce a third decimal place, so this balance is always
+    a whole number of cents, and there is no fractional remainder for a
+    later super row to spend on a payday that is already settled."""
     return max(Decimal("0"), row.sg_amount - allocated_total.get(id(row), Decimal("0")))
 
 
@@ -831,8 +886,14 @@ def join(
         # 540.00 paid against 540.004 owed as a short payment, blanked the
         # remittance date, and turned a payday where every payable cent
         # arrived on time into a $540.00 shortfall with an SG-charge
-        # estimate on top. The flag text keeps the unrounded figures: they
-        # are what the two files actually say.
+        # estimate on top. Both sides now arrive here already cent-clean,
+        # because `_amount` quantises as it reads (see its docstring, and
+        # `_unmet`'s), so these two calls no longer change anything. They
+        # stay because this is the comparison the verdict turns on, and it
+        # should say to the cent on its own face rather than depend on an
+        # invariant established three functions away. The flag text prints
+        # the figures as read, which is now the same thing to the cent as
+        # what the two files say.
         paid_to_cents = cents(total)
         owed_to_cents = cents(row.sg_amount)
         if paid_to_cents < owed_to_cents:
