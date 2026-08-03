@@ -200,7 +200,7 @@ def _date(value: str, field: str, row: int, formats: tuple[str, ...]) -> date | 
 
 
 def _amount(value: str, field: str, row: int) -> Decimal:
-    text = (value or "").strip().replace("$", "")
+    text = (value or "").strip().replace("$", "").strip()
     if text.startswith("(") and text.endswith(")"):
         text = "-" + text[1:-1]
     if not text:

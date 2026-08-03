@@ -49,7 +49,18 @@ FALSE_WORDS = {"", "n", "no", "false", "0", "f"}
 # a file this tool invites you to hand-edit. `importers.py` reads this same
 # constant, so one package cannot ship two amount parsers that disagree
 # about what a figure means.
-AMOUNT_TEXT = re.compile(r"^-?\d{1,3}(?:[ ,]\d{3})*(?:\.\d+)?$|^-?\d+(?:\.\d+)?$")
+#
+# Everything Decimal itself reads is allowed through wherever no comma or
+# space is involved: a leading "+", a bare fraction (.50), a trailing point
+# (612.), and exponent notation (1e2), all of which a spreadsheet or an ERP
+# extract emits and all of which this reader accepted until the separator
+# rule arrived and narrowed the pattern past its own purpose. The rule is
+# about WHERE a separator sits, so it constrains nothing else; 612,00 and
+# 1,23 and 12,34,567 stay refused.
+AMOUNT_TEXT = re.compile(
+    r"^[-+]?(?:\d{1,3}(?:[ ,]\d{3})+|\d+)(?:\.\d*)?(?:[eE][-+]?\d+)?$"
+    r"|^[-+]?\.\d+(?:[eE][-+]?\d+)?$"
+)
 
 
 class CsvError(ValueError):
@@ -155,7 +166,12 @@ def _parse_date(value: str, field: str, row: int) -> date:
 
 
 def _parse_amount(value: str, field: str, row: int) -> Decimal:
-    text = value.strip().replace("$", "")
+    # Stripped AGAIN after the "$" comes out. Excel's accounting format puts
+    # the sign flush left and the figure flush right, so a copied cell reads
+    # "$ 612.00" or "$  1,234.00", and the space the dollar sign left behind
+    # is still in `text` when AMOUNT_TEXT is matched against it below. That
+    # refused the file and blamed a comma for a space.
+    text = value.strip().replace("$", "").strip()
     if text.startswith("(") and text.endswith(")"):
         text = "-" + text[1:-1].strip()
     loose = text.replace(",", "").replace(" ", "")
