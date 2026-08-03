@@ -263,6 +263,7 @@ class MatchOutcome:
     payroll: PayrollRow
     remitted: date | None
     flag: str
+    last_known_paid_date: date | None
 
 
 @dataclass
@@ -279,13 +280,32 @@ def _key(row, mode: str) -> str:
 
 
 def _covers(s: SuperRow, target: date) -> bool:
-    # Only reached with at least one of period_start/period_end set: the
-    # caller (_coverage) handles the both-None case itself, since a
-    # period-less row's ambiguity is resolved against a payroll row set, not
-    # a single target date.
+    """Whether a super row's period includes a target date.
+
+    The sole real call site (`_coverage`) never reaches this with both
+    period fields `None` -- a period-less row's ambiguity is resolved
+    against a payroll row set, not a single target date -- but a future
+    direct caller could, so this defends itself instead of letting
+    `None <= target` raise `TypeError`. `False` is the defensible answer:
+    without any period at all, claiming this row covers one specific date
+    would be a guess.
+
+    The start boundary is exclusive and the end boundary inclusive, unless
+    the period is a single day (period_start == period_end, including when
+    only one field was ever supplied and the other defaulted to match it),
+    in which case that single day has to match on its own. Exclusive start
+    matters because export files routinely repeat the previous period's end
+    as the next period's start (a fortnight ending 3 July is immediately
+    followed by one starting 3 July): with an inclusive start, the second
+    period would re-claim the first period's payday too, turning a clean
+    1:1 pairing into a false multi-coverage case."""
+    if s.period_start is None and s.period_end is None:
+        return False
     start = s.period_start or s.period_end
     end = s.period_end or s.period_start
-    return start <= target <= end
+    if start == end:
+        return start == target
+    return start < target <= end
 
 
 def _check_reversed_periods(super_rows: list[SuperRow]) -> None:
@@ -312,17 +332,77 @@ def _check_reversed_periods(super_rows: list[SuperRow]) -> None:
 def _coverage(s: SuperRow, candidates: list[PayrollRow]) -> list[PayrollRow]:
     """Which of one employee's payroll rows a super row could have settled.
 
-    Matching never looks at amount, only at employee and period coverage, so
-    the ambiguity check that decides whether a super row must be refused
-    cannot look at amount either -- it has to ask exactly the question
-    matching itself asks. A super row with no period at all rules nothing
-    out: it is exactly as ambiguous against two candidates as a dated row
-    whose range brackets both, so it is treated the same way (all of them),
-    rather than being silently handed to whichever candidate happens to be
-    alone."""
+    A super row with no period at all rules nothing out: it is exactly as
+    ambiguous against two candidates as a dated row whose range brackets
+    both, so it is treated the same way (all of them), rather than being
+    silently handed to whichever candidate happens to be alone."""
     if s.period_start is None and s.period_end is None:
         return list(candidates)
     return [r for r in candidates if _covers(s, r.effective_period_end)]
+
+
+def _check_defensible(s: SuperRow, covered: list[PayrollRow]) -> None:
+    """Refuse only where apportionment cannot produce a defensible answer:
+    two or more of the payroll rows a super row covers are indistinguishable
+    in every field that affects the outcome -- same payday, same effective
+    period end, same sg_amount. Anything else (different payday, different
+    period, or different amount) sorts and apportions instead; see
+    `_allocate`."""
+    groups: dict[tuple[date, date, Decimal], list[PayrollRow]] = {}
+    for r in covered:
+        groups.setdefault((r.payday, r.effective_period_end, r.sg_amount), []).append(r)
+    for rows in groups.values():
+        if len(rows) <= 1:
+            continue
+        numbers = ", ".join(str(r.row) for r in sorted(rows, key=lambda r: r.row))
+        if s.period_start is None and s.period_end is None:
+            # The super file, not the payroll file, is why this is
+            # ambiguous: with no period recorded, this row is treated as
+            # covering every payday for the employee, so it is the super
+            # file's missing column(s) that need naming as the cause, not
+            # the payroll rows that just happen to collide.
+            raise CsvError(
+                f"super row {s.row} has no pay period on record, so it is treated as "
+                f"covering every payday for this employee, and rows {numbers} are "
+                "identical in payday, pay period and amount as well, so there is no "
+                "defensible way to decide which of them the payment settled. The "
+                "super file is missing its pay period column(s) -- add them so the "
+                "payment can be matched to a specific payday, or give the payroll "
+                "rows distinct pay periods or amounts."
+            )
+        raise CsvError(
+            f"super row {s.row} covers rows {numbers}, which are identical in payday, "
+            "pay period and amount, so there is no defensible way to decide which of "
+            "them the payment settled. Give them distinct pay periods or amounts, or "
+            "merge the duplicate."
+        )
+
+
+def _allocate(s: SuperRow, covered: list[PayrollRow]) -> list[tuple[PayrollRow, Decimal]]:
+    """Spread a super row's amount across the payroll rows it covers, oldest
+    payday first, each taking at most its own sg_amount; any amount left
+    over after every covered row is satisfied lands on the last row that
+    received an allocation.
+
+    Sorting by `(payday, effective_period_end, row)` is a total order over
+    distinct payroll rows -- row numbers are unique within one file, so the
+    sort never has to fall back on how `payroll_rows` happened to be
+    ordered when it was passed to `join`. The same input, in any order,
+    apportions the same way."""
+    ordered = sorted(covered, key=lambda r: (r.payday, r.effective_period_end, r.row))
+    remaining = s.amount
+    allocations: list[tuple[PayrollRow, Decimal]] = []
+    for row in ordered:
+        if remaining <= 0:
+            break
+        share = min(remaining, row.sg_amount)
+        if share > 0:
+            allocations.append((row, share))
+        remaining -= share
+    if remaining > 0 and allocations:
+        last_row, last_share = allocations[-1]
+        allocations[-1] = (last_row, last_share + remaining)
+    return allocations
 
 
 def join(
@@ -340,15 +420,16 @@ def join(
     resolved that column at all (what `resolve_columns` found against the
     file's headers, not whether a particular cell happened to be blank).
     They exist only to decide whether a loud warning belongs in the result:
-    a payroll file with no pay period end column, or a super file with only
-    one of the two period columns, still joins -- the fallback (payday
-    instead of period end; a single-day window instead of a range) already
+    a payroll file with no pay period end column, or a super file missing
+    one or both of its two period columns, still joins -- the fallback
+    (payday instead of period end; a single-day window instead of a range;
+    "covers every payday for the employee" when both are missing) already
     happens on its own from `None` fields on the rows themselves -- but the
     caller has no way to tell "this file structurally lacks that column"
     from "this row's cell was blank" once the file has been read into
-    `PayrollRow`/`SuperRow` objects, and the two need different messages.
-    All three default to True (column present) so existing callers that
-    never pass them see no new warnings."""
+    `PayrollRow`/`SuperRow` objects, and the messages differ. All three
+    default to True (column present) so existing callers that never pass
+    them see no new warnings."""
     _check_reversed_periods(super_rows)
 
     warnings: list[str] = []
@@ -370,12 +451,21 @@ def join(
             "to the payday. A super payment recorded against the pay period rather "
             "than the payday it was paid on could be missed."
         )
-    if super_has_period_start != super_has_period_end:
-        warnings.append(
-            "the super file has only one of the pay period start/end columns, so a "
-            "payment's coverage collapses to a single day and could miss the payday "
-            "it actually settled."
-        )
+    if not (super_has_period_start and super_has_period_end):
+        if super_has_period_start or super_has_period_end:
+            warnings.append(
+                "the super file has only one of the pay period start/end columns, so "
+                "a payment's coverage collapses to a single day and could miss the "
+                "payday it actually settled."
+            )
+        else:
+            warnings.append(
+                "the super file has no pay period columns at all, so a payment "
+                "cannot be matched to a specific payday by its period and is treated "
+                "as covering every payday for that employee, which can trigger the "
+                "same-payment ambiguity check for an employee with more than one "
+                "payday."
+            )
 
     grouped: dict[str, list[PayrollRow]] = {}
     for row in payroll_rows:
@@ -384,70 +474,87 @@ def join(
             raise CsvError(f"row {row.row}: the employee column is empty")
         grouped.setdefault(key, []).append(row)
 
-    # What each super row could have settled, computed once and reused for
-    # both the ambiguity check below and the matching loop after it, so the
-    # two can never disagree about what "covers" means.
+    # What each super row could have settled, computed once and reused
+    # below so the ambiguity check and the allocation step can never
+    # disagree about what "covers" means.
     coverage: dict[int, list[PayrollRow]] = {}
     for s in super_rows:
         candidates = grouped.get(_key(s, key_mode), [])
         coverage[id(s)] = _coverage(s, candidates)
 
+    # contributions[id(payroll_row)] collects every (super_row, amount,
+    # note) a payroll row received, whether from a plain 1:1 match or as
+    # its share of an apportioned payment, so the totalling below (partial/
+    # over/remitted) never has to care which kind it was looking at.
+    contributions: dict[int, list[tuple[SuperRow, Decimal, str]]] = {}
+    used_super_ids: set[int] = set()
+
     for s in super_rows:
         covered = coverage[id(s)]
-        if len(covered) > 1:
-            rows = ", ".join(str(r.row) for r in sorted(covered, key=lambda r: r.row))
-            raise CsvError(
-                f"super row {s.row} could settle more than one payroll row for this "
-                f"employee: rows {rows}. A payment cannot be assigned to one of them "
-                "without guessing which payday it belongs to. Give those paydays "
-                "distinct pay periods."
-            )
+        if not covered:
+            continue
+        if len(covered) == 1:
+            row = covered[0]
+            contributions.setdefault(id(row), []).append((s, s.amount, ""))
+            used_super_ids.add(id(s))
+            continue
+        _check_defensible(s, covered)
+        allocations = _allocate(s, covered)
+        note = f"allocated from a payment covering {len(covered)} paydays"
+        for row, share in allocations:
+            contributions.setdefault(id(row), []).append((s, share, note))
+        if allocations:
+            used_super_ids.add(id(s))
 
-    # `id(s)` rather than `s.row`: row numbers are only unique within a
-    # single file, and two SuperRow objects that happen to share one (a
-    # defensive scenario, not one the shipped readers produce) must not be
-    # conflated into a single claim.
-    claimed: set[int] = set()
     outcomes: list[MatchOutcome] = []
     for row in payroll_rows:
-        matches = [
-            s
-            for s in super_rows
-            if id(s) not in claimed and any(r is row for r in coverage[id(s)])
-        ]
-        if not matches:
-            outcomes.append(MatchOutcome(row, None, "no super payment found"))
+        entries = contributions.get(id(row), [])
+        if not entries:
+            outcomes.append(MatchOutcome(row, None, "no super payment found", None))
             continue
-        claimed.update(id(s) for s in matches)
 
-        total = sum((s.amount for s in matches), Decimal("0"))
-        flag = ""
+        total = sum((amount for _, amount, _ in entries), Decimal("0"))
+        flag_parts: list[str] = []
         if total < row.sg_amount:
-            flag = f"partial: {total} of {row.sg_amount} matched"
+            flag_parts.append(f"partial: {total} of {row.sg_amount} matched")
         elif total > row.sg_amount:
-            flag = (
+            flag_parts.append(
                 f"over: {total} against {row.sg_amount}, check for salary sacrifice "
                 "in the contribution types"
             )
+        flag_parts.extend(sorted({note for _, _, note in entries if note}))
 
         # The deadline tests receipt: a matched row without a paid date is
         # not evidence the fund got the money. This applies even when only
         # part of a split contribution is undated -- reporting the known
         # date of the other part as "remitted" would read as fully settled
-        # while some of the money has no evidence of arriving at all.
-        undated = [s for s in matches if s.paid_date is None]
+        # while some of the money has no evidence of arriving at all. The
+        # latest date that IS known is still worth keeping (last_known_paid_
+        # date) and naming in the flag: someone chasing the fund needs it,
+        # even though it cannot stand in for proof the whole amount arrived.
+        dated = [s for s, _, _ in entries if s.paid_date is not None]
+        undated = [s for s, _, _ in entries if s.paid_date is None]
+        last_known_paid_date = max(s.paid_date for s in dated) if dated else None
+
         if undated:
             remitted = None
-            if len(undated) == len(matches):
-                note = "matched super rows carry no payment date"
+            if len(undated) == len(entries):
+                flag_parts.append("matched super rows carry no payment date")
             else:
-                undated_total = sum((s.amount for s in undated), Decimal("0"))
-                note = f"{undated_total} of {total} matched has no payment date on record"
-            flag = (flag + "; " if flag else "") + note
+                undated_total = sum(
+                    (amount for s, amount, _ in entries if s.paid_date is None),
+                    Decimal("0"),
+                )
+                flag_parts.append(
+                    f"{undated_total} of {total} matched has no payment date on "
+                    f"record; latest known payment date {last_known_paid_date.isoformat()}"
+                )
         else:
-            remitted = max(s.paid_date for s in matches)
+            remitted = last_known_paid_date
 
-        outcomes.append(MatchOutcome(row, remitted, flag))
+        outcomes.append(
+            MatchOutcome(row, remitted, "; ".join(flag_parts), last_known_paid_date)
+        )
 
-    orphans = [s for s in super_rows if id(s) not in claimed]
+    orphans = [s for s in super_rows if id(s) not in used_super_ids]
     return JoinResult(outcomes, orphans, key_mode, warnings)
