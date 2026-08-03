@@ -179,6 +179,26 @@ def test_item4_result_is_independent_of_row_order(cal):
     assert run([True, False]) == run([False, True])
 
 
+def test_item4_aligns_paydays_given_out_of_date_order(cal):
+    """Every row in the test above shares one QE day, so apply_item4's
+    chronological sort key is never exercised and can be deleted with the
+    suite green. Here the later payday comes first in the file."""
+    def run(qe_days):
+        rows = [
+            line(qe_day=day, first_to_fund=(day == date(2026, 7, 9)), row=i)
+            for i, day in enumerate(qe_days, start=2)
+        ]
+        pairs = [(l, compute_due(l, cal)) for l in rows]
+        apply_item4(pairs)
+        return {l.qe_day: (d.due, d.pathway) for l, d in pairs}
+
+    early, late = date(2026, 7, 9), date(2026, 7, 23)
+    in_order = run([early, late])
+    out_of_order = run([late, early])
+    assert in_order[late] == (date(2026, 8, 7), ITEM4_ALIGNED)
+    assert out_of_order == in_order
+
+
 def test_later_qe_day_inherits_the_longest_window_from_a_group(cal):
     """A later payday inherits the latest due day of everything before it,
     not just the last row of the previous group."""
