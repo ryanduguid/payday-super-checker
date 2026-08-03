@@ -62,6 +62,11 @@ class Deadline:
     # Notes explain which rule applied; caveats mean the answer itself may
     # be wrong. Only caveats reach the console, so they stay readable.
     caveats: list[str] = field(default_factory=list)
+    # The deadline this line earned on its own, kept only when apply_item4
+    # overwrote `due` with an earlier contribution's later date. Re-deriving
+    # it from qe_day cannot work: it would have to know which pathway won,
+    # and the out-of-cycle period is not qe_day plus 7 or 20 business days.
+    own_due: date | None = None
 
 
 def compute_due(line: ContribLine, cal: BusinessCalendar) -> Deadline:
@@ -195,6 +200,7 @@ def apply_item4(pairs: list[tuple[ContribLine, Deadline]]) -> None:
                         "deadline aligned to an earlier contribution's latest due day "
                         f"{running_latest.isoformat()} (s 18C(2) item 4)"
                     )
+                    dl.own_due = dl.due
                     dl.due = running_latest
                     dl.pathway = ITEM4_ALIGNED
                 if dl.due is not None:

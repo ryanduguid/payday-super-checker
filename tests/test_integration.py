@@ -677,6 +677,37 @@ def test_item4_caveat_names_the_deadline_without_the_alignment():
     assert caveat and "2026-08-04" in caveat[0]  # its own period end
 
 
+def test_item4_caveat_keeps_an_out_of_cycle_lines_own_deadline():
+    """The aligned line rides its next standard payday, so its own deadline
+    is 6 Aug, not the 4 Aug that qe_day plus 7 business days would give."""
+    rows = [
+        ContribLine(
+            employee_id="E9",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("100.00"),
+            first_to_fund=True,
+            row=2,
+        ),
+        ContribLine(
+            employee_id="E9",
+            qe_day=date(2026, 7, 23),
+            sg_amount=Decimal("100.00"),
+            out_of_cycle=True,
+            next_standard_qe_day=date(2026, 7, 27),
+            received=date(2026, 8, 7),
+            row=3,
+        ),
+    ]
+    results = assess(rows, load_calendar(), load_gic(), AS_AT)
+    aligned = results[1]
+    assert aligned.deadline.pathway == "ITEM4_ALIGNED"
+    assert aligned.deadline.due == date(2026, 8, 7)
+    caveat = [c for c in aligned.caveats if "inherited" in c]
+    assert caveat, aligned.caveats
+    assert "2026-08-06" in caveat[0]
+    assert "2026-08-04" not in caveat[0]
+
+
 def test_ordinary_employee_ids_are_not_rewritten(tmp_path):
     """A code starting with a hyphen must still join back to payroll."""
     path = tmp_path / "pay.csv"
