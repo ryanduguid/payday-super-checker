@@ -1,4 +1,5 @@
 import itertools
+import random
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -6,7 +7,15 @@ from pathlib import Path
 import pytest
 
 from paydaysuper.csv_io import CsvError
-from paydaysuper.importers import PayrollRow, SuperRow, join, read_payroll, read_super
+from paydaysuper.importers import (
+    ORPHAN_NO_PAYDAY,
+    ORPHAN_PAYDAYS_SETTLED,
+    PayrollRow,
+    SuperRow,
+    join,
+    read_payroll,
+    read_super,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "importers"
 
@@ -718,3 +727,240 @@ def test_pass2_allocation_is_independent_of_input_order_exhaustive():
             )
             results.add(snapshot)
     assert len(results) == 1, f"allocation depended on input order: {results}"
+
+
+def test_a_payday_on_the_period_end_is_settled_before_an_earlier_payday():
+    # Reproduction A. One payment, period 2026-07-03 to 2026-07-10, paid
+    # 2026-07-15, 540.00 -- exactly the 10 July payday's obligation, and its
+    # period ends on that payday. Plain oldest-first apportionment handed
+    # the money to the 3 July row instead, reporting the payday that was
+    # actually paid as unpaid and the unpaid one as part-paid. A super
+    # payment's period end normally lands on the payday it covers, so that
+    # payday is settled first.
+    for payroll_rows in (
+        [payroll("A", "2026-07-03", "612.00", row=2), payroll("A", "2026-07-10", "540.00", row=3)],
+        [payroll("A", "2026-07-10", "540.00", row=3), payroll("A", "2026-07-03", "612.00", row=2)],
+    ):
+        result = join(
+            payroll_rows,
+            [super_row("A", "2026-07-03", "2026-07-10", "2026-07-15", "540.00", row=2)],
+        )
+        outcomes = _by_row(result)
+        # The specific date, not just "some date": an order-independence
+        # check alone cannot catch a sort applied backwards, since a
+        # reversed sort is still deterministic.
+        assert outcomes[3].remitted == date(2026, 7, 15)
+        assert outcomes[3].flag == (
+            "540.00 of 540.00 allocated from super row 2 (paid 2026-07-15), "
+            "one of 2 paydays that payment covered"
+        )
+        assert outcomes[2].remitted is None
+        assert outcomes[2].flag == "no super payment found"
+        assert result.orphans == []
+
+
+def test_period_end_priority_leaves_the_earlier_payday_short_not_the_later():
+    # Reproduction B: the same shape with the 3 July payday's own earlier
+    # payment present too. 212.00 of the second payment used to be pulled
+    # back to 3 July, leaving 10 July short. The period-end payday takes
+    # its money first, so the shortfall stays on the payday whose own
+    # payment was genuinely short.
+    for super_rows in (
+        [super_row("A", "2026-07-03", "2026-07-10", "2026-07-15", "540.00", row=2),
+         super_row("A", "2026-06-27", "2026-07-03", "2026-07-08", "400.00", row=3)],
+        [super_row("A", "2026-06-27", "2026-07-03", "2026-07-08", "400.00", row=3),
+         super_row("A", "2026-07-03", "2026-07-10", "2026-07-15", "540.00", row=2)],
+    ):
+        result = join(
+            [payroll("A", "2026-07-03", "612.00", row=2),
+             payroll("A", "2026-07-10", "540.00", row=3)],
+            super_rows,
+        )
+        outcomes = _by_row(result)
+        assert outcomes[3].remitted == date(2026, 7, 15)
+        assert "partial" not in outcomes[3].flag
+        assert outcomes[2].remitted == date(2026, 7, 8)
+        assert outcomes[2].flag == "partial: 400.00 of 612.00 matched"
+
+
+def test_monthly_payment_whose_last_payday_is_the_period_end_exact_short_and_over():
+    # One monthly payment across three fortnightly paydays, where the last
+    # payday (31 July) happens to sit exactly on the period end. Exact: all
+    # three settle. Short: the period-end payday is settled first, so the
+    # shortfall falls on 17 July -- the last row in the remaining
+    # oldest-first order -- rather than on 31 July. That moves the flagged
+    # exposure to an earlier deadline, which is the conservative direction
+    # for a checker, and it is what the ruling asks for: the payday the
+    # period names is the one the payment settles. Over: the unattributable
+    # excess still lands on the chronologically last payday, unchanged by
+    # the priority.
+    def run(amount):
+        return _by_row(join(
+            [payroll("A", "2026-07-03", "600.00", row=2),
+             payroll("A", "2026-07-17", "600.00", row=3),
+             payroll("A", "2026-07-31", "600.00", row=4)],
+            [super_row("A", "2026-07-01", "2026-07-31", "2026-08-15", amount, row=2)],
+        ))
+
+    exact = run("1800.00")
+    for row_number in (2, 3, 4):
+        assert exact[row_number].remitted == date(2026, 8, 15)
+        assert "partial" not in exact[row_number].flag
+        assert "over:" not in exact[row_number].flag
+
+    short = run("1500.00")
+    assert "partial" not in short[4].flag, "the payday on the period end must be settled first"
+    assert "partial" not in short[2].flag
+    assert short[3].flag.startswith("partial: 300.00 of 600.00 matched")
+    assert short[4].remitted == date(2026, 8, 15)
+
+    over = run("2100.00")
+    assert over[4].flag.startswith("over: 900.00 against 600.00")
+    assert "over:" not in over[2].flag and "over:" not in over[3].flag
+
+
+def test_monthly_payment_clear_of_the_period_end_still_apportions_oldest_first():
+    # The control for the test above: no payday touches the period end
+    # (2026-08-11), so the priority never fires and the shortfall stays on
+    # the newest payday, exactly as before the priority existed.
+    result = join(
+        [payroll("A", "2026-07-09", "600.00", row=2),
+         payroll("A", "2026-07-23", "600.00", row=3),
+         payroll("A", "2026-08-06", "600.00", row=4)],
+        [super_row("A", "2026-07-01", "2026-08-11", "2026-08-15", "1500.00", row=2)],
+    )
+    outcomes = _by_row(result)
+    assert "partial" not in outcomes[2].flag
+    assert "partial" not in outcomes[3].flag
+    assert outcomes[4].flag.startswith("partial: 300.00 of 600.00 matched")
+
+
+def test_an_overpayment_on_already_settled_paydays_is_named_not_just_orphaned():
+    # Rows 2 and 3 are each settled by their own payment. A third payment's
+    # period spans both, so nothing is competing for it, nothing is
+    # allocated, and no payroll row can carry an "over:" flag for it -- it
+    # is a genuine excess contribution that exists nowhere in the result
+    # except as an orphan. "Matched no payday" would read as unmatchable
+    # data; the two cases have to be tellable apart.
+    result = join(
+        [payroll("A", "2026-07-09", "600.00", row=2),
+         payroll("A", "2026-07-23", "600.00", row=3)],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "600.00", row=2),
+         super_row("A", "2026-07-15", "2026-07-23", "2026-07-28", "600.00", row=3),
+         super_row("A", "2026-07-01", "2026-07-31", "2026-08-15", "500.00", row=4)],
+    )
+    assert [o.row for o in result.orphans] == [4]
+    reason = result.orphan_reasons[0]
+    assert reason.super_row is result.orphans[0]
+    assert reason.code == ORPHAN_PAYDAYS_SETTLED
+    assert "already settled" in reason.message
+    # Neither settled row invented an over: from the third payment.
+    outcomes = _by_row(result)
+    assert outcomes[2].flag == "" and outcomes[3].flag == ""
+
+
+def test_a_payment_matching_no_payday_is_reported_differently_from_a_settled_one():
+    # The other half of the distinction: a payment for an employee with no
+    # payroll rows at all is unplaceable data, not an overpayment.
+    result = join(
+        [payroll("A", "2026-07-09", "612.00")],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "612.00"),
+         super_row("B", "2026-07-01", "2026-07-09", "2026-07-14", "99.00", row=3)],
+    )
+    assert [r.code for r in result.orphan_reasons] == [ORPHAN_NO_PAYDAY]
+    assert result.orphan_reasons[0].message == "matched no payday"
+    assert ORPHAN_NO_PAYDAY != ORPHAN_PAYDAYS_SETTLED
+
+
+def test_the_shared_note_counts_the_paydays_the_payment_covered():
+    # The note's count is the payment's structural coverage, not how many
+    # paydays still had a balance when it was applied. Here a period-less
+    # payment is treated as covering all three of the employee's paydays,
+    # but the 9 July one is already settled by its own payment, so only two
+    # compete for it. Reporting "one of 2 paydays that payment covered"
+    # understated what the payment reached.
+    result = join(
+        [payroll("A", "2026-07-09", "600.00", row=2),
+         payroll("A", "2026-07-23", "600.00", row=3),
+         payroll("A", "2026-08-06", "600.00", row=4)],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "600.00", row=2),
+         SuperRow(None, "A", None, None, date(2026, 7, 28), Decimal("900.00"), 3)],
+    )
+    outcomes = _by_row(result)
+    assert outcomes[2].flag == ""
+    assert outcomes[3].flag == (
+        "600.00 of 900.00 allocated from super row 3 (paid 2026-07-28), "
+        "one of 3 paydays that payment covered"
+    )
+    assert outcomes[4].flag == (
+        "partial: 300.00 of 600.00 matched; "
+        "300.00 of 900.00 allocated from super row 3 (paid 2026-07-28), "
+        "one of 3 paydays that payment covered"
+    )
+
+
+def test_orphans_are_reported_in_row_order_whatever_order_they_arrived_in():
+    # The orphan list is shown to a user, so its order is part of the
+    # answer. Two callers handing join the same rows in different orders
+    # must not get two different-looking reports.
+    result = join(
+        [payroll("A", "2026-07-09", "612.00")],
+        [super_row("Z", "2026-07-01", "2026-07-09", "2026-07-14", "99.00", row=4),
+         super_row("Y", "2026-07-01", "2026-07-09", "2026-07-14", "88.00", row=2),
+         super_row("X", "2026-07-01", "2026-07-09", "2026-07-14", "77.00", row=3)],
+    )
+    assert [o.row for o in result.orphans] == [2, 3, 4]
+    assert [r.super_row.row for r in result.orphan_reasons] == [2, 3, 4]
+
+
+def _render(result):
+    """Everything join returns, as one string, so a shuffle comparison
+    cannot pass by only checking the fields a hand-written assertion
+    happened to look at."""
+    lines = [result.key_mode]
+    lines.extend(sorted(result.warnings))
+    for outcome in sorted(result.outcomes, key=lambda o: o.payroll.row):
+        lines.append(
+            f"{outcome.payroll.row}|{outcome.remitted}|{outcome.last_known_paid_date}"
+            f"|{outcome.flag}"
+        )
+    for reason in result.orphan_reasons:
+        lines.append(f"orphan {reason.super_row.row}|{reason.code}|{reason.message}")
+    return "\n".join(lines)
+
+
+def test_the_whole_result_is_byte_identical_under_shuffled_inputs():
+    # Order-independence over every shape this round touched, on the full
+    # rendered result rather than one field. Shuffles, not permutations, so
+    # the larger shapes are covered too.
+    shapes = [
+        (
+            [payroll("A", "2026-07-03", "612.00", row=2),
+             payroll("A", "2026-07-10", "540.00", row=3)],
+            [super_row("A", "2026-07-03", "2026-07-10", "2026-07-15", "540.00", row=2),
+             super_row("A", "2026-06-27", "2026-07-03", "2026-07-08", "400.00", row=3)],
+        ),
+        (
+            [payroll("A", "2026-07-03", "600.00", row=2),
+             payroll("A", "2026-07-17", "600.00", row=3),
+             payroll("A", "2026-07-31", "600.00", row=4)],
+            [super_row("A", "2026-07-01", "2026-07-31", "2026-08-15", "1500.00", row=2)],
+        ),
+        (
+            [payroll("A", "2026-07-09", "600.00", row=2),
+             payroll("A", "2026-07-23", "600.00", row=3),
+             payroll("A", "2026-08-06", "600.00", row=4)],
+            [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "600.00", row=2),
+             SuperRow(None, "A", None, None, date(2026, 7, 28), Decimal("900.00"), 3),
+             super_row("A", "2026-07-01", "2026-07-31", "2026-08-20", "50.00", row=4)],
+        ),
+    ]
+    rng = random.Random(20260803)
+    for payroll_rows, super_rows in shapes:
+        expected = _render(join(list(payroll_rows), list(super_rows)))
+        for _ in range(200):
+            shuffled_payroll = list(payroll_rows)
+            shuffled_super = list(super_rows)
+            rng.shuffle(shuffled_payroll)
+            rng.shuffle(shuffled_super)
+            assert _render(join(shuffled_payroll, shuffled_super)) == expected

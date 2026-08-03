@@ -266,12 +266,43 @@ class MatchOutcome:
     last_known_paid_date: date | None
 
 
+# Why a super payment ended up unused. An orphan is surfaced either way,
+# but "no payday matched" and "every payday it reached was already paid"
+# are opposite findings: the first is a payment the tool could not place at
+# all, the second is a genuine overpayment that no payroll row's `over:`
+# flag can show, because nothing was allocated to any row for it to be over
+# against. Reporting both as "matched no payday" reads to an accountant as
+# unmatchable data when the second is a real excess contribution.
+ORPHAN_NO_PAYDAY = "no payday matched"
+ORPHAN_PAYDAYS_SETTLED = "paydays already settled"
+ORPHAN_NOTHING_OWED = "paydays owe nothing"
+ORPHAN_NO_AMOUNT = "payment has nothing to allocate"
+
+
+@dataclass
+class OrphanReason:
+    """Why one orphaned super row went unused.
+
+    `code` is one of the four `ORPHAN_*` constants, for a caller that needs
+    to branch or count. `message` is the user-facing phrase, written to
+    follow "super row N" so a report can render it directly."""
+
+    super_row: SuperRow
+    code: str
+    message: str
+
+
 @dataclass
 class JoinResult:
     outcomes: list[MatchOutcome]
     orphans: list[SuperRow]
     key_mode: str
     warnings: list[str]
+    # Same super rows as `orphans`, same order, one entry each, plus why.
+    # A separate list rather than a dict keyed by `.row` (row numbers are
+    # only unique within one file) or by `id()` (a footgun the moment it
+    # outlives the objects).
+    orphan_reasons: list[OrphanReason]
 
 
 def _key(row, mode: str) -> str:
@@ -398,21 +429,47 @@ def _unmet(row: PayrollRow, allocated_total: dict[int, Decimal]) -> Decimal:
 def _allocate(
     s: SuperRow, covered: list[PayrollRow], allocated_total: dict[int, Decimal]
 ) -> list[tuple[PayrollRow, Decimal]]:
-    """Spread a super row's amount across the payroll rows it covers, oldest
-    payday first, each taking at most its own UNMET balance -- what is left
-    of its sg_amount after everything already allocated to it, from any
-    super row, in either pass -- not its full sg_amount regardless of what
-    it has already received. A row already settled by something else takes
-    nothing here, however wide this payment's own period reaches; any
-    amount left over once every covered row's balance is satisfied lands
-    on the last row that received an allocation.
+    """Spread a super row's amount across the payroll rows it covers, each
+    taking at most its own UNMET balance -- what is left of its sg_amount
+    after everything already allocated to it, from any super row, in either
+    pass -- not its full sg_amount regardless of what it has already
+    received. A row already settled by something else takes nothing here,
+    however wide this payment's own period reaches.
 
-    Sorting by `(payday, effective_period_end, row)` is a total order over
-    distinct payroll rows -- row numbers are unique within one file, so the
-    sort never has to fall back on how `payroll_rows` happened to be
-    ordered when it was passed to `join`. The same input, in any order,
-    apportions the same way."""
-    ordered = sorted(covered, key=lambda r: (r.payday, r.effective_period_end, r.row))
+    Order: a covered payroll row whose effective period end falls exactly
+    on this payment's own period end is settled FIRST; every other covered
+    row follows oldest payday first. A super payment's period end normally
+    lands on the payday it covers (owner ruling), so when the money is
+    short, the payday the period actually names is the one that reads as
+    settled and an earlier payday carries the shortfall -- not the reverse,
+    which reported the paid payday as unpaid and the unpaid one as
+    part-paid, moving the exposure by a full pay cycle. The priority fires
+    only for a covered payday sitting exactly on the period end, so a
+    monthly or quarterly payment apportioned across paydays that never
+    touch its period end is unaffected and stays oldest-first.
+
+    Both sort keys are total orders over distinct payroll rows -- row
+    numbers are unique within one file, so the sort never has to fall back
+    on how `payroll_rows` happened to be ordered when it was passed to
+    `join`. The same input, in any order, apportions the same way.
+
+    Any amount left over once every covered row's balance is satisfied
+    lands on the chronologically last row that received an allocation.
+    That was `allocations[-1]` while the sort was purely oldest-first;
+    naming it explicitly keeps the leftover on the newest payday now that
+    the period-end priority can put a different row last in sort order.
+    The priority decides who goes short when money runs out, and changes
+    nothing about where an unattributable excess is reported."""
+    period_end = s.period_end
+    ordered = sorted(
+        covered,
+        key=lambda r: (
+            0 if period_end is not None and r.effective_period_end == period_end else 1,
+            r.payday,
+            r.effective_period_end,
+            r.row,
+        ),
+    )
     remaining = s.amount
     allocations: list[tuple[PayrollRow, Decimal]] = []
     for row in ordered:
@@ -423,9 +480,70 @@ def _allocate(
             allocations.append((row, share))
         remaining -= share
     if remaining > 0 and allocations:
-        last_row, last_share = allocations[-1]
-        allocations[-1] = (last_row, last_share + remaining)
+        newest = max(
+            range(len(allocations)),
+            key=lambda i: (
+                allocations[i][0].payday,
+                allocations[i][0].effective_period_end,
+                allocations[i][0].row,
+            ),
+        )
+        last_row, last_share = allocations[newest]
+        allocations[newest] = (last_row, last_share + remaining)
     return allocations
+
+
+def _super_order(s: SuperRow) -> tuple:
+    """A total order over super rows, so nothing the caller decided -- the
+    order it happened to build its list in -- can reach the result.
+
+    Row number leads, because that is the order a reader expects and the
+    order the file was read in. Every other field follows as a tiebreak:
+    row numbers are only unique within one file, and two rows identical in
+    every field are interchangeable anyway. `date.min` stands in for a
+    missing date purely to keep the tuple comparable; it is never treated
+    as a real date."""
+    return (
+        s.row,
+        s.employee_id or "",
+        s.employee_name or "",
+        s.period_start or date.min,
+        s.period_end or date.min,
+        s.paid_date or date.min,
+        s.amount,
+    )
+
+
+def _why_orphaned(
+    covered: list[PayrollRow], allocated_total: dict[int, Decimal]
+) -> tuple[str, str]:
+    """Classify an unused super payment, so a report can tell an accountant
+    which of two opposite things happened.
+
+    A payment whose period reaches no payday at all is data the tool could
+    not place. A payment whose paydays were every one of them already
+    settled by other payments is money the employer sent on top of what was
+    owed -- a genuine overpayment that shows up nowhere else in the result,
+    since no payroll row received any of it to carry an `over:` flag."""
+    if not covered:
+        return ORPHAN_NO_PAYDAY, "matched no payday"
+    if all(r.sg_amount == 0 for r in covered):
+        return (
+            ORPHAN_NOTHING_OWED,
+            "matched only paydays that owe no super guarantee",
+        )
+    if all(_unmet(r, allocated_total) == 0 for r in covered):
+        return (
+            ORPHAN_PAYDAYS_SETTLED,
+            "matched only paydays that were already settled by other payments, so "
+            "this payment is on top of what was owed",
+        )
+    # Only reachable for a payment carrying nothing to spread: a zero or
+    # negative amount leaves `_allocate` with no share to hand out even
+    # though the paydays it covers still have balances owing. Saying
+    # "already settled" here would be a false claim about paydays that are
+    # not settled at all.
+    return ORPHAN_NO_AMOUNT, "matched paydays but carries no amount to allocate"
 
 
 def join(
@@ -453,14 +571,22 @@ def join(
     apportion to it.
 
     Pass 2 -- every super row whose period covers more than one payroll
-    row apportions its amount across them, oldest payday first, each
-    capped at its UNMET balance (`sg_amount` minus everything already
-    allocated to it, from any super row, in either pass -- not its full
-    `sg_amount` regardless of what it already has). Pass-2 super rows are
-    processed in a fixed order, sorted by `(paid_date or date.max, row)`,
-    so which row's balance is already reduced by the time a later pass-2
-    payment is considered never depends on the order `super_rows` was
-    passed in.
+    row apportions its amount across them, each capped at its UNMET
+    balance (`sg_amount` minus everything already allocated to it, from any
+    super row, in either pass -- not its full `sg_amount` regardless of
+    what it already has). A covered payday sitting exactly on the
+    payment's own period end is settled first; the rest follow oldest
+    payday first (see `_allocate`). Pass-2 super rows are processed in a
+    fixed order, sorted by paid date then row number, so which row's
+    balance is already reduced by the time a later pass-2 payment is
+    considered never depends on the order `super_rows` was passed in.
+
+    A super row that contributed to nobody is an orphan. `orphan_reasons`
+    says why, one entry per orphan in the same order: a payment that
+    reached no payday is data the tool could not place, while a payment
+    whose paydays were all settled by something else is a real
+    overpayment, and no payroll row can carry an `over:` flag for it
+    because none of it was allocated anywhere.
 
     `payroll_has_period_end`, `super_has_period_start` and
     `super_has_period_end` describe whether the *file*, not any one row,
@@ -558,7 +684,7 @@ def join(
         used_super_ids.add(id(s))
 
     pass2 = [s for s in super_rows if len(coverage[id(s)]) > 1]
-    for s in sorted(pass2, key=lambda s: (s.paid_date or date.max, s.row)):
+    for s in sorted(pass2, key=lambda s: (s.paid_date or date.max, *_super_order(s))):
         covered = coverage[id(s)]
         competing = [r for r in covered if _unmet(r, allocated_total) > 0]
         _check_defensible(s, competing)
@@ -572,10 +698,18 @@ def join(
         # shared-boundary case this resolves.
         shared = len(competing) > 1
         paid_str = s.paid_date.isoformat() if s.paid_date is not None else "no date on record"
+        # Whether a note is attached is decided by `competing` -- only a
+        # payment more than one payday was actually still contesting reads
+        # as shared. The COUNT in the note is the payment's structural
+        # coverage (`_coverage`: the paydays its period reaches, or every
+        # payday for the employee when it has no period at all), because
+        # that is what the sentence claims. Counting `competing` there made
+        # it false: a payment structurally covering three paydays, one of
+        # them already settled elsewhere, said it covered two.
         for row, share in allocations:
             note = (
                 f"{share} of {s.amount} allocated from super row {s.row} (paid "
-                f"{paid_str}), one of {len(competing)} paydays that payment covered"
+                f"{paid_str}), one of {len(covered)} paydays that payment covered"
                 if shared
                 else ""
             )
@@ -643,5 +777,14 @@ def join(
             MatchOutcome(row, remitted, "; ".join(flag_parts), last_known_paid_date)
         )
 
-    orphans = [s for s in super_rows if id(s) not in used_super_ids]
-    return JoinResult(outcomes, orphans, key_mode, warnings)
+    # Sorted, not left in the caller's list order: the orphan list is
+    # reported to a user, so its order is part of the answer, and the same
+    # two files must not produce two different-looking reports because one
+    # caller sorted its rows before handing them over.
+    orphans = sorted(
+        (s for s in super_rows if id(s) not in used_super_ids), key=_super_order
+    )
+    orphan_reasons = [
+        OrphanReason(s, *_why_orphaned(coverage[id(s)], allocated_total)) for s in orphans
+    ]
+    return JoinResult(outcomes, orphans, key_mode, warnings, orphan_reasons)
