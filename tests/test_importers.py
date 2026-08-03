@@ -1,3 +1,4 @@
+import itertools
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -238,7 +239,13 @@ def test_a_super_row_bracketing_two_paydays_apportions_oldest_first():
         outcomes = _by_row(result)
         assert outcomes[2].remitted == date(2026, 8, 28)
         assert "partial: 300.00 of 612.00 matched" in outcomes[2].flag
-        assert "allocated from a payment covering 2 paydays" in outcomes[2].flag
+        # The note names the specific super row, its own amount, and its
+        # paid date -- not just a bare count -- and says how many paydays
+        # were actually competing for it (2: both rows had a balance when
+        # this payment was processed, even though only one got paid).
+        assert "300.00 of 300.00 allocated from super row 2" in outcomes[2].flag
+        assert "paid 2026-08-28" in outcomes[2].flag
+        assert "one of 2 paydays" in outcomes[2].flag
         assert outcomes[3].remitted is None
         assert outcomes[3].flag == "no super payment found"
         assert result.orphans == []
@@ -266,7 +273,10 @@ def test_ambiguous_coverage_apportions_deterministically_regardless_of_amount():
         # slip past a check that also happens to match "over" inside
         # "covering".
         assert outcomes[2].remitted == date(2026, 7, 14)
-        assert outcomes[2].flag == "allocated from a payment covering 2 paydays"
+        assert outcomes[2].flag == (
+            "612.00 of 612.00 allocated from super row 2 (paid 2026-07-14), "
+            "one of 2 paydays that payment covered"
+        )
         assert outcomes[3].remitted is None
         assert outcomes[3].flag == "no super payment found"
 
@@ -283,18 +293,29 @@ def test_one_payment_covering_three_fortnightly_paydays_is_apportioned_not_abort
         [super_row("A", "2026-07-01", "2026-08-11", "2026-08-15", "1800.00", row=2)],
     )
     outcomes = _by_row(result)
+    # Exact equality (not a substring check -- "over" is a substring of
+    # both "covering" and "covered") pins the flag content: no partial, no
+    # over, just the shared-payment note naming this one payment.
     for row_number in (2, 3, 4):
         assert outcomes[row_number].remitted == date(2026, 8, 15)
-        assert outcomes[row_number].flag == "allocated from a payment covering 3 paydays"
+        assert outcomes[row_number].flag == (
+            "600.00 of 1800.00 allocated from super row 2 (paid 2026-08-15), "
+            "one of 3 paydays that payment covered"
+        )
     assert result.orphans == []
 
 
 def test_touching_period_boundaries_pair_cleanly_one_to_one():
     # A normal export convention: one period's end date is repeated as the
     # next period's start date (a fortnight ending 3 July, immediately
-    # followed by one starting 3 July). An inclusive start would let the
-    # second super row re-claim the first payday too, manufacturing a false
-    # multi-coverage case out of an unambiguous 1:1 file.
+    # followed by one starting 3 July). Under inclusive-both-ends coverage,
+    # the second super row's period structurally reaches 3 July too, but
+    # pass 1 already settles 3 July from the first (single-coverage) super
+    # row before pass 2 ever looks at the second one, so 3 July has zero
+    # balance left to be fought over and the second payment flows entirely
+    # to 10 July. Both rows end up plainly matched, no shared-payment note
+    # on either -- only one row was ever actually competing for the second
+    # payment's money.
     result = join(
         [payroll("A", "2026-07-03", "612.00", row=2),
          payroll("A", "2026-07-10", "540.00", row=3)],
@@ -525,3 +546,175 @@ def test_covers_defends_itself_against_a_period_less_row():
 
     s = SuperRow(None, "A", None, None, date(2026, 7, 14), Decimal("612.00"), 2)
     assert _covers(s, date(2026, 7, 9)) is False
+
+
+def test_global_cap_prevents_a_settled_row_from_starving_another():
+    # The review's own reproduction: payroll rows 2 (payday 2026-07-09,
+    # sg 600.00) and 3 (payday 2026-07-23, sg 600.00). Super row 2 pays
+    # 600.00 covering row 2 only, paid 2026-07-14. Super row 3 pays 600.00
+    # covering both, paid 2026-08-28. The employer paid 1200.00 against
+    # 1200.00 owed and is fully compliant. A cap local to super row 3 alone
+    # (its own sg_amount) would let row 2 -- already settled by super row
+    # 2 -- absorb a share of super row 3's money too, manufacturing an
+    # over: on row 2 and starving row 3 into a false shortfall. The cap
+    # must be against row 2's GLOBAL balance across every super row, which
+    # is already zero by the time super row 3 is considered.
+    result = join(
+        [payroll("A", "2026-07-09", "600.00", row=2),
+         payroll("A", "2026-07-23", "600.00", row=3)],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "600.00", row=2),
+         super_row("A", "2026-07-01", "2026-07-31", "2026-08-28", "600.00", row=3)],
+    )
+    outcomes = _by_row(result)
+    assert outcomes[2].remitted == date(2026, 7, 14)
+    assert outcomes[2].flag == ""
+    assert outcomes[3].remitted == date(2026, 8, 28)
+    assert outcomes[3].flag == ""
+
+
+def test_three_period_less_payments_settle_three_fortnightly_paydays_in_full():
+    # The worst instance from the review: a super file with no period
+    # columns at all, so every payment nominally covers every payday.
+    # Three period-less 600.00 payments against three 600.00 fortnightly
+    # paydays, paid in full, must settle all three -- not read two of
+    # three paid quarters as complete non-payment.
+    s1 = SuperRow(None, "A", None, None, date(2026, 7, 14), Decimal("600.00"), 2)
+    s2 = SuperRow(None, "A", None, None, date(2026, 7, 28), Decimal("600.00"), 3)
+    s3 = SuperRow(None, "A", None, None, date(2026, 8, 11), Decimal("600.00"), 4)
+    result = join(
+        [payroll("A", "2026-07-09", "600.00", row=2),
+         payroll("A", "2026-07-23", "600.00", row=3),
+         payroll("A", "2026-08-06", "600.00", row=4)],
+        [s1, s2, s3],
+    )
+    outcomes = _by_row(result)
+    for row_number in (2, 3, 4):
+        assert outcomes[row_number].flag != "no super payment found"
+        assert "partial:" not in outcomes[row_number].flag
+        assert "over:" not in outcomes[row_number].flag
+    assert outcomes[2].remitted == date(2026, 7, 14)
+    assert outcomes[3].remitted == date(2026, 7, 28)
+    assert outcomes[4].remitted == date(2026, 8, 11)
+    assert result.orphans == []
+
+
+def test_payday_on_the_periods_own_start_date_matches():
+    # The opposite export convention from the touching-boundary case: a
+    # period that starts ON the payday it settles (2026-07-09 to
+    # 2026-07-22, payday 2026-07-09). The exclusive-start attempt from
+    # round 3 dropped this into orphans and read the payday as unpaid;
+    # inclusive-both-ends coverage matches it cleanly.
+    result = join(
+        [payroll("A", "2026-07-09", "612.00")],
+        [super_row("A", "2026-07-09", "2026-07-22", "2026-07-14", "612.00")],
+    )
+    assert result.outcomes[0].remitted == date(2026, 7, 14)
+    assert result.outcomes[0].flag == ""
+    assert result.orphans == []
+
+
+def test_monthly_payment_covering_two_paydays_settles_both_in_full():
+    # The other exclusive-start casualty from the review: one monthly
+    # payment (2026-07-01 to 2026-07-31), covering paydays 2026-07-01 and
+    # 2026-07-15, paid in full. The regression read row 2 as falsely
+    # unpaid and row 3 as falsely over:, with no orphan produced to hint
+    # at either. Both must now settle cleanly, with the payment used (not
+    # an orphan).
+    result = join(
+        [payroll("A", "2026-07-01", "612.00", row=2),
+         payroll("A", "2026-07-15", "540.00", row=3)],
+        [super_row("A", "2026-07-01", "2026-07-31", "2026-08-05", "1152.00", row=2)],
+    )
+    outcomes = _by_row(result)
+    assert outcomes[2].flag != "no super payment found"
+    assert "over:" not in outcomes[2].flag
+    assert "over:" not in outcomes[3].flag
+    assert outcomes[2].remitted == date(2026, 8, 5)
+    assert outcomes[3].remitted == date(2026, 8, 5)
+    assert result.orphans == []
+
+
+def test_two_different_shared_payments_are_named_separately_not_merged():
+    # The review's own reproduction: a row that received 300.00 from one
+    # super row and 250.00 from a different one must show BOTH as distinct
+    # notes, each naming its own super row number, amount and paid date --
+    # deduplicating by note text would collapse two different payments
+    # into what reads as one 550.00 payment, with no way to tell two
+    # payments were involved.
+    result = join(
+        [payroll("A", "2026-07-09", "600.00", row=2),
+         payroll("A", "2026-07-23", "700.00", row=3)],
+        [super_row("A", "2026-07-01", "2026-07-31", "2026-07-20", "300.00", row=2),
+         super_row("A", "2026-07-01", "2026-08-05", "2026-08-01", "250.00", row=3)],
+    )
+    outcomes = _by_row(result)
+    flag = outcomes[2].flag
+    assert flag.startswith("partial: 550.00 of 600.00 matched")
+    assert "300.00 of 300.00 allocated from super row 2 (paid 2026-07-20)" in flag
+    assert "250.00 of 250.00 allocated from super row 3 (paid 2026-08-01)" in flag
+    # Two distinct note segments, not one deduplicated note.
+    assert flag.count("allocated from super row") == 2
+
+
+def test_zero_sg_amount_row_in_an_apportionment_group_is_not_a_missing_payment():
+    # A payroll row that owes nothing must not read as a missed payment,
+    # and must not inflate another row's "paydays covered" figure by being
+    # counted as a competitor it never actually was.
+    result = join(
+        [payroll("A", "2026-07-09", "600.00", row=2),
+         payroll("A", "2026-07-23", "0.00", row=3)],
+        [super_row("A", "2026-07-01", "2026-07-31", "2026-08-01", "600.00")],
+    )
+    outcomes = _by_row(result)
+    assert outcomes[3].flag == "no super guarantee owed for this payday"
+    assert outcomes[3].remitted is None
+    # The zero-need row was never really competing for the payment, so the
+    # row that WAS paid shows a plain match, not a false shared-with-2-
+    # paydays note that counts a row that received nothing.
+    assert outcomes[2].flag == ""
+    assert outcomes[2].remitted == date(2026, 8, 1)
+
+
+def test_a_payment_matching_only_a_zero_sg_row_is_an_orphan_not_a_silent_credit():
+    # If a super row's period structurally matches only ONE payroll row,
+    # and that row owes nothing, there is no defensible recipient for the
+    # money at all -- crediting it to a row that is about to be reported as
+    # owing zero regardless would make the payment vanish from the output
+    # entirely. Leaving it unclaimed, so it surfaces as an orphan, is the
+    # honest answer.
+    result = join(
+        [payroll("A", "2026-07-09", "0.00")],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "500.00")],
+    )
+    assert result.outcomes[0].flag == "no super guarantee owed for this payday"
+    assert [o.row for o in result.orphans] == [2]
+
+
+def test_pass2_allocation_is_independent_of_input_order_exhaustive():
+    # Exhaustive proof, not a sample: every permutation of both the
+    # payroll rows and the super rows fed to join must produce the exact
+    # same allocation. The order that actually decides the result is the
+    # sort inside join (payday/effective_period_end/row for the payroll
+    # side, paid_date/row for the super side), never the order the caller
+    # happened to build its lists in.
+    base_payroll = [
+        payroll("A", "2026-07-09", "600.00", row=2),
+        payroll("A", "2026-07-23", "600.00", row=3),
+        payroll("A", "2026-08-06", "600.00", row=4),
+    ]
+    base_super = [
+        SuperRow(None, "A", None, None, date(2026, 7, 14), Decimal("600.00"), 2),
+        SuperRow(None, "A", None, None, date(2026, 7, 28), Decimal("600.00"), 3),
+        SuperRow(None, "A", None, None, date(2026, 8, 11), Decimal("600.00"), 4),
+    ]
+    results = set()
+    for payroll_perm in itertools.permutations(base_payroll):
+        for super_perm in itertools.permutations(base_super):
+            result = join(list(payroll_perm), list(super_perm))
+            outcomes = _by_row(result)
+            snapshot = tuple(
+                (row_number, outcomes[row_number].remitted, outcomes[row_number].flag)
+                for row_number in (2, 3, 4)
+            )
+            results.add(snapshot)
+    assert len(results) == 1, f"allocation depended on input order: {results}"
