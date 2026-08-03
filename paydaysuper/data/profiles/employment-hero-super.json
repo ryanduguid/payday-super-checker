@@ -1,0 +1,23 @@
+{
+  "key": "employment-hero-super",
+  "name": "Employment Hero / KeyPay - Super Contributions (payments)",
+  "role": "super",
+  "verified": false,
+  "signature": ["Employee", "Amount", "Status"],
+  "columns": {
+    "employee_name": ["Employee", "Employee Name"],
+    "employee_id": ["Employee Id", "External Id", "Payroll Id"],
+    "period_start": ["Period Start", "Pay Period Start"],
+    "period_end": ["Period End", "Pay Period End"],
+    "paid_date": ["Payment Date", "Date Paid", "Paid Date"],
+    "amount": ["Amount"],
+    "contribution_type": ["Contribution Type", "Super Contribution Type"],
+    "status": ["Status"]
+  },
+  "date_formats": ["%d/%m/%Y", "%Y-%m-%d"],
+  "sg_filter": {
+    "column": "contribution_type",
+    "include": ["Super Guarantee", "Superannuation Guarantee", "SGC", "SG", "Employer Contributions"]
+  },
+  "notes": "The payments CSV carries a Status column at the far right. Beam statuses run Created, Submission accepted, Awaiting payment, Awaiting clearance, Sent to fund, Reconciled. None of them is a fund receipt date."
+}

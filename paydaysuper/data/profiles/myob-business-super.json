@@ -1,0 +1,22 @@
+{
+  "key": "myob-business-super",
+  "name": "MYOB Business - Superannuation payments",
+  "role": "super",
+  "verified": false,
+  "signature": ["Employee", "Payment date", "Amount"],
+  "columns": {
+    "employee_name": ["Employee", "Employee name"],
+    "employee_id": ["Employee ID"],
+    "period_start": ["Pay period start", "Period from"],
+    "period_end": ["Pay period end", "Period to"],
+    "paid_date": ["Payment date", "Paid date"],
+    "amount": ["Amount"],
+    "contribution_type": ["Super category", "Contribution type"]
+  },
+  "date_formats": ["%d/%m/%Y", "%Y-%m-%d"],
+  "sg_filter": {
+    "column": "contribution_type",
+    "include": ["Superannuation Guarantee", "SGC", "SG"]
+  },
+  "notes": "MYOB Business exports to Excel; column names are inferred, not published."
+}
