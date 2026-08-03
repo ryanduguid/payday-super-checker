@@ -239,6 +239,26 @@ def assess(
             results.append(result)
             continue
 
+        # A row carrying no SG has no exposure behind any verdict, so the
+        # amount is tested once here rather than bolted onto one branch of
+        # the ladder. Bolted to the UNPAID branch alone, a 0.00 row with a
+        # late remittance or receipt date still came out LATE and still
+        # forced exit code 2.
+        if line.sg_amount <= 0:
+            if dl.due < as_at:
+                result.caveats.append(
+                    f"the deadline passed on {dl.due.isoformat()}, but this row records "
+                    "no SG amount, so there is nothing to assess. Check the amount "
+                    "column if this payday should have carried super"
+                )
+            else:
+                result.caveats.append(
+                    "this row records no SG amount, so there is nothing to assess. "
+                    "Check the amount column if this payday should have carried super"
+                )
+            results.append(result)
+            continue
+
         settled = line.received
         if settled is None and line.remitted is not None:
             result.caveats.append(
@@ -273,7 +293,7 @@ def assess(
                 result.verdict = ON_TIME if settled <= dl.due else LATE
         elif line.remitted is not None:
             result.verdict = AT_RISK if line.remitted <= dl.due else LATE
-        elif dl.due < as_at and line.sg_amount > 0:
+        elif dl.due < as_at:
             # Nothing recorded and the deadline has passed. This is the
             # largest exposure the tool can see, so it must not be silent.
             result.verdict = UNPAID
