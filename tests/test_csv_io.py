@@ -52,6 +52,28 @@ def test_currency_formatting_is_accepted(tmp_path):
     assert parse_rows(path, *load_mapping(None))[0].sg_amount == Decimal("1234.56")
 
 
+def test_a_comma_in_the_decimal_position_is_refused_not_read_as_thousands(tmp_path):
+    # Carried audit finding. This reader stripped every comma regardless of
+    # position, so the European decimal 612,00 read as 61200: a hand-edited
+    # canonical file reported a $612.00 shortfall as $61,200.00, with an SG
+    # charge estimate of $62,010.11 - $99,216.18 against a true $620.10 -
+    # $992.16. importers._amount already refused exactly this input, and the
+    # README invites hand-editing the canonical file, so one package cannot
+    # ship two amount parsers that disagree by 100x. Both now read the same
+    # pattern, csv_io.AMOUNT_TEXT.
+    path = write_csv(tmp_path, 'E1,2026-07-09,"612,00",,,no,no,,no')
+    with pytest.raises(CsvError, match="612,00 is refused"):
+        parse_rows(path, *load_mapping(None))
+
+
+def test_a_thousands_separator_is_still_read(tmp_path):
+    # Teeth for the test above: the refusal turns on WHERE the separator
+    # sits, not on commas as such. Deleting the new check would leave this
+    # green, and deleting the comma stripping entirely would fail it.
+    path = write_csv(tmp_path, 'E1,2026-07-09,"1,234,567.89",,,no,no,,no')
+    assert parse_rows(path, *load_mapping(None))[0].sg_amount == Decimal("1234567.89")
+
+
 def test_impossible_date_is_rejected_with_row_number(tmp_path):
     path = write_csv(tmp_path, "E1,31/02/2026,600.00,,,no,no,,no")
     with pytest.raises(CsvError, match="row 2"):

@@ -11,7 +11,12 @@ import pytest
 
 from paydaysuper.cli import EXIT_ERROR, EXIT_LATE_FOUND, EXIT_OK
 from paydaysuper.cli import main as cli_main
-from paydaysuper.csv_io import CsvError, DEFAULT_MAPPING, parse_rows
+from paydaysuper.csv_io import (
+    CsvError,
+    DEFAULT_MAPPING,
+    LATEST_SANE_YEAR,
+    parse_rows,
+)
 from paydaysuper.importers import (
     CANONICAL_HEADER,
     ORPHAN_NO_AMOUNT,
@@ -117,6 +122,45 @@ def test_mis_grouped_amount_is_refused(tmp_path):
     )
     with pytest.raises(CsvError):
         read_super(path, vendor="myob-ar-super")
+
+
+def test_a_placeholder_year_is_refused_here_not_by_the_checker_afterwards(tmp_path):
+    # IMPORTANT regression. _date never applied csv_io.LATEST_SANE_YEAR,
+    # which csv_io._parse_date and the CLI's --as-at parsing both do, so a
+    # payroll export carrying the routine ERP sentinel 31/12/9999 imported
+    # with exit 0 and "matched 2" -- and the very next command refused the
+    # file this one had just written. Same rule _amount's magnitude guard
+    # already states: a value this module accepts and the checker would
+    # refuse must be refused here, at the point closest to the bad input.
+    path = tmp_path / "payroll.csv"
+    path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "Test Employee One,31/12/9999,31/12/9999,612.00\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CsvError, match="not a real date"):
+        read_payroll(path, vendor="myob-ar-payroll")
+
+
+def test_the_import_date_ceiling_is_exactly_the_checkers_own(tmp_path):
+    # Boundary, both sides, against csv_io.LATEST_SANE_YEAR itself rather
+    # than a copied literal: 2200 is a date, 2201 is a sentinel. A ceiling
+    # one year off either way would let the importer and the checker
+    # disagree about a file again.
+    def payroll_with(payday: str):
+        path = tmp_path / f"payroll_{payday.replace('/', '_')}.csv"
+        path.write_text(
+            "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+            f"Test Employee One,{payday},{payday},612.00\n",
+            encoding="utf-8",
+        )
+        return path
+
+    last_sane = f"31/12/{LATEST_SANE_YEAR}"
+    rows, _, _ = read_payroll(payroll_with(last_sane), vendor="myob-ar-payroll")
+    assert rows[0].payday == date(LATEST_SANE_YEAR, 12, 31)
+    with pytest.raises(CsvError, match="not a real date"):
+        read_payroll(payroll_with(f"01/01/{LATEST_SANE_YEAR + 1}"), vendor="myob-ar-payroll")
 
 
 def test_misaligned_row_is_refused_not_silently_shifted():
