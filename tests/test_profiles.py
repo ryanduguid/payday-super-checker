@@ -175,6 +175,59 @@ def test_vendor_override_rejects_an_unknown_key():
         detect(MYOB_SUPER, "super", vendor="sage")
 
 
+def test_vendor_prefix_matching_exactly_one_profile_resolves_it():
+    # "employment-hero" is a prefix of only one super profile's key.
+    assert detect(["anything"], "super", vendor="employment-hero").key == "employment-hero-super"
+
+
+def test_vendor_prefix_matching_more_than_one_profile_raises_naming_both():
+    # "myob" is a prefix of both myob-ar-super and myob-business-super.
+    # Picking one silently would feed the wrong column mapping into a legal
+    # deadline calculation, so this must refuse like the no-vendor tie does.
+    with pytest.raises(CsvError) as exc:
+        detect(["anything"], "super", vendor="myob")
+    message = str(exc.value)
+    assert "myob-ar-super" in message
+    assert "myob-business-super" in message
+
+
+def _write_profiles(tmp_path, specs):
+    for i, overrides in enumerate(specs):
+        base = {
+            "name": overrides.get("key", f"profile-{i}"),
+            "role": "super",
+            "signature": ["Employee"],
+            "columns": {"employee_name": ["Employee"], "amount": ["Amount"]},
+        }
+        base.update(overrides)
+        (tmp_path / f"profile-{i}.json").write_text(json.dumps(base), encoding="utf-8")
+
+
+def test_vendor_exact_key_wins_over_a_prefix_collision(tmp_path, monkeypatch):
+    # A vendor string that is itself a full profile key must resolve to that
+    # profile outright, even when the same string is also a valid
+    # startswith-prefix of a different profile's key (here "myob-ar" starts
+    # with "myob-"). Exact match is not merely tried first, it must win
+    # without ever considering the prefix branch as an ambiguity.
+    monkeypatch.setattr(profiles, "PROFILE_DIR", tmp_path)
+    _write_profiles(tmp_path, [{"key": "myob"}, {"key": "myob-ar"}])
+    assert detect(["anything"], "super", vendor="myob").key == "myob"
+
+
+def test_detect_picks_the_strictly_higher_scorer_among_several_live_profiles():
+    # Three real super profiles are live on this header row with different
+    # scores (verified by printing every profile's score first): xero-super
+    # resolves 6 fields, employment-hero-super and myob-business-super each
+    # resolve 5, myob-ar-super fails its signature and is not live at all.
+    # The top score is not tied with the runner-up, so detect must return
+    # the strict winner rather than falling through to any tie logic.
+    headers = [
+        "Employee", "Employee Number", "Contribution Type", "Amount",
+        "Payment Date", "Period From", "Status",
+    ]
+    assert detect(headers, "super").key == "xero-super"
+
+
 def test_resolve_columns_returns_the_actual_heading():
     profile = detect(MYOB_SUPER, "super")
     resolved = resolve_columns(profile, MYOB_SUPER)
