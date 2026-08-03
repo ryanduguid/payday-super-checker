@@ -279,8 +279,10 @@ def _key(row, mode: str) -> str:
 
 
 def _covers(s: SuperRow, target: date) -> bool:
-    if s.period_start is None and s.period_end is None:
-        return True  # period-less row; the caller only reaches this for a lone payday
+    # Only reached with at least one of period_start/period_end set: the
+    # caller (_coverage) handles the both-None case itself, since a
+    # period-less row's ambiguity is resolved against a payroll row set, not
+    # a single target date.
     start = s.period_start or s.period_end
     end = s.period_end or s.period_start
     return start <= target <= end
@@ -307,18 +309,72 @@ def _check_reversed_periods(super_rows: list[SuperRow]) -> None:
             )
 
 
-def join(payroll_rows: list[PayrollRow], super_rows: list[SuperRow]) -> JoinResult:
+def _coverage(s: SuperRow, candidates: list[PayrollRow]) -> list[PayrollRow]:
+    """Which of one employee's payroll rows a super row could have settled.
+
+    Matching never looks at amount, only at employee and period coverage, so
+    the ambiguity check that decides whether a super row must be refused
+    cannot look at amount either -- it has to ask exactly the question
+    matching itself asks. A super row with no period at all rules nothing
+    out: it is exactly as ambiguous against two candidates as a dated row
+    whose range brackets both, so it is treated the same way (all of them),
+    rather than being silently handed to whichever candidate happens to be
+    alone."""
+    if s.period_start is None and s.period_end is None:
+        return list(candidates)
+    return [r for r in candidates if _covers(s, r.effective_period_end)]
+
+
+def join(
+    payroll_rows: list[PayrollRow],
+    super_rows: list[SuperRow],
+    *,
+    payroll_has_period_end: bool = True,
+    super_has_period_start: bool = True,
+    super_has_period_end: bool = True,
+) -> JoinResult:
+    """Match payroll rows to the super payments that settled them.
+
+    `payroll_has_period_end`, `super_has_period_start` and
+    `super_has_period_end` describe whether the *file*, not any one row,
+    resolved that column at all (what `resolve_columns` found against the
+    file's headers, not whether a particular cell happened to be blank).
+    They exist only to decide whether a loud warning belongs in the result:
+    a payroll file with no pay period end column, or a super file with only
+    one of the two period columns, still joins -- the fallback (payday
+    instead of period end; a single-day window instead of a range) already
+    happens on its own from `None` fields on the rows themselves -- but the
+    caller has no way to tell "this file structurally lacks that column"
+    from "this row's cell was blank" once the file has been read into
+    `PayrollRow`/`SuperRow` objects, and the two need different messages.
+    All three default to True (column present) so existing callers that
+    never pass them see no new warnings."""
     _check_reversed_periods(super_rows)
 
     warnings: list[str] = []
-    both_have_ids = all(r.employee_id for r in payroll_rows) and all(
-        r.employee_id for r in super_rows
+    both_have_ids = (
+        bool(payroll_rows)
+        and bool(super_rows)
+        and all(r.employee_id for r in payroll_rows)
+        and all(r.employee_id for r in super_rows)
     )
     key_mode = "id" if both_have_ids else "name"
     if key_mode == "name":
         warnings.append(
             "matched on employee name because one of the files has no id column. "
             "Two employees sharing a name would be merged."
+        )
+    if not payroll_has_period_end:
+        warnings.append(
+            "the payroll file has no pay period end column, so matching falls back "
+            "to the payday. A super payment recorded against the pay period rather "
+            "than the payday it was paid on could be missed."
+        )
+    if super_has_period_start != super_has_period_end:
+        warnings.append(
+            "the super file has only one of the pay period start/end columns, so a "
+            "payment's coverage collapses to a single day and could miss the payday "
+            "it actually settled."
         )
 
     grouped: dict[str, list[PayrollRow]] = {}
@@ -328,41 +384,42 @@ def join(payroll_rows: list[PayrollRow], super_rows: list[SuperRow]) -> JoinResu
             raise CsvError(f"row {row.row}: the employee column is empty")
         grouped.setdefault(key, []).append(row)
 
-    for key, rows in grouped.items():
-        seen: dict[tuple[date, Decimal], list[int]] = {}
-        for row in rows:
-            seen.setdefault((row.effective_period_end, row.sg_amount), []).append(row.row)
-        for (period_end, amount), numbers in seen.items():
-            if len(numbers) > 1:
-                joined = ", ".join(str(n) for n in sorted(numbers))
-                raise CsvError(
-                    f"rows {joined} are the same employee, the same pay period ending "
-                    f"{period_end.isoformat()} and the same amount {amount}, so a super "
-                    "payment cannot be assigned to one of them. Remove the duplicate or "
-                    "give the rows distinct pay periods."
-                )
+    # What each super row could have settled, computed once and reused for
+    # both the ambiguity check below and the matching loop after it, so the
+    # two can never disagree about what "covers" means.
+    coverage: dict[int, list[PayrollRow]] = {}
+    for s in super_rows:
+        candidates = grouped.get(_key(s, key_mode), [])
+        coverage[id(s)] = _coverage(s, candidates)
 
+    for s in super_rows:
+        covered = coverage[id(s)]
+        if len(covered) > 1:
+            rows = ", ".join(str(r.row) for r in sorted(covered, key=lambda r: r.row))
+            raise CsvError(
+                f"super row {s.row} could settle more than one payroll row for this "
+                f"employee: rows {rows}. A payment cannot be assigned to one of them "
+                "without guessing which payday it belongs to. Give those paydays "
+                "distinct pay periods."
+            )
+
+    # `id(s)` rather than `s.row`: row numbers are only unique within a
+    # single file, and two SuperRow objects that happen to share one (a
+    # defensive scenario, not one the shipped readers produce) must not be
+    # conflated into a single claim.
     claimed: set[int] = set()
     outcomes: list[MatchOutcome] = []
     for row in payroll_rows:
-        key = _key(row, key_mode)
         matches = [
             s
             for s in super_rows
-            if _key(s, key_mode) == key
-            and s.row not in claimed
-            and (
-                _covers(s, row.effective_period_end)
-                if (s.period_start or s.period_end)
-                else len(grouped[key]) == 1
-            )
+            if id(s) not in claimed and any(r is row for r in coverage[id(s)])
         ]
         if not matches:
             outcomes.append(MatchOutcome(row, None, "no super payment found"))
             continue
-        claimed.update(s.row for s in matches)
-        paid = [s.paid_date for s in matches if s.paid_date is not None]
-        remitted = max(paid) if paid else None
+        claimed.update(id(s) for s in matches)
+
         total = sum((s.amount for s in matches), Decimal("0"))
         flag = ""
         if total < row.sg_amount:
@@ -372,9 +429,25 @@ def join(payroll_rows: list[PayrollRow], super_rows: list[SuperRow]) -> JoinResu
                 f"over: {total} against {row.sg_amount}, check for salary sacrifice "
                 "in the contribution types"
             )
-        if remitted is None:
-            flag = (flag + "; " if flag else "") + "matched super rows carry no payment date"
+
+        # The deadline tests receipt: a matched row without a paid date is
+        # not evidence the fund got the money. This applies even when only
+        # part of a split contribution is undated -- reporting the known
+        # date of the other part as "remitted" would read as fully settled
+        # while some of the money has no evidence of arriving at all.
+        undated = [s for s in matches if s.paid_date is None]
+        if undated:
+            remitted = None
+            if len(undated) == len(matches):
+                note = "matched super rows carry no payment date"
+            else:
+                undated_total = sum((s.amount for s in undated), Decimal("0"))
+                note = f"{undated_total} of {total} matched has no payment date on record"
+            flag = (flag + "; " if flag else "") + note
+        else:
+            remitted = max(s.paid_date for s in matches)
+
         outcomes.append(MatchOutcome(row, remitted, flag))
 
-    orphans = [s for s in super_rows if s.row not in claimed]
+    orphans = [s for s in super_rows if id(s) not in claimed]
     return JoinResult(outcomes, orphans, key_mode, warnings)

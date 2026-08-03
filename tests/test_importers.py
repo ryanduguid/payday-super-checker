@@ -143,7 +143,7 @@ def payroll(name, payday, amount, period_end=None, row=2):
 
 def super_row(name, start, end, paid, amount, row=2):
     return SuperRow(None, name, date.fromisoformat(start), date.fromisoformat(end),
-                    date.fromisoformat(paid), Decimal(amount), row)
+                    date.fromisoformat(paid) if paid else None, Decimal(amount), row)
 
 
 def test_exact_match_sets_the_remittance_date():
@@ -156,9 +156,13 @@ def test_exact_match_sets_the_remittance_date():
 
 def test_split_payment_takes_the_later_date():
     # The obligation is not met until the whole amount reaches the fund.
+    # Listed with the later paid date FIRST: a "last in the list" mutation
+    # of the max() selection would pick 07-14 here, not 07-21, so the
+    # ordering has to be adversarial to the mutation, not just the fixture
+    # happening to already be in ascending order.
     result = join([payroll("A", "2026-07-09", "612.00")],
-                  [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "300.00", row=2),
-                   super_row("A", "2026-07-01", "2026-07-09", "2026-07-21", "312.00", row=3)])
+                  [super_row("A", "2026-07-01", "2026-07-09", "2026-07-21", "312.00", row=2),
+                   super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "300.00", row=3)])
     assert result.outcomes[0].remitted == date(2026, 7, 21)
     assert result.outcomes[0].flag == ""
 
@@ -206,22 +210,47 @@ def test_name_matching_warns():
     assert any("name" in w for w in result.warnings)
 
 
-def test_a_super_row_is_claimed_by_at_most_one_payroll_row():
+def test_a_super_row_bracketing_two_paydays_is_refused_not_guessed():
     # One super payment whose period is wide enough to bracket two separate
-    # paydays for the same employee must settle only the first one it is
-    # tried against, not both -- otherwise its amount is double-counted into
-    # two totals and the same dollar looks like it discharged two separate
-    # obligations.
-    result = join(
-        [payroll("A", "2026-07-09", "300.00", row=2),
-         payroll("A", "2026-07-23", "300.00", row=3)],
-        [super_row("A", "2026-07-01", "2026-07-31", "2026-08-01", "300.00", row=2)],
-    )
-    assert result.outcomes[0].remitted == date(2026, 8, 1)
-    assert result.outcomes[0].flag == ""
-    assert result.outcomes[1].remitted is None
+    # paydays for the same employee is genuinely ambiguous: picking the
+    # first one in the input list (silently, by list order) would settle
+    # whichever payday happens to come first in the file, not necessarily
+    # the one the payment was actually for, and the two paydays carry
+    # different deadlines (2026-07-20 and 2026-08-04). Reordering the CSV
+    # must never be able to change which one gets flagged as unpaid, so
+    # this refuses instead of guessing.
+    with pytest.raises(CsvError) as exc:
+        join(
+            [payroll("A", "2026-07-09", "300.00", row=2),
+             payroll("A", "2026-07-23", "300.00", row=3)],
+            [super_row("A", "2026-07-01", "2026-07-31", "2026-08-28", "300.00", row=2)],
+        )
+    message = str(exc.value)
+    assert "super row 2" in message  # names the super row itself
+    assert "rows 2, 3" in message  # and every payroll row it could settle
+
+
+def test_ambiguous_coverage_is_refused_regardless_of_amount():
+    # Matching never looks at amount -- only employee and period coverage --
+    # so the ambiguity check must not either. Two payroll rows with
+    # DIFFERENT amounts but the same period end, bracketed by one super row,
+    # are exactly as ambiguous as two with the same amount.
+    with pytest.raises(CsvError) as exc:
+        join([payroll("A", "2026-07-09", "612.00", row=2),
+              payroll("A", "2026-07-09", "500.00", row=3)],
+             [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "612.00")])
+    assert "rows 2, 3" in str(exc.value)
+
+
+def test_two_identical_paydays_without_a_covering_super_payment_are_not_refused():
+    # Sharing a payday is not itself ambiguous. Only a single super payment
+    # that could actually settle either of them is. With no super row at
+    # all here, there is nothing to disambiguate, and refusing anyway would
+    # be a false alarm on an unremarkable file.
+    result = join([payroll("A", "2026-07-09", "612.00", row=2),
+                   payroll("A", "2026-07-09", "612.00", row=3)], [])
+    assert result.outcomes[0].flag == "no super payment found"
     assert result.outcomes[1].flag == "no super payment found"
-    assert result.orphans == []
 
 
 def test_reversed_super_period_is_refused():
@@ -234,3 +263,131 @@ def test_reversed_super_period_is_refused():
         join([payroll("A", "2026-07-09", "612.00")],
              [super_row("A", "2026-07-09", "2026-07-01", "2026-07-14", "612.00")])
     assert "row 2" in str(exc.value)
+
+
+def test_split_payment_with_one_undated_row_does_not_report_a_false_settlement():
+    # Only part of a split contribution carries a paid date. Reporting the
+    # known date as "remitted" would read as fully compliant while part of
+    # the money has no evidence of ever reaching the fund -- the deadline
+    # tests receipt, and an undated row is not evidence of receipt.
+    result = join(
+        [payroll("A", "2026-07-09", "612.00")],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "300.00", row=2),
+         super_row("A", "2026-07-01", "2026-07-09", None, "312.00", row=3)],
+    )
+    assert result.outcomes[0].remitted is None
+    assert "312.00" in result.outcomes[0].flag
+    assert "612.00" in result.outcomes[0].flag
+
+
+def test_all_matched_rows_undated_notes_it_and_leaves_remitted_blank():
+    result = join(
+        [payroll("A", "2026-07-09", "612.00")],
+        [super_row("A", "2026-07-01", "2026-07-09", None, "612.00")],
+    )
+    assert result.outcomes[0].remitted is None
+    assert result.outcomes[0].flag == "matched super rows carry no payment date"
+
+
+def test_id_matching_is_used_when_every_row_has_an_id():
+    p = PayrollRow("E1", "Alice", date(2026, 7, 9), None, Decimal("612.00"), 2)
+    s = SuperRow(
+        "E1", "Alice", date(2026, 7, 1), date(2026, 7, 9), date(2026, 7, 14),
+        Decimal("612.00"), 2,
+    )
+    result = join([p], [s])
+    assert result.key_mode == "id"
+    assert result.warnings == []
+
+
+def test_a_single_blank_id_falls_back_to_name_matching():
+    # One employee on either side carries no id at all: matching the whole
+    # file on id would be only partly true, so the fallback is all-or-none.
+    p1 = PayrollRow("E1", "Alice", date(2026, 7, 9), None, Decimal("612.00"), 2)
+    p2 = PayrollRow(None, "Bob", date(2026, 7, 9), None, Decimal("500.00"), 3)
+    s1 = SuperRow(
+        "E1", "Alice", date(2026, 7, 1), date(2026, 7, 9), date(2026, 7, 14),
+        Decimal("612.00"), 2,
+    )
+    s2 = SuperRow(
+        None, "Bob", date(2026, 7, 1), date(2026, 7, 9), date(2026, 7, 14),
+        Decimal("500.00"), 3,
+    )
+    result = join([p1, p2], [s1, s2])
+    assert result.key_mode == "name"
+    assert any("name" in w for w in result.warnings)
+
+
+def test_no_super_rows_does_not_vacuously_claim_id_matching():
+    # all([]) is True in Python, so without a non-empty guard an empty super
+    # list would let id-carrying payroll rows claim key_mode == "id" on no
+    # evidence at all from the other file.
+    p = PayrollRow("E1", "Alice", date(2026, 7, 9), None, Decimal("612.00"), 2)
+    result = join([p], [])
+    assert result.key_mode == "name"
+    assert any("name" in w for w in result.warnings)
+
+
+def test_decimal_precision_is_exact_not_float():
+    # 0.10 + 0.10 + 0.10 == 0.30 exactly under Decimal. Float arithmetic
+    # rounds this to 0.30000000000000004 and would misfire an "over" flag
+    # against a payroll amount of 0.30 to the cent.
+    result = join(
+        [payroll("A", "2026-07-09", "0.30")],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "0.10", row=2),
+         super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "0.10", row=3),
+         super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "0.10", row=4)],
+    )
+    assert result.outcomes[0].flag == ""
+
+
+def test_no_payroll_period_end_column_warns():
+    # A payroll file with no period_end column at all still joins -- it
+    # falls back to the payday -- but the user needs to know a contribution
+    # recorded against the pay period rather than the payday could be
+    # missed, loudly, not as an unexplained gap.
+    result = join(
+        [payroll("A", "2026-07-09", "612.00")],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "612.00")],
+        payroll_has_period_end=False,
+    )
+    assert any("period" in w and "payday" in w for w in result.warnings)
+
+
+def test_super_missing_one_period_column_warns():
+    result = join(
+        [payroll("A", "2026-07-09", "612.00")],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "612.00")],
+        super_has_period_start=False,
+    )
+    assert any("single day" in w for w in result.warnings)
+
+
+def test_pay_in_arrears_without_a_period_end_column_misses_silently_unless_warned():
+    # A perfectly valid arrears-paid file: the payday lands after the pay
+    # period it covers. Without a period_end column the join has only the
+    # payday to go on, so a super payment stamped against the earlier pay
+    # period is missed -- not a bug in the join, but the user has to be
+    # told why, loudly, rather than shown an unexplained gap and an
+    # unexplained orphan on a file that has nothing wrong with it.
+    result = join(
+        [payroll("A", "2026-07-16", "612.00")],
+        [super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "612.00")],
+        payroll_has_period_end=False,
+    )
+    assert result.outcomes[0].flag == "no super payment found"
+    assert [o.row for o in result.orphans] == [2]
+    assert any("period" in w and "payday" in w for w in result.warnings)
+
+
+def test_claimed_tracks_object_identity_not_row_number():
+    # Two distinct SuperRow objects that happen to carry the same .row
+    # value (row numbers are only unique within a single file) must not be
+    # conflated: claiming one must not make the other vanish from matching
+    # or from orphans.
+    s1 = super_row("A", "2026-07-01", "2026-07-09", "2026-07-14", "300.00", row=2)
+    s2 = super_row("B", "2026-07-01", "2026-07-09", "2026-07-14", "99.00", row=2)
+    result = join([payroll("A", "2026-07-09", "300.00")], [s1, s2])
+    assert result.outcomes[0].remitted == date(2026, 7, 14)
+    assert result.outcomes[0].flag == ""
+    assert [o.row for o in result.orphans] == [2]
