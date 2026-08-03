@@ -223,6 +223,40 @@ def test_late_remittance_without_a_receipt_date_is_late():
     assert any("still unpaid" in w for w in r.warnings)
 
 
+def test_receipt_on_the_due_date_is_on_time():
+    """s 18C(1) is satisfied by receipt BY the end of the period, so the due
+    date itself is inside it. Both comparisons in the verdict ladder could be
+    tightened to < with nothing in the suite noticing."""
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("300.00"),
+        remitted=date(2026, 7, 17),
+        received=date(2026, 7, 20),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+    assert r.deadline.due == date(2026, 7, 20)
+    assert r.verdict == "ON_TIME"
+    assert r.days_late is None
+    assert r.final_shortfall is None
+    assert r.sgc_high is None
+
+
+def test_remittance_on_the_due_date_with_no_receipt_is_at_risk():
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("300.00"),
+        remitted=date(2026, 7, 20),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+    assert r.deadline.due == date(2026, 7, 20)
+    assert r.verdict == "AT_RISK"
+    assert r.final_shortfall is None
+
+
 def test_prepayment_inside_the_twelve_month_window_is_on_time():
     """s 18C(1)(c)(ii): received in the 12 months before the QE day."""
     line = ContribLine(
