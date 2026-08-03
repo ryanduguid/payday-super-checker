@@ -120,6 +120,27 @@ def compute_due(line: ContribLine, cal: BusinessCalendar) -> Deadline:
             candidates.append(
                 (cal.add_business_days(line.qe_day, 7), OUT_OF_CYCLE, "")
             )
+    elif line.next_standard_qe_day is not None:
+        # The next payday is only ever read inside the branch above, so a row
+        # that supplies it but leaves the flag blank is silently given the
+        # strict 7-business-day deadline. csv_io does not cross-validate the
+        # two columns either, so the check belongs here.
+        if line.next_standard_qe_day <= line.qe_day:
+            caveats.append(
+                f"next standard QE day {line.next_standard_qe_day.isoformat()} is not "
+                f"after the QE day {line.qe_day.isoformat()} and the out-of-cycle flag "
+                "is not set, so the column was ignored. Correct it or set "
+                "out_of_cycle=yes"
+            )
+        else:
+            item2 = cal.add_business_days(line.next_standard_qe_day, 7)
+            caveats.append(
+                f"a next standard QE day {line.next_standard_qe_day.isoformat()} is "
+                "supplied but the out-of-cycle flag is not set, so the strict "
+                "7-business-day deadline was used. If this payday is out of cycle, set "
+                f"out_of_cycle=yes and the deadline becomes {item2.isoformat()} "
+                "(s 18C(2) item 2, LI 2026/20)"
+            )
 
     if line.first_to_fund:
         candidates.append(
