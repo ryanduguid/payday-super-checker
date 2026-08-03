@@ -53,8 +53,13 @@ def cents(value: Decimal | None) -> Decimal:
 
 
 def csv_safe(text: str) -> str:
-    """Stop a spreadsheet treating a cell as a formula. Only employee ids
-    come from the input, so only they can carry a payload."""
+    """Stop a spreadsheet treating a cell as a formula.
+
+    Applied to every field written from input text, not to a single
+    trusted-looking one. This report writes employee ids; `importers.
+    write_canonical` writes employee names as well, and puts its dates and
+    amounts through the same guard rather than reasoning per field about
+    which of them could ever start with `=`."""
     if text[:1] == "=":
         return "'" + text
     if text[:1] in FORMULA_LEAD and not text[1:].replace("_", "").isalnum():

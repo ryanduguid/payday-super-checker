@@ -236,6 +236,38 @@ def test_duplicate_normalised_headers_are_refused(tmp_path):
     assert "superannuation guarantee" in str(exc.value).lower()
 
 
+def test_two_identical_punctuation_only_headings_are_refused_like_csv_io_refuses_them(
+    tmp_path,
+):
+    # MINOR regression. _check_duplicate_headers skipped any heading whose
+    # normalised key was falsy, so two byte-identical "###" columns walked
+    # straight past the importer while csv_io refuses them outright --
+    # contradicting this module's own docstring, which claims its refusal
+    # is a SUPERSET of csv_io's rather than a different shape of it.
+    path = tmp_path / "punct_headers.csv"
+    path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee,###,###\n"
+        "Test Employee One,09/07/2026,09/07/2026,612.00,a,b\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CsvError, match="normalise to the same heading"):
+        read_payroll(path, vendor="myob-ar-payroll")
+
+    # The claim the docstring makes: csv_io refuses this file too, so the
+    # importer refusing it keeps the superset true rather than merely
+    # matching it here by accident.
+    canonical = tmp_path / "canonical.csv"
+    canonical.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,"
+        "defined_benefit,###,###\n"
+        "E1,2026-07-09,612.00,,,no,no,,no,a,b\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CsvError, match="duplicate column name"):
+        parse_rows(canonical, DEFAULT_MAPPING)
+
+
 def payroll(name, payday, amount, period_end=None, row=2):
     return PayrollRow(None, name, date.fromisoformat(payday),
                       date.fromisoformat(period_end) if period_end else None,
@@ -1290,6 +1322,40 @@ def test_write_canonical_prefers_employee_id_over_employee_name(tmp_path):
         rows = list(_csv.DictReader(f))
     assert rows[0]["employee_id"] == "E001"
     assert rows[0]["employee_id"] != "Alice Smith"
+
+
+def test_one_employee_is_written_under_one_label_when_only_some_rows_have_an_id(
+    tmp_path,
+):
+    # MINOR regression. write_canonical wrote `employee_id or
+    # employee_name`, decided per row, while `join` had matched on the name
+    # for the whole file (one blank id anywhere forces name matching). A
+    # file where the same person carries an id on one payday and not the
+    # next was written as two employees, and the checker groups its s
+    # 18C(2) item-4 alignment by employee_id, so the 20-business-day window
+    # opened by the first payday stopped reaching the second.
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Employee ID,Date,Pay Period End,Superannuation Guarantee\n"
+        "Ann Ward,E001,10/07/2026,10/07/2026,612.00\n"
+        "Ann Ward,,24/07/2026,24/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "Ann Ward,Superannuation Guarantee,01/07/2026,10/07/2026,12/07/2026,612.00\n"
+        "Ann Ward,Superannuation Guarantee,11/07/2026,24/07/2026,26/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    report = import_files(payroll_path, super_path, out)
+    assert report.key_mode == "name"
+
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    assert len(rows) == 2
+    assert len({r["employee_id"] for r in rows}) == 1, "one person, one identity"
 
 
 def test_a_partial_payment_is_not_written_as_fully_remitted(tmp_path):
