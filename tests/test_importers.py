@@ -1,13 +1,15 @@
 import csv as _csv
 import itertools
 import random
+import re
+import sys
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
-from paydaysuper.cli import EXIT_ERROR, EXIT_LATE_FOUND, EXIT_OK, MAX_WARNINGS_SHOWN
+from paydaysuper.cli import EXIT_ERROR, EXIT_LATE_FOUND, EXIT_OK
 from paydaysuper.cli import main as cli_main
 from paydaysuper.csv_io import CsvError, DEFAULT_MAPPING, parse_rows
 from paydaysuper.importers import (
@@ -1486,8 +1488,11 @@ def test_import_subcommand_writes_the_file(tmp_path, capsys):
     assert code == EXIT_OK
     assert out.exists()
     printed = capsys.readouterr().out
-    assert "myob-ar-super" in printed
-    assert "myob-ar-payroll" in printed
+    # The exact label-to-key pairing, not just that both keys appear
+    # somewhere: a swap of the two _profile_line calls would still contain
+    # both substrings but pair them with the wrong label.
+    assert "payroll profile: myob-ar-payroll" in printed
+    assert "super profile: myob-ar-super" in printed
     assert "unverified" in printed
     assert "receipt" in printed.lower()
 
@@ -1533,12 +1538,34 @@ def test_import_clean_file_returns_zero(tmp_path):
 
 
 def test_existing_invocation_still_works(tmp_path):
+    # The exact exit code and real report contents, not just "did not
+    # crash" -- values confirmed by running this exact invocation directly
+    # against the unmodified check path. test_integration.py's own
+    # test_cli_writes_report_and_flags_late pins the same fixture at a
+    # different --as-at date far more thoroughly; this test's job is
+    # narrower: prove the `import` subcommand's dispatch in main() did not
+    # disturb the plain check invocation at all.
     from conftest import SAMPLE
 
     out = tmp_path / "report.csv"
     code = cli_main([str(SAMPLE), "-o", str(out), "--as-at", "2026-09-01"])
-    assert code in (EXIT_OK, EXIT_LATE_FOUND)
+    assert code == EXIT_LATE_FOUND
     assert out.exists()
+
+    with open(out, newline="", encoding="utf-8") as f:
+        rows = list(_csv.DictReader(f))
+    data = [r for r in rows if r["employee_id"] != "NOTE"]
+    assert len(data) == 10
+    assert {r["verdict"] for r in data} == {
+        "ON_TIME",
+        "AT_RISK",
+        "LATE",
+        "UNPAID",
+        "SKIPPED",
+    }
+    unpaid = next(r for r in data if r["employee_id"] == "EMP004")
+    assert unpaid["verdict"] == "UNPAID"
+    assert unpaid["sg_amount"] == "780.00"
 
 
 def test_import_error_is_printed_without_a_traceback_and_exits_one(tmp_path, capsys):
@@ -1648,19 +1675,30 @@ def test_import_prints_the_partial_warning_and_explains_the_blank_remitted_date(
     assert printed.index("partial: 999.99 of 1000.00 matched") < printed.index("wrote ")
 
 
-def test_import_caps_the_warning_list_and_says_how_many_more(tmp_path, capsys):
-    # A file with more warnings than the console cares to print in full must
-    # say so, rather than showing thousands of lines or silently truncating.
-    n = 25
+def test_import_never_truncates_a_partial_warning_however_many_there_are(
+    tmp_path, capsys
+):
+    # IMPORTANT REVIEW FINDING (round 1). The original cap sliced
+    # report.warnings uniformly, so a file with more than MAX_WARNINGS_SHOWN
+    # partial rows silently dropped the only surviving record of what
+    # actually arrived for the rows past the cut -- exactly what the
+    # caveat printed above the warnings block promises never happens.
+    # Reproduction: 60 employees, each owed 1000.00, each paid 900.00 plus
+    # their own index (900.00 .. 959.00) -- an ordinary small-business
+    # payroll, well past the 20-line cap. Every one of the 60 partial
+    # figures must survive in the console output, and the canonical CSV
+    # must still show why they matter (remitted_date blank on every one).
+    n = 60
     payroll_lines = ["Employee Name,Date,Pay Period End,Superannuation Guarantee"]
     super_lines = [
         "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount"
     ]
     for i in range(n):
         name = f"Employee{i:02d}"
-        payroll_lines.append(f"{name},09/07/2026,09/07/2026,100.00")
+        payroll_lines.append(f"{name},09/07/2026,09/07/2026,1000.00")
+        paid = 900 + i
         super_lines.append(
-            f"{name},Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,50.00"
+            f"{name},Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,{paid}.00"
         )
     payroll_path = tmp_path / "payroll.csv"
     payroll_path.write_text("\n".join(payroll_lines) + "\n", encoding="utf-8")
@@ -1681,13 +1719,90 @@ def test_import_caps_the_warning_list_and_says_how_many_more(tmp_path, capsys):
     )
     assert code == EXIT_LATE_FOUND
     printed = capsys.readouterr().out
-    # n partial warnings plus one name-matching warning (these fixtures have
-    # no employee_id column), so the true total is n + 1.
-    total = n + 1
-    assert f"warnings ({total}):" in printed
-    assert f"... and {total - MAX_WARNINGS_SHOWN} more" in printed
-    # Exactly MAX_WARNINGS_SHOWN warning bullet lines shown, not all n.
-    assert printed.count("partial: 50.00 of 100.00 matched") == MAX_WARNINGS_SHOWN - 1
+
+    # All 60 partial figures present, not just the first 19 or 20.
+    partial_lines = re.findall(r"row \d+: partial: [\d.]+ of 1000\.00 matched", printed)
+    assert len(partial_lines) == n
+    assert "row 2: partial: 900.00 of 1000.00 matched" in printed  # first
+    assert "row 61: partial: 959.00 of 1000.00 matched" in printed  # last, past any old cap
+
+    # Nothing about the partial figures is described as hidden: the only
+    # "more" line, if any, must explicitly disclaim partial/over content.
+    for line in printed.splitlines():
+        if "more" in line and "partial" not in line and "over-payment" not in line:
+            pytest.fail(f"an overflow line does not say it excludes partials: {line!r}")
+
+    # The canonical CSV still hides the true figures from the checker (that
+    # is Task 6's accepted, documented limitation) -- proving the warning
+    # list is genuinely the only place they survive, for a spot-checked row.
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    first, last = rows[0], rows[-1]
+    assert first["employee_id"] == "Employee00" and first["remitted_date"] == ""
+    assert last["employee_id"] == "Employee59" and last["remitted_date"] == ""
+
+
+def test_import_caps_only_non_partial_warnings_at_a_pinned_literal(tmp_path, capsys):
+    # MINOR REVIEW FINDING (round 1). The original version of this test
+    # derived its expected "shown" and "remaining" counts by importing
+    # MAX_WARNINGS_SHOWN from cli.py, so it could never fail no matter what
+    # that constant was changed to -- both sides of every assertion moved
+    # together. The counts below (20 shown, 5 hidden) are literals, pinned
+    # to today's real MAX_WARNINGS_SHOWN = 20 rather than re-derived from
+    # it, so a change to that constant is a real, visible test failure.
+    #
+    # Employee-id columns are used on both sides so every row matches by
+    # id, not name, and no structural "matched on employee name" warning
+    # sneaks into the count. One clean anchor payday is matched in full
+    # (flag "", no warning at all); 25 further super payments carry an id
+    # with no matching payroll row at all, so each becomes an
+    # ORPHAN_NO_PAYDAY orphan warning -- none of them partial or over, so
+    # all 25 are subject to the cap.
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Employee ID,Date,Pay Period End,Superannuation Guarantee\n"
+        "Anchor,E001,09/07/2026,09/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    super_lines = [
+        "Employee Name,Employee ID,Superannuation Category,Period From,Period To,"
+        "Paid Date,Amount",
+        "Anchor,E001,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,612.00",
+    ]
+    for i in range(25):
+        eid = f"ORPHAN{i:02d}"
+        super_lines.append(
+            f"{eid},{eid},Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,50.00"
+        )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text("\n".join(super_lines) + "\n", encoding="utf-8")
+
+    out = tmp_path / "contributions.csv"
+    code = cli_main(
+        [
+            "import",
+            "--payroll",
+            str(payroll_path),
+            "--super",
+            str(super_path),
+            "-o",
+            str(out),
+        ]
+    )
+    assert code == EXIT_LATE_FOUND
+    printed = capsys.readouterr().out
+
+    assert "employee matching: by id" in printed  # confirms no id-column noise warning
+    assert "warnings (25):" in printed
+    # Literal 20, not MAX_WARNINGS_SHOWN - 0: if the cap constant in cli.py
+    # is changed (even to something degenerate like 1), this count stops
+    # matching and the test fails, rather than silently tracking the
+    # change.
+    assert printed.count("matched no payday") == 20
+    assert (
+        "... and 5 more (none of them a partial or over-payment figure -- "
+        "those are always shown in full above)" in printed
+    )
 
 
 def test_import_distinguishes_orphan_codes_in_the_console_output(tmp_path, capsys):
@@ -1732,6 +1847,10 @@ def test_import_distinguishes_orphan_codes_in_the_console_output(tmp_path, capsy
     # combined line.
     assert f"1  {ORPHAN_PAYDAYS_SETTLED}" in printed
     assert f"1  {ORPHAN_NO_PAYDAY}" in printed
+    # The section header's own count is the real total (2), not hardcoded --
+    # this is a literal pin, independent of report.orphans, so a hardcoded
+    # "(0)" or any other wrong figure fails here directly.
+    assert "super payments that were not applied to any payday (2):" in printed
 
 
 def test_import_vendor_flag_forces_a_profile(tmp_path, capsys):
@@ -1753,3 +1872,131 @@ def test_import_vendor_flag_forces_a_profile(tmp_path, capsys):
     printed = capsys.readouterr().out
     assert "myob-ar-payroll" in printed
     assert "myob-ar-super" in printed
+
+    # MINOR REVIEW FINDING (round 1). Without this, the test had no teeth:
+    # the myob fixtures auto-detect to myob-ar-payroll/myob-ar-super anyway,
+    # so replacing args.vendor with None at the call to import_files would
+    # leave every assertion above green. Forcing an incompatible vendor
+    # against these fixtures must fail -- proof --vendor genuinely reaches
+    # detect() rather than being silently ignored.
+    code = cli_main(
+        [
+            "import",
+            "--payroll",
+            str(FIXTURES / "myob_payroll.csv"),
+            "--super",
+            str(FIXTURES / "myob_super.csv"),
+            "-o",
+            str(out),
+            "--vendor",
+            "xero",
+        ]
+    )
+    assert code == EXIT_ERROR
+
+
+def test_import_names_the_failing_file_in_an_os_error(tmp_path, capsys):
+    # IMPORTANT REVIEW FINDING (round 1). The import command takes TWO
+    # input files, unlike the check command's single csv_path, so its
+    # OSError handler cannot fall back to naming "the" input file the way
+    # main()'s own `target = exc.filename or args.csv_path` does. The
+    # original handler printed only `error: {exc.strerror or exc}` and
+    # dropped the filename entirely -- `error: Permission denied` gives no
+    # clue which of --payroll/--super failed. A directory in place of a
+    # file reproduces a real, common PermissionError on Windows without
+    # needing actual OS permissions to be misconfigured.
+    a_directory = tmp_path / "a_directory"
+    a_directory.mkdir()
+    code = cli_main(
+        [
+            "import",
+            "--payroll",
+            str(a_directory),
+            "--super",
+            str(FIXTURES / "myob_super.csv"),
+            "-o",
+            str(tmp_path / "out.csv"),
+        ]
+    )
+    assert code == EXIT_ERROR
+    captured = capsys.readouterr()
+    assert captured.err.startswith("error: cannot read ")
+    assert str(a_directory) in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_reconfigure_stdout_for_unicode_prevents_a_non_ascii_crash():
+    # MINOR REVIEW FINDING (round 1). Proven directly against a real
+    # io.TextIOWrapper set to strict cp1252 -- the shape stdout actually
+    # takes when redirected on Windows (PEP 528's fallback locale
+    # encoding). Without paydaysuper.cli._reconfigure_stdout_for_unicode,
+    # writing a character outside cp1252's range (a CJK character, not
+    # merely non-ASCII -- e.g. "e with an accent" is IN cp1252 and would
+    # not reproduce the bug) raises UnicodeEncodeError; with it, the same
+    # write succeeds and the UTF-8 bytes survive exactly, not mangled or
+    # backslash-escaped (utf-8 can represent this character natively, so
+    # the errors="backslashreplace" fallback never has to fire here).
+    import io
+
+    from paydaysuper.cli import _reconfigure_stdout_for_unicode
+
+    non_cp1252_char = "\u4e2d"  # CJK ideogram, outside Windows-1252's range (not Latin-1)
+
+    before_buffer = io.BytesIO()
+    before = io.TextIOWrapper(before_buffer, encoding="cp1252", errors="strict")
+    with pytest.raises(UnicodeEncodeError):
+        before.write(non_cp1252_char)
+
+    after_buffer = io.BytesIO()
+    after = io.TextIOWrapper(after_buffer, encoding="cp1252", errors="strict")
+    original_stdout = sys.stdout
+    sys.stdout = after
+    try:
+        _reconfigure_stdout_for_unicode()
+        after.write(non_cp1252_char)
+        after.flush()
+    finally:
+        sys.stdout = original_stdout
+    assert after_buffer.getvalue() == non_cp1252_char.encode("utf-8")
+
+
+def test_both_cli_paths_call_the_shared_stdout_reconfigure(tmp_path, monkeypatch):
+    # MINOR REVIEW FINDING (round 1). The reconfigure block used to be
+    # duplicated verbatim at two call sites (check path and import path);
+    # extracted into one shared helper per the review, both call sites must
+    # still actually call it. A spy wrapping the real implementation proves
+    # both main() and import_main() reach it exactly once per run, on a
+    # real successful run of each (not merely that the helper works in
+    # isolation, which the test above already covers).
+    import paydaysuper.cli as cli_module
+
+    calls = []
+    real = cli_module._reconfigure_stdout_for_unicode
+
+    def _spy():
+        calls.append(True)
+        real()
+
+    monkeypatch.setattr(cli_module, "_reconfigure_stdout_for_unicode", _spy)
+
+    out = tmp_path / "contributions.csv"
+    code = cli_main(
+        [
+            "import",
+            "--payroll",
+            str(FIXTURES / "myob_payroll.csv"),
+            "--super",
+            str(FIXTURES / "myob_super.csv"),
+            "-o",
+            str(out),
+        ]
+    )
+    assert code == EXIT_OK
+    assert len(calls) == 1
+
+    from conftest import SAMPLE
+
+    report_out = tmp_path / "report.csv"
+    code = cli_main([str(SAMPLE), "-o", str(report_out), "--as-at", "2026-09-01"])
+    assert code == EXIT_LATE_FOUND
+    assert len(calls) == 2

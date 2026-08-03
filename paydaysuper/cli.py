@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -23,6 +24,16 @@ from .report import EXPOSED, assess, console_summary, write_csv
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_LATE_FOUND = 2
+
+
+def _reconfigure_stdout_for_unicode() -> None:
+    """Redirected stdout on Windows falls back to the locale encoding (cp1252
+    under PEP 528), which cannot represent every employee name. Both the
+    check path and the import path print names read straight from the
+    input file, so both call this, once, before their first print()."""
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -108,9 +119,24 @@ def build_import_parser() -> argparse.ArgumentParser:
 
 
 # How many warning lines the console output shows in full before summarising
-# the rest as a count. A file with thousands of orphaned or partial rows must
-# not scroll the whole terminal history away.
+# the rest as a count. A file with thousands of orphaned or structural
+# warnings must not scroll the whole terminal history away. Never applied to
+# a partial/over-payment warning -- see _UNCAPPABLE_WARNING.
 MAX_WARNINGS_SHOWN = 20
+
+# A partial or over-payment warning (import_files builds it as
+# f"row {n}: {flag}" where flag starts "partial: " or "over: ", per
+# importers.join's own flag_parts ordering) carries the ONLY surviving
+# record of a figure the canonical CSV cannot hold: write_canonical leaves
+# remitted_date blank for that row regardless, so the checker reads it as a
+# full shortfall. Truncating this line under the warning cap would make the
+# caveat printed above the warnings block ("the amount that actually
+# arrived is not lost -- it is in the warning lines below") false for
+# exactly the rows it matters most for. These are therefore exempt from the
+# cap entirely, however many there are; only the remaining, less urgent
+# warnings (name-matching, structural period gaps, orphan messages) are
+# capped.
+_UNCAPPABLE_WARNING = re.compile(r"^row \d+: (partial|over): ")
 
 
 def _profile_line(label: str, profile: Profile) -> str:
@@ -146,14 +172,22 @@ def import_main(argv: list[str]) -> int:
         print(f"error: file not found: {exc.filename}", file=sys.stderr)
         return EXIT_ERROR
     except OSError as exc:
-        print(f"error: {exc.strerror or exc}", file=sys.stderr)
+        # This command reads TWO input files and writes one output file, so
+        # unlike the single-CSV check path there is no one obvious "the"
+        # file to name. open() sets exc.filename to whichever path it was
+        # actually working on, so that is trusted first; the join of both
+        # input paths is only a fallback for the rare OSError that leaves
+        # it unset (e.g. from Path.resolve() rather than open()).
+        target = exc.filename or f"{args.payroll} or {args.super_path}"
+        try:
+            writing = target == str(Path(args.output).resolve())
+        except OSError:
+            writing = False
+        verb = "cannot write" if writing else "cannot read"
+        print(f"error: {verb} {target}: {exc.strerror or exc}", file=sys.stderr)
         return EXIT_ERROR
 
-    # Redirected stdout on Windows falls back to the locale encoding, which
-    # cannot represent every employee name.
-    reconfigure = getattr(sys.stdout, "reconfigure", None)
-    if reconfigure is not None:
-        reconfigure(encoding="utf-8", errors="backslashreplace")
+    _reconfigure_stdout_for_unicode()
 
     lines = [
         _profile_line("payroll", report.payroll_profile),
@@ -188,11 +222,18 @@ def import_main(argv: list[str]) -> int:
     if report.warnings:
         lines.append("")
         lines.append(f"warnings ({len(report.warnings)}):")
-        shown = report.warnings[:MAX_WARNINGS_SHOWN]
-        lines.extend(f"  - {w}" for w in shown)
-        remaining = len(report.warnings) - len(shown)
-        if remaining > 0:
-            lines.append(f"  ... and {remaining} more")
+        carries_a_figure = [w for w in report.warnings if _UNCAPPABLE_WARNING.match(w)]
+        other = [w for w in report.warnings if not _UNCAPPABLE_WARNING.match(w)]
+        # Every partial/over-payment warning, always -- never truncated.
+        lines.extend(f"  - {w}" for w in carries_a_figure)
+        shown_other = other[:MAX_WARNINGS_SHOWN]
+        lines.extend(f"  - {w}" for w in shown_other)
+        remaining_other = len(other) - len(shown_other)
+        if remaining_other > 0:
+            lines.append(
+                f"  ... and {remaining_other} more (none of them a partial or "
+                "over-payment figure -- those are always shown in full above)"
+            )
 
     if report.orphan_reasons:
         lines.append("")
@@ -275,11 +316,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: cannot write {args.output}: {exc.strerror or exc}", file=sys.stderr)
         return EXIT_ERROR
 
-    # Redirected stdout on Windows falls back to the locale encoding, which
-    # cannot represent every employee name.
-    reconfigure = getattr(sys.stdout, "reconfigure", None)
-    if reconfigure is not None:
-        reconfigure(encoding="utf-8", errors="backslashreplace")
+    _reconfigure_stdout_for_unicode()
     print(
         console_summary(
             results, as_at, Path(args.output), LAW_CONTENT_DATE, rates, assessment_date
