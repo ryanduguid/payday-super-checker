@@ -156,13 +156,17 @@ def _item4_seeded_by_unrecorded(
     line: ContribLine,
     dl: Deadline,
     index: dict[tuple[str, date], list[ContribLine]],
-    cal: BusinessCalendar,
 ) -> str | None:
     """Item 4 needs an EARLIER ELIGIBLE CONTRIBUTION. The tool cannot see
     whether one was made, so where every earlier line it could have inherited
     from records no payment at all, name both deadlines rather than quietly
-    presenting the longer one as settled."""
-    if dl.pathway != ITEM4_ALIGNED or dl.due is None:
+    presenting the longer one as settled.
+
+    The line's own deadline is the one apply_item4 recorded before it moved
+    `due`. Recomputing it here from qe_day would drop the out-of-cycle
+    pathway and the items 1 + 2 max(), naming a date up to a fortnight
+    earlier than the one the row actually had."""
+    if dl.pathway != ITEM4_ALIGNED or dl.due is None or dl.own_due is None:
         return None
     donors = [
         other
@@ -171,7 +175,7 @@ def _item4_seeded_by_unrecorded(
     ]
     if donors and all(d.received is None and d.remitted is None for d in donors):
         earlier = ", ".join(sorted({d.qe_day.isoformat() for d in donors}))
-        own = cal.add_business_days(line.qe_day, 20 if line.first_to_fund else 7)
+        own = dl.own_due
         return (
             f"this deadline is inherited from the QE day {earlier}, for which no payment "
             "is recorded. s 18C(2) item 4 needs an earlier eligible contribution, so if "
@@ -226,7 +230,7 @@ def assess(
         result = Result(line, dl, UNKNOWN, notes=list(dl.notes), caveats=list(dl.caveats))
         if line.duplicate_note:
             result.caveats.append(line.duplicate_note)
-        inherited = _item4_seeded_by_unrecorded(line, dl, donors, cal)
+        inherited = _item4_seeded_by_unrecorded(line, dl, donors)
         if inherited:
             result.caveats.append(inherited)
 
