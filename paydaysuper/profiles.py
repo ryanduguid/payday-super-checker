@@ -36,11 +36,32 @@ _SPACES = re.compile(r"\s+")
 
 
 def normalise_header(text: str) -> str:
-    """Fold a heading to its comparable form: no case, no punctuation, one
-    space between words. NBSP and tabs are whitespace like any other."""
+    """Fold a HEADING to its comparable form: no case, no punctuation, one
+    space between words. NBSP and tabs are whitespace like any other.
+
+    For headings only. It strips every character outside `[0-9a-z ]`, which
+    is right for `Employee Membership #` and wrong for anything read out of
+    a data cell: an employee id folds to a different employee's id, and a
+    name written in Chinese, Korean, Greek, Cyrillic or Arabic folds to the
+    empty string. Use `normalise_name` for a person's name, and compare ids
+    exactly."""
     folded = unicodedata.normalize("NFKC", text).casefold()
     folded = _SPACES.sub(" ", folded)
     folded = _PUNCT.sub("", folded)
+    return _SPACES.sub(" ", folded).strip()
+
+
+def normalise_name(text: str) -> str:
+    """Fold a person's NAME to its comparable form: no case, one space
+    between words, nothing else removed.
+
+    Punctuation stays, unlike `normalise_header`. A heading's punctuation is
+    decoration; a name's is part of the name, and dropping it merges
+    O'Brien into OBrien. Every character outside the Latin alphabet stays
+    too, so a name in any script keeps a usable key: the guarantee this
+    gives its caller is that a name with any non-whitespace character in it
+    never folds to the empty string."""
+    folded = unicodedata.normalize("NFKC", text).casefold()
     return _SPACES.sub(" ", folded).strip()
 
 
