@@ -256,3 +256,125 @@ def read_payroll(path: str | Path, vendor: str | None = None) -> tuple[list[Payr
             )
         )
     return rows, profile
+
+
+@dataclass
+class MatchOutcome:
+    payroll: PayrollRow
+    remitted: date | None
+    flag: str
+
+
+@dataclass
+class JoinResult:
+    outcomes: list[MatchOutcome]
+    orphans: list[SuperRow]
+    key_mode: str
+    warnings: list[str]
+
+
+def _key(row, mode: str) -> str:
+    value = row.employee_id if mode == "id" else row.employee_name
+    return normalise_header(value or "")
+
+
+def _covers(s: SuperRow, target: date) -> bool:
+    if s.period_start is None and s.period_end is None:
+        return True  # period-less row; the caller only reaches this for a lone payday
+    start = s.period_start or s.period_end
+    end = s.period_end or s.period_start
+    return start <= target <= end
+
+
+def _check_reversed_periods(super_rows: list[SuperRow]) -> None:
+    """A super period where the start is after the end cannot be matched to
+    any payday without guessing: `_covers` would compare `start <= target <=
+    end` with `start > end`, which is false for every target, so the row
+    would silently become an orphan and the payroll row it actually settled
+    would read "no super payment found" -- a real payment made invisible
+    rather than a genuine gap. Refuse outright instead."""
+    for s in super_rows:
+        if (
+            s.period_start is not None
+            and s.period_end is not None
+            and s.period_start > s.period_end
+        ):
+            raise CsvError(
+                f"row {s.row}: pay period start {s.period_start.isoformat()} is after "
+                f"period end {s.period_end.isoformat()}. That is not a valid pay period, "
+                "so this payment cannot be matched to a payday without guessing which "
+                "one was meant."
+            )
+
+
+def join(payroll_rows: list[PayrollRow], super_rows: list[SuperRow]) -> JoinResult:
+    _check_reversed_periods(super_rows)
+
+    warnings: list[str] = []
+    both_have_ids = all(r.employee_id for r in payroll_rows) and all(
+        r.employee_id for r in super_rows
+    )
+    key_mode = "id" if both_have_ids else "name"
+    if key_mode == "name":
+        warnings.append(
+            "matched on employee name because one of the files has no id column. "
+            "Two employees sharing a name would be merged."
+        )
+
+    grouped: dict[str, list[PayrollRow]] = {}
+    for row in payroll_rows:
+        key = _key(row, key_mode)
+        if not key:
+            raise CsvError(f"row {row.row}: the employee column is empty")
+        grouped.setdefault(key, []).append(row)
+
+    for key, rows in grouped.items():
+        seen: dict[tuple[date, Decimal], list[int]] = {}
+        for row in rows:
+            seen.setdefault((row.effective_period_end, row.sg_amount), []).append(row.row)
+        for (period_end, amount), numbers in seen.items():
+            if len(numbers) > 1:
+                joined = ", ".join(str(n) for n in sorted(numbers))
+                raise CsvError(
+                    f"rows {joined} are the same employee, the same pay period ending "
+                    f"{period_end.isoformat()} and the same amount {amount}, so a super "
+                    "payment cannot be assigned to one of them. Remove the duplicate or "
+                    "give the rows distinct pay periods."
+                )
+
+    claimed: set[int] = set()
+    outcomes: list[MatchOutcome] = []
+    for row in payroll_rows:
+        key = _key(row, key_mode)
+        matches = [
+            s
+            for s in super_rows
+            if _key(s, key_mode) == key
+            and s.row not in claimed
+            and (
+                _covers(s, row.effective_period_end)
+                if (s.period_start or s.period_end)
+                else len(grouped[key]) == 1
+            )
+        ]
+        if not matches:
+            outcomes.append(MatchOutcome(row, None, "no super payment found"))
+            continue
+        claimed.update(s.row for s in matches)
+        paid = [s.paid_date for s in matches if s.paid_date is not None]
+        remitted = max(paid) if paid else None
+        total = sum((s.amount for s in matches), Decimal("0"))
+        flag = ""
+        if total < row.sg_amount:
+            flag = f"partial: {total} of {row.sg_amount} matched"
+        elif total > row.sg_amount:
+            flag = (
+                f"over: {total} against {row.sg_amount}, check for salary sacrifice "
+                "in the contribution types"
+            )
+        if remitted is None:
+            flag = (flag + "; " if flag else "") + "matched super rows carry no payment date"
+        outcomes.append(MatchOutcome(row, remitted, flag))
+
+    orphans = [s for s in super_rows if s.row not in claimed]
+    return JoinResult(outcomes, orphans, key_mode, warnings)
