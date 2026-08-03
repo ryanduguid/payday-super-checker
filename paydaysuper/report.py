@@ -492,7 +492,11 @@ def write_csv(
     source: str | Path | None = None,
     gic_provenance: str = "",
 ) -> None:
-    with open(path, "w", newline="", encoding="utf-8") as f:
+    # utf-8-sig, not utf-8: Excel on a cp1252 Windows box reads a BOM-less
+    # CSV in the locale code page, so a non-ASCII employee id comes out
+    # mojibake and stops joining back to the payroll export. parse_rows
+    # already reads with utf-8-sig, so a report fed back in still parses.
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         writer.writerow(CSV_HEADER)
         for r in results:
