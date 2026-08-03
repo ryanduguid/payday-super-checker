@@ -66,11 +66,16 @@ class BusinessCalendar:
         ]
 
     def check_horizon(self, d: date) -> str | None:
+        """Past verified_until the table is empty, not merely incomplete: no
+        holiday of any kind is recorded there, including ones already
+        legislated. Every weekday past that date counts as a business day, so
+        a deadline computed across it can only be too early."""
         if d > self.verified_until:
             return (
                 f"{d.isoformat()} is beyond the calendar's verified horizon "
-                f"({self.verified_until.isoformat()}); holidays proclaimed later "
-                "could move this deadline"
+                f"({self.verified_until.isoformat()}). The calendar holds no holidays "
+                "at all after that date, so weekends are the only non-business days it "
+                "sees and the real deadline can only be later than the one shown"
             )
         return None
 

@@ -267,6 +267,21 @@ def assess(
                 "contribution was on time"
             )
 
+        # Past the calendar's verified horizon the holiday table is empty, so
+        # every weekday counts as a business day and the deadline computed
+        # here can only be too early. A verdict that turns on comparing a
+        # supplied date against that deadline is therefore not knowable, and
+        # calling it LATE or ON_TIME asserts more than the calendar supports.
+        # A pre-payment verdict is not affected: it compares the receipt with
+        # the QE day and a 12-month calendar window, never with the deadline.
+        past_horizon = dl.due > cal.verified_until
+        horizon_unknown = (
+            f"the deadline {dl.due.isoformat()} falls past the calendar's verified "
+            f"horizon {cal.verified_until.isoformat()}, so it cannot be pinned down and "
+            "this line is left unassessed rather than called on time or late. Extend "
+            "paydaysuper/data/business_days.json to assess it"
+        )
+
         stale_prepayment = False
         if settled is not None:
             if settled < line.qe_day:
@@ -289,9 +304,19 @@ def assess(
                         "window in s 18C(1)(c)(ii), so it cannot be applied to this payday. "
                         "The payday is treated as unfunded"
                     )
+            elif past_horizon:
+                result.verdict = UNKNOWN
+                result.caveats.append(horizon_unknown)
+                results.append(result)
+                continue
             else:
                 result.verdict = ON_TIME if settled <= dl.due else LATE
         elif line.remitted is not None:
+            if past_horizon:
+                result.verdict = UNKNOWN
+                result.caveats.append(horizon_unknown)
+                results.append(result)
+                continue
             result.verdict = AT_RISK if line.remitted <= dl.due else LATE
         elif dl.due < as_at:
             # Nothing recorded and the deadline has passed. This is the
