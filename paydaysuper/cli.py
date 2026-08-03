@@ -28,9 +28,11 @@ EXIT_LATE_FOUND = 2
 
 def _reconfigure_stdout_for_unicode() -> None:
     """Redirected stdout on Windows falls back to the locale encoding (cp1252
-    under PEP 528), which cannot represent every employee name. Both the
-    check path and the import path print names read straight from the
-    input file, so both call this, once, before their first print()."""
+    under PEP 528), which cannot represent every character a run might need
+    to print. The check path prints employee names read straight from the
+    input file; the import path never prints one, but it prints the output
+    filename the caller chose with -o/--output, which is exactly as free to
+    carry non-ASCII text. Both call this, once, before their first print()."""
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure is not None:
         reconfigure(encoding="utf-8", errors="backslashreplace")
@@ -119,24 +121,45 @@ def build_import_parser() -> argparse.ArgumentParser:
 
 
 # How many warning lines the console output shows in full before summarising
-# the rest as a count. A file with thousands of orphaned or structural
+# the rest as a count. A file with thousands of orphaned or row-level
 # warnings must not scroll the whole terminal history away. Never applied to
-# a partial/over-payment warning -- see _UNCAPPABLE_WARNING.
+# a structural warning (there are at most a handful of those) or to a
+# warning that carries a figure the canonical CSV cannot hold -- see
+# _UNCAPPABLE_WARNING.
 MAX_WARNINGS_SHOWN = 20
 
-# A partial or over-payment warning (import_files builds it as
-# f"row {n}: {flag}" where flag starts "partial: " or "over: ", per
-# importers.join's own flag_parts ordering) carries the ONLY surviving
-# record of a figure the canonical CSV cannot hold: write_canonical leaves
-# remitted_date blank for that row regardless, so the checker reads it as a
-# full shortfall. Truncating this line under the warning cap would make the
-# caveat printed above the warnings block ("the amount that actually
-# arrived is not lost -- it is in the warning lines below") false for
-# exactly the rows it matters most for. These are therefore exempt from the
-# cap entirely, however many there are; only the remaining, less urgent
-# warnings (name-matching, structural period gaps, orphan messages) are
-# capped.
-_UNCAPPABLE_WARNING = re.compile(r"^row \d+: (partial|over): ")
+# import_files builds every row-level warning as f"row {n}: {flag}" or
+# f"super row {n}: {message}" -- see ImportReport's own docstring -- so this
+# tells a row-level warning (this file's per-payday or per-orphan detail)
+# apart from a STRUCTURAL warning (join()'s own `warnings`: the employee-key
+# fallback, a missing pay-period column), which never carries a row number
+# this way. Structural warnings are printed before the row-level block
+# regardless of the cap, and are few enough (at most three today) that they
+# are never capped either.
+_ROW_LEVEL_WARNING = re.compile(r"^(row|super row) \d+: ")
+
+# A partial, over-payment or missing-fund-receipt-date warning carries the
+# ONLY surviving record of a figure the canonical CSV cannot hold:
+# write_canonical leaves remitted_date blank for an OUTCOME_PARTIAL row
+# regardless, and an OUTCOME_UNDATED row's remitted_date is blank for the
+# identical reason (join() sets `remitted=None` the moment any part of the
+# match is undated) -- both read to the checker as unfunded, and the one
+# thing that shows otherwise is this warning line. Truncating either under
+# the warning cap would make the caveat printed above the warnings block
+# ("the amount that actually arrived is not lost -- it is in the warning
+# lines below") false for exactly the rows it matters most for. These are
+# therefore exempt from the cap entirely, however many there are; only the
+# remaining, less urgent row-level warnings (a plain "no super payment
+# found", an orphan message) are capped. Matched by literal text built in
+# importers.join -- "partial: "/"over: " prefix the flag, "carry no payment
+# date" and "matched has no payment date on record" are the two undated
+# phrasings -- the same coupling _classify_outcome documents on itself, and
+# equally invisible from here if either wording changes; a test guards it.
+_UNCAPPABLE_WARNING = re.compile(
+    r"^row \d+: (partial|over): "
+    r"|carry no payment date"
+    r"|matched has no payment date on record"
+)
 
 
 def _profile_line(label: str, profile: Profile) -> str:
@@ -222,17 +245,26 @@ def import_main(argv: list[str]) -> int:
     if report.warnings:
         lines.append("")
         lines.append(f"warnings ({len(report.warnings)}):")
-        carries_a_figure = [w for w in report.warnings if _UNCAPPABLE_WARNING.match(w)]
-        other = [w for w in report.warnings if not _UNCAPPABLE_WARNING.match(w)]
-        # Every partial/over-payment warning, always -- never truncated.
+        # Structural warnings first, always in full, however many row-level
+        # warnings follow. The employee-key fallback in particular governs
+        # whether the whole join can be trusted, so it must never be pushed
+        # past a long list of per-row detail -- see _ROW_LEVEL_WARNING.
+        structural = [w for w in report.warnings if not _ROW_LEVEL_WARNING.match(w)]
+        row_level = [w for w in report.warnings if _ROW_LEVEL_WARNING.match(w)]
+        lines.extend(f"  - {w}" for w in structural)
+        carries_a_figure = [w for w in row_level if _UNCAPPABLE_WARNING.search(w)]
+        other = [w for w in row_level if not _UNCAPPABLE_WARNING.search(w)]
+        # Every partial, over-payment or missing-fund-receipt-date warning,
+        # always -- never truncated.
         lines.extend(f"  - {w}" for w in carries_a_figure)
         shown_other = other[:MAX_WARNINGS_SHOWN]
         lines.extend(f"  - {w}" for w in shown_other)
         remaining_other = len(other) - len(shown_other)
         if remaining_other > 0:
             lines.append(
-                f"  ... and {remaining_other} more (none of them a partial or "
-                "over-payment figure -- those are always shown in full above)"
+                f"  ... and {remaining_other} more (none of them a partial, "
+                "over-payment or missing-fund-receipt-date figure -- those are "
+                "always shown in full above)"
             )
 
     if report.orphan_reasons:

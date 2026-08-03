@@ -1742,6 +1742,128 @@ def test_import_never_truncates_a_partial_warning_however_many_there_are(
     assert last["employee_id"] == "Employee59" and last["remitted_date"] == ""
 
 
+def test_import_never_truncates_an_undated_warning_however_many_there_are(
+    tmp_path, capsys
+):
+    # PART 3(b) REGRESSION. An OUTCOME_UNDATED row -- every dollar owed was
+    # matched, but no part of the match carries a payment date -- carries a
+    # figure the canonical CSV cannot hold, for the identical reason a
+    # partial payment does: join() sets remitted=None the moment any part of
+    # the match is undated, so write_canonical's remitted_date comes out
+    # blank and the checker reads a fully-funded payday as unfunded. Before
+    # this fix these warnings were sliced by the ordinary MAX_WARNINGS_SHOWN
+    # cap like any other row-level warning, so a file with more than the cap
+    # silently lost the only record that the money actually arrived.
+    # Reproduction: 25 employees, each owed 500.00 and paid exactly 500.00,
+    # but every super row's Paid Date is blank.
+    n = 25
+    payroll_lines = ["Employee Name,Date,Pay Period End,Superannuation Guarantee"]
+    super_lines = [
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount"
+    ]
+    for i in range(n):
+        name = f"Employee{i:02d}"
+        payroll_lines.append(f"{name},09/07/2026,09/07/2026,500.00")
+        super_lines.append(
+            f"{name},Superannuation Guarantee,01/07/2026,09/07/2026,,500.00"
+        )
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text("\n".join(payroll_lines) + "\n", encoding="utf-8")
+    super_path = tmp_path / "super.csv"
+    super_path.write_text("\n".join(super_lines) + "\n", encoding="utf-8")
+
+    out = tmp_path / "contributions.csv"
+    code = cli_main(
+        [
+            "import",
+            "--payroll",
+            str(payroll_path),
+            "--super",
+            str(super_path),
+            "-o",
+            str(out),
+        ]
+    )
+    assert code == EXIT_LATE_FOUND
+    printed = capsys.readouterr().out
+
+    # All 25 undated figures present, not just the first 19 or 20 once the
+    # one structural (name-matching) warning takes a slot.
+    undated_lines = re.findall(
+        r"row \d+: matched super rows carry no payment date", printed
+    )
+    assert len(undated_lines) == n
+    assert "row 2: matched super rows carry no payment date" in printed  # first
+    assert "row 26: matched super rows carry no payment date" in printed  # last
+
+    # Nothing was truncated at all: with every row-level warning exempt from
+    # the cap, no "... and N more" line has anything left to summarise.
+    assert "... and" not in printed
+
+    # The canonical CSV still hides the fact from the checker (the
+    # documented, accepted limitation) for a spot-checked row -- proving the
+    # warning list is genuinely the only place a reader learns the money
+    # actually arrived.
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    assert rows[0]["employee_id"] == "Employee00"
+    assert rows[0]["sg_amount"] == "500.00"
+    assert rows[0]["remitted_date"] == ""
+
+
+def test_structural_warnings_print_before_the_per_row_block(tmp_path, capsys):
+    # PART 3(a) REGRESSION. The partial/over exemption from the warning cap
+    # used to be implemented by hoisting every partial/over warning above
+    # everything else in report.warnings, including the structural "matched
+    # on employee name" caveat that says the whole join might have merged
+    # two employees who share a name -- a caveat that governs whether the
+    # join can be trusted at all. That pushed it to the LAST bullet instead
+    # of the first. Structural warnings (join()'s own `warnings`, never
+    # prefixed with a row number) must print before the per-row block,
+    # whatever mix of uncapped and capped row-level warnings follows.
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "A,09/07/2026,09/07/2026,1000.00\n"
+        "B,09/07/2026,09/07/2026,700.00\n",
+        encoding="utf-8",
+    )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "A,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,999.99\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    code = cli_main(
+        [
+            "import",
+            "--payroll",
+            str(payroll_path),
+            "--super",
+            str(super_path),
+            "-o",
+            str(out),
+        ]
+    )
+    assert code == EXIT_LATE_FOUND
+    printed = capsys.readouterr().out
+
+    structural = (
+        "matched on employee name because one of the files has no id column"
+    )
+    partial = "row 2: partial: 999.99 of 1000.00 matched"  # uncapped category
+    unmatched = "row 3: no super payment found"  # capped ("other") category
+
+    assert structural in printed
+    assert partial in printed
+    assert unmatched in printed
+    # The structural warning precedes BOTH row-level categories, not just
+    # the one that happens to be capped.
+    assert printed.index(structural) < printed.index(partial)
+    assert printed.index(structural) < printed.index(unmatched)
+
+
 def test_import_caps_only_non_partial_warnings_at_a_pinned_literal(tmp_path, capsys):
     # MINOR REVIEW FINDING (round 1). The original version of this test
     # derived its expected "shown" and "remaining" counts by importing
@@ -1756,8 +1878,8 @@ def test_import_caps_only_non_partial_warnings_at_a_pinned_literal(tmp_path, cap
     # sneaks into the count. One clean anchor payday is matched in full
     # (flag "", no warning at all); 25 further super payments carry an id
     # with no matching payroll row at all, so each becomes an
-    # ORPHAN_NO_PAYDAY orphan warning -- none of them partial or over, so
-    # all 25 are subject to the cap.
+    # ORPHAN_NO_PAYDAY orphan warning -- none of them partial, over or
+    # undated, so all 25 are subject to the cap.
     payroll_path = tmp_path / "payroll.csv"
     payroll_path.write_text(
         "Employee Name,Employee ID,Date,Pay Period End,Superannuation Guarantee\n"
@@ -1800,8 +1922,9 @@ def test_import_caps_only_non_partial_warnings_at_a_pinned_literal(tmp_path, cap
     # change.
     assert printed.count("matched no payday") == 20
     assert (
-        "... and 5 more (none of them a partial or over-payment figure -- "
-        "those are always shown in full above)" in printed
+        "... and 5 more (none of them a partial, over-payment or "
+        "missing-fund-receipt-date figure -- those are always shown in full "
+        "above)" in printed
     )
 
 
