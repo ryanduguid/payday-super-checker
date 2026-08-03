@@ -606,6 +606,23 @@ def console_summary(
             "date. Compliance turns on receipt by the fund, not the day you paid, and "
             "clearing-house transit time is the employer's risk."
         )
+        # An at-risk line is in neither the exposure listing nor the unflagged
+        # count, so without this its caveats never reached the console at all
+        # -- including the one saying two rows are identical and the payday is
+        # counted twice, which is the data-quality warning most worth reading.
+        flagged = [r for r in at_risk if r.caveats]
+        for r in flagged[:10]:
+            lines.append(
+                f"  row {r.line.row}  {r.line.employee_id}  QE day "
+                f"{r.line.qe_day.isoformat()}  due {r.deadline.due.isoformat()}"
+            )
+            for caveat in r.caveats:
+                lines.append(f"      note: {caveat}")
+        if len(flagged) > 10:
+            lines.append(
+                f"  ... and {len(flagged) - 10} more at-risk line(s) with notes "
+                f"(see {csv_path})"
+            )
         lines.append("")
 
     unflagged = [
