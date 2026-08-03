@@ -1070,6 +1070,144 @@ def test_write_canonical_rounds_sg_amount_half_up_like_the_rest_of_the_tool(tmp_
     assert rows[0]["sg_amount"] == "612.01"
 
 
+def test_write_canonical_prefers_employee_id_over_employee_name(tmp_path):
+    # Swapping `row.employee_id or row.employee_name` to the reverse order
+    # in write_canonical survives every other test in this file, because
+    # every fixture used so far is name-only. It matters downstream: the
+    # checker's s 18C(2) item-4 alignment groups by employee_id, so two
+    # employees who happen to share a name would silently merge if the
+    # canonical file wrote the name instead of the id whenever both exist.
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Employee ID,Date,Pay Period End,Superannuation Guarantee\n"
+        "Alice Smith,E001,09/07/2026,09/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Employee ID,Superannuation Category,Period From,Period To,"
+        "Paid Date,Amount\n"
+        "Alice Smith,E001,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    import_files(payroll_path, super_path, out)
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    assert rows[0]["employee_id"] == "E001"
+    assert rows[0]["employee_id"] != "Alice Smith"
+
+
+def test_a_partial_payment_is_not_written_as_fully_remitted(tmp_path):
+    # CRITICAL regression. Before this fix, write_canonical wrote the
+    # partial payment's own paid date into remitted_date alongside the
+    # FULL sg_amount, so the checker read a short-paid payday as settled
+    # in full and a real shortfall vanished. join() already applies the
+    # right rule to an entirely-undated split contribution -- remitted is
+    # forced to None because "reporting the known date of the other part
+    # as remitted would read as fully settled while some of the money has
+    # no evidence of arriving at all" -- and that identical reasoning
+    # governs a short payment: the canonical file has one remitted_date
+    # column for the whole liability, so a date next to the full
+    # sg_amount can only mean "paid in full", which a partial payment is
+    # not.
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "A,09/07/2026,09/07/2026,1000.00\n",
+        encoding="utf-8",
+    )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "A,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,1.00\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    report = import_files(payroll_path, super_path, out)
+    assert report.partial == 1
+
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    # sg_amount is the liability and must stay the full amount owed -- only
+    # remitted_date, not sg_amount, is where this fix acts.
+    assert rows[0]["sg_amount"] == "1000.00"
+    assert rows[0]["remitted_date"] == ""
+
+    # The real CLI must report this payday as exposed, not settled: proof
+    # the blank cell actually changes the checker's verdict, not just that
+    # the cell itself looks right.
+    report_out = tmp_path / "report.csv"
+    code = cli_main([str(out), "-o", str(report_out), "--as-at", "2026-08-10"])
+    assert code == EXIT_LATE_FOUND
+    with open(report_out, newline="", encoding="utf-8") as f:
+        checker_rows = list(_csv.DictReader(f))
+    checker_row = next(r for r in checker_rows if r["employee_id"] == "A")
+    assert checker_row["verdict"] in ("UNPAID", "LATE")
+    assert Decimal(checker_row["final_shortfall"]) > Decimal("0")
+
+
+def test_an_absurdly_large_sg_amount_is_refused_with_csverror(tmp_path):
+    # IMPORTANT. csv_io._parse_amount refuses amount.adjusted() > 15
+    # because a value beyond that cannot be quantized to cents under the
+    # default decimal context. importers._amount had no such guard, so a
+    # value this large parsed fine at read time and only blew up later, as
+    # a raw decimal.InvalidOperation from report.money()'s quantize() call
+    # inside write_canonical -- an ArithmeticError, not a CsvError, so it
+    # escapes the CLI's `except (CsvError, ..., ValueError)` entirely.
+    absurd = "1" + "0" * 30  # 10**30
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        f"A,09/07/2026,09/07/2026,{absurd}.00\n",
+        encoding="utf-8",
+    )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        f"A,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,{absurd}.00\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    with pytest.raises(CsvError) as exc:
+        import_files(payroll_path, super_path, out)
+    assert "too large" in str(exc.value)
+    # Refused before write_canonical ever opened the output file.
+    assert not out.exists()
+
+
+def test_importer_refuses_the_same_magnitude_the_checker_refuses(tmp_path):
+    # IMPORTANT. Before this fix, a value strictly between 10**16 and
+    # 10**26 (past csv_io's own adjusted() > 15 cutoff, but under the
+    # regex-only limit importers._amount used to enforce) imported and
+    # wrote CLEANLY, then csv_io.parse_rows refused the importer's own
+    # output on the very next run: the importer produced a file the
+    # checker itself would not accept. 10**16 is the smallest such value.
+    huge = "10000000000000000.00"  # 10**16
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        f"A,09/07/2026,09/07/2026,{huge}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CsvError) as exc:
+        read_payroll(payroll_path, vendor="myob-ar-payroll")
+    assert "too large" in str(exc.value)
+
+    # Same boundary, same text, through the checker's own reader: proves
+    # this is genuinely the value the checker would refuse, not a
+    # coincidence of wording.
+    checker_path = tmp_path / "checker.csv"
+    checker_path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        f"A,2026-07-09,{huge},,,no,no,,no\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CsvError):
+        parse_rows(checker_path, DEFAULT_MAPPING)
+
+
 def test_write_canonical_header_matches_the_checkers_default_mapping():
     # CANONICAL_HEADER must be exactly csv_io.DEFAULT_MAPPING's values, in
     # the same field order, or the round trip below only works by accident
