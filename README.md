@@ -85,6 +85,27 @@ Dates read as `YYYY-MM-DD`, day-first `DD/MM/YYYY`, or `9 Jul 2026`, and a time 
 
 **Where the fund receipt date comes from.** Payroll exports (Xero, MYOB, KeyPay, Employment Hero) give you the payday and the batch remittance date, which is what `remitted` is for and why those lines come back `AT_RISK`. A fund receipt date lives somewhere else: your clearing house's per-contribution settlement or status report, or the fund's own contribution history. Without it the tool tells you what you sent and when, not what the law tests.
 
+## Import from your payroll system
+
+Two commands turn a payroll export and a super payments export into a checked report, with no column mapping to write by hand:
+
+```bash
+payday-super-check import --payroll "Payroll Activity Details.csv" --super "Superannuation Payments.csv" -o contributions.csv
+payday-super-check contributions.csv
+```
+
+The first command reads both exports, matches each super payment to the payday it settles, and writes the canonical CSV the second command already knows how to check.
+
+Profiles ship for Xero Payroll, MYOB AccountRight, MYOB Business and Employment Hero / KeyPay, one profile each for the payroll-activity report and the super-payments report. The importer picks a profile per file by scoring column headings against what it knows. Force one with `--vendor xero`, `--vendor myob-ar`, `--vendor myob-business` or `--vendor employment-hero` when detection cannot pick, or to skip detection outright.
+
+**Every shipped profile is unverified against a real export.** Each one's column names come from vendor help documentation, and Xero, MYOB and Employment Hero do not publish an actual column list for these reports, so the first real export you try may match no profile at all. When that happens the importer prints the column headings it found in your file next to the headings each candidate profile wanted. Send both lists back and fixing the profile is a one-line edit to its JSON file, not a rewrite.
+
+**No payroll system or clearing house exports a fund receipt date.** Xero's report gives the date a payment was sent to the fund. MYOB gives a Paid Date. Employment Hero gives a Beam status (Sent to fund, Reconciled, and so on). None of these is the date the fund received the money. The legal deadline tests receipt by the fund, and time in transit through a clearing house is the employer's risk, not the fund's, so the importer writes every vendor date into `remitted_date` and leaves `fund_received_date` blank. Fill that column in from your fund or clearing house before treating any verdict from the checker as final.
+
+**A part-paid payday is written the same as a completely unpaid one.** The canonical CSV has one amount column and one remittance-date column per payday, with no room for "999.99 of 1000.00 arrived". A part payment is written with `remitted_date` blank, the same as a payday nothing was paid against, so the checker reports the whole 1000.00 as a shortfall. The true received figure survives only in the importer's own warning lines, written as `row N: partial: 999.99 of 1000.00 matched`; apply it by hand until the canonical format has a column for it.
+
+**A bare filename of `import` does not work.** `payday-super-check import`, run against a file that is genuinely named `import` with no extension, is read as the import subcommand and fails on the missing `--payroll`/`--super` arguments instead of checking the file. `payday-super-check import.csv` and `payday-super-check ./import` both check the file as expected; only the exact bare string `import` is swallowed.
+
 ## The rules it applies
 
 All of this is enacted law: the Treasury Laws Amendment (Payday Superannuation) Act 2025 (No. 57 of 2025, assent 6 November 2025), the Superannuation Guarantee Charge Amendment Act 2025 (No. 58 of 2025), and the regulations registered as F2026L00133, which amend the Superannuation Guarantee (Administration) Regulations 2018. It applies to paydays from 1 July 2026. Legal content here was verified on **2 August 2026**; `docs/research-notes-2026-08-02.md` records every source and, just as usefully, the points that rest on secondary commentary because the primary source blocks automated access.
