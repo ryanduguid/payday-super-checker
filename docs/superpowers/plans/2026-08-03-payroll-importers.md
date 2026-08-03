@@ -61,7 +61,7 @@ from paydaysuper.profiles import Profile, load_profiles, normalise_header
 def test_normalise_header_folds_case_space_and_punctuation():
     assert normalise_header("  Employee   Membership #  ") == "employee membership"
     assert normalise_header("Paid Date") == "paid date"
-    assert normalise_header("Employee Name") == "employee name"
+    assert normalise_header("Employee\u00a0Name") == "employee name"
 
 
 def test_normalise_header_keeps_digits():
@@ -239,7 +239,7 @@ def load_profiles(role: str | None = None) -> list[Profile]:
 - [ ] **Step 4: Run test to verify it fails on the missing profiles only**
 
 Run: `python -m pytest tests/test_profiles.py -v`
-Expected: the three `normalise_header` tests PASS; the `load_profiles` tests FAIL because no JSON exists yet. That is correct at this point — Task 2 supplies the files.
+Expected: the three `normalise_header` tests PASS; the `load_profiles` tests FAIL because no JSON exists yet. That is correct at this point -- Task 2 supplies the files.
 
 - [ ] **Step 5: Commit**
 
@@ -680,6 +680,30 @@ git commit -m "feat: profile detection with refusal on ties and no match"
 
 ### Task 4: Reading source rows and filtering to super guarantee
 
+> **Interface drift (noted in Task 8, 2026-08-04).** The signatures and
+> guards below are what the brief asked for and what Task 4 shipped at the
+> time; several fix rounds across Tasks 4 to 6 changed them. What the code
+> actually settled on:
+> - `read_payroll`/`read_super` return a **3-tuple**,
+>   `tuple[list[X], Profile, dict[str, str]]`, not the 2-tuple below. The
+>   third element is `resolve_columns(profile, headers)` for that file --
+>   the file-level fact of which canonical fields actually resolved a
+>   heading, which `join` (see Task 5's own drift note) needs and which is
+>   gone once rows are built into `PayrollRow`/`SuperRow` objects.
+> - `_read_dicts` gained two refusals not in the brief's implementation:
+>   a duplicate-normalised-heading check (`_check_duplicate_headers`) and a
+>   truncated/surplus-row check (built on a `MISSING` sentinel passed as
+>   `csv.DictReader`'s `restval`), both added because a misaligned or
+>   truncated row read silently as blank cells rather than being refused.
+> - `_amount` gained a magnitude guard (`amount.adjusted() > 15`) mirroring
+>   `csv_io._parse_amount`'s own ceiling, added because a value beyond it
+>   parsed fine here and only failed later, inside `write_canonical`'s
+>   `money()` call, as an uncaught `decimal.InvalidOperation` rather than a
+>   `CsvError`.
+>
+> See `paydaysuper/importers.py` for the real, current code; the snippet
+> below is what Task 4 actually implemented, before those rounds.
+
 **Files:**
 - Create: `paydaysuper/importers.py`
 - Create: `tests/fixtures/importers/myob_super.csv`, `tests/fixtures/importers/myob_payroll.csv`
@@ -977,6 +1001,47 @@ git commit -m "feat: read payroll and super exports through a profile"
 
 ### Task 5: The join
 
+> **Interface drift (noted in Task 8, 2026-08-04).** This is the task whose
+> interface moved the most: the matching algorithm went through four
+> review-driven fix rounds after this task's own commit (see
+> `.superpowers/sdd/2026-08-03-payroll-importers/review-*.diff` for
+> `2a84ca6..53cd111`, `53cd111..1108ddb`, `1108ddb..7f64988` and
+> `7f64988..d3e5df3`), and the type signatures below reflect only the first
+> commit. What the code actually settled on:
+> - `join`'s real signature is
+>   `join(payroll_rows, super_rows, *, payroll_has_period_end=True, super_has_period_start=True, super_has_period_end=True) -> JoinResult`
+>   -- three keyword-only flags, added later (see Task 6's drift note) so a
+>   caller can tell "this file structurally has no period_end column" from
+>   "this row's period_end cell happened to be blank", which drives three
+>   distinct warnings `join` did not originally emit.
+> - `MatchOutcome` gained a fourth field, `last_known_paid_date: date | None`
+>   -- the latest known paid date, kept separately from `remitted` so it
+>   survives even on a partly-undated split contribution, where `remitted`
+>   is deliberately blanked.
+> - `JoinResult` gained `orphan_reasons: list[OrphanReason]`, one entry per
+>   orphaned super row, classified into one of four `ORPHAN_*` codes (a
+>   payment that matched no payday at all reads as a different finding to
+>   an accountant than a genuine overpayment on paydays already settled by
+>   something else, and the original design collapsed both into a bare
+>   `orphans: list[SuperRow]`).
+> - The matching algorithm itself was rewritten from a single greedy pass
+>   (each payroll row claims whichever super rows cover it, first row in
+>   the file wins ties) to a two-pass allocation (`_allocate`,
+>   `_check_defensible`, a global per-payroll-row balance cap, and a
+>   period-end priority rule -- see the real `join`'s own docstring in
+>   `paydaysuper/importers.py`), because the greedy version refused or
+>   mis-allocated ordinary shapes: one payment apportioned across several
+>   fortnightly paydays, a payment whose period touches an adjacent one's
+>   boundary, and money already claimed by one payday being able to starve
+>   another.
+> - `_covers` originally treated a period-less super row as covering every
+>   target unconditionally (`return True`); it now returns `False` for a
+>   direct call with no period at all, since a caller-side function
+>   (`_coverage`) resolves that ambiguity against the row set instead.
+>
+> See `paydaysuper/importers.py` for the real, current code; the snippet
+> below is what Task 5 actually implemented, before those rounds.
+
 **Files:**
 - Modify: `paydaysuper/importers.py`
 - Test: `tests/test_importers.py`
@@ -1188,6 +1253,42 @@ git commit -m "feat: join payroll rows to super payments"
 
 ### Task 6: Writing the canonical CSV
 
+> **Interface drift (noted in Task 8, 2026-08-04).** This task's own brief
+> was written before Task 5's join interface had settled across its four
+> fix rounds (see Task 5's drift note), so Task 6 was implemented directly
+> against the real code rather than the snippet below (see
+> `.superpowers/sdd/2026-08-03-payroll-importers/task-6-report.md` for the
+> contemporaneous account). What the code actually settled on:
+> - `read_payroll`/`read_super` return the 3-tuple described in Task 4's
+>   drift note; `import_files` derives `join`'s three period-column
+>   keyword flags from each file's own resolved-columns dict (the third
+>   tuple element), not from any default.
+> - `write_canonical` blanks `remitted_date` for an `OUTCOME_PARTIAL` row
+>   even when `outcome.remitted` holds a real date, because the canonical
+>   file has one remittance-date column for the whole payday and a real
+>   date next to the full `sg_amount` can only read as "paid in full,"
+>   which a partial payment is not. The brief's version below writes
+>   `outcome.remitted` verbatim regardless of match completeness.
+> - `csv_safe` runs over every written field, not only the employee
+>   label, so a date or amount field can never become the unguarded one by
+>   omission.
+> - `ImportReport` does not carry bare `matched: int, partial: int,
+>   unmatched: int, orphans: int` counters. It carries `outcome_counts:
+>   dict[str, int]` keyed by six `OUTCOME_*` constants
+>   (`OUTCOME_MATCHED`, `OUTCOME_OWES_NOTHING`, `OUTCOME_UNDATED`,
+>   `OUTCOME_PARTIAL`, `OUTCOME_OVER`, `OUTCOME_UNMATCHED`) and
+>   `orphan_reasons: list[OrphanReason]` (one `OrphanReason(super_row,
+>   code, message)` per orphan, `code` one of four `ORPHAN_*` constants),
+>   with `.matched`/`.partial`/`.unmatched`/`.orphans`/`.orphan_counts`/
+>   `.clean` as computed properties. The brief's three-counter version,
+>   built from `flag.startswith(("partial", "over"))`, silently dropped a
+>   zero-`sg_amount` payday and a fully-matched-but-undated payday from
+>   every bucket -- neither counter would sum to the row count, and
+>   nothing would raise to say so.
+>
+> See `paydaysuper/importers.py` for the real, current code; the snippet
+> below is what the brief drafted before that direct implementation.
+
 **Files:**
 - Modify: `paydaysuper/importers.py`
 - Test: `tests/test_importers.py`
@@ -1364,6 +1465,57 @@ git commit -m "feat: write the canonical contributions CSV from an import"
 ---
 
 ### Task 7: The import subcommand
+
+> **Interface drift (noted in Task 8, 2026-08-04).** This task's brief was
+> written before Tasks 5 and 6 existed, so its draft `import_main` below
+> assumes a stale `ImportReport` shape and a plain warnings cap; it was
+> implemented directly against the real Task 6 interface instead (see
+> `.superpowers/sdd/2026-08-03-payroll-importers/task-7-report.md`), and
+> the console output was then revised again during Task 7's own fix round
+> and during Task 8 (this session). What the code actually settled on:
+> - `report.matched`/`.partial`/`.unmatched`/`.orphans` are the computed
+>   properties Task 6 settled on (see Task 6's drift note), not plain
+>   stored ints; `report.outcome_counts`, `.orphan_reasons` and
+>   `.orphan_counts` render the detail the brief's draft never had access
+>   to.
+> - The exception tuple is `except (CsvError, ValueError, ArithmeticError)`,
+>   not `(CsvError, ValueError)`. `decimal.InvalidOperation` is an
+>   `ArithmeticError`, not a `ValueError`, and would otherwise reach the
+>   caller as a raw traceback.
+> - The `OSError` handler names which of `--payroll`, `--super` or `-o`
+>   actually failed (`exc.filename`, falling back to a joined "A or B"
+>   only when the OS did not set it), rather than the brief's plain
+>   `error: {exc.strerror or exc}`, which drops the filename entirely on
+>   an import command that -- unlike the single-file check command --
+>   reads two inputs.
+> - There is no separate `EXIT_IMPORT_UNRESOLVED` constant. The function
+>   reuses the existing `EXIT_LATE_FOUND` (already 2), since the two mean
+>   the same thing: something in the run needs a human look.
+> - The warnings block is not a flat `report.warnings[:20]`. Structural
+>   warnings (join()'s own `warnings`: the employee-key fallback, a
+>   missing pay-period column) print first, always in full, before any
+>   per-row detail -- the employee-key caveat in particular governs
+>   whether the whole join can be trusted, so it must never be pushed past
+>   a long list of per-payday warnings. A partial, over-payment or
+>   missing-fund-receipt-date row warning is also always shown in full
+>   (`_UNCAPPABLE_WARNING`), because it is the only surviving record of a
+>   figure the canonical CSV cannot hold. Everything else caps at
+>   `MAX_WARNINGS_SHOWN = 20` with an `... and N more` summary. This shape
+>   moved twice: the partial/over exemption was added during Task 7's own
+>   fix round, then corrected during Task 8 after a review finding that
+>   the exemption had hoisted those warnings above the structural
+>   employee-key caveat, and extended to cover missing-fund-receipt-date
+>   warnings on the same reasoning.
+> - Two always-on caveat sentences print before the warnings block (no
+>   fund receipt date is ever available; a partial payment reads as
+>   unpaid because `remitted_date` is blanked), not the brief's single
+>   sentence.
+> - `_profile_line(label, profile)` renders each profile line, appending
+>   " (unverified against a real export)" when `profile.verified` is
+>   `False`.
+>
+> See `paydaysuper/cli.py` for the real, current code; the snippet below
+> is what the brief drafted before that direct implementation.
 
 **Files:**
 - Modify: `paydaysuper/cli.py:82-147`
