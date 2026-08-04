@@ -34,6 +34,15 @@ OUT_OF_CYCLE = "OUT_OF_CYCLE"
 ITEM4_ALIGNED = "ITEM4_ALIGNED"
 SKIP_DB = "SKIP_DB"
 
+# Plain-English name for each pathway, so a caveat can say which deadline the
+# row actually got rather than assuming one.
+PATHWAY_WORDS = {
+    USUAL_7BD: "strict 7-business-day",
+    EXTENDED_20BD: "20-business-day",
+    OUT_OF_CYCLE: "out-of-cycle",
+    ITEM4_ALIGNED: "item 4 aligned",
+}
+
 
 class PreRegimeError(ValueError):
     """QE day before 1 Jul 2026: old quarterly SG law applies, out of scope."""
@@ -92,6 +101,7 @@ def compute_due(line: ContribLine, cal: BusinessCalendar) -> Deadline:
     notes: list[str] = []
     caveats: list[str] = []
     candidates: list[tuple[date, str, str]] = []
+    item2: date | None = None
 
     if line.out_of_cycle:
         if line.next_standard_qe_day is not None:
@@ -133,14 +143,11 @@ def compute_due(line: ContribLine, cal: BusinessCalendar) -> Deadline:
                 "out_of_cycle=yes"
             )
         else:
+            # Held, not written, until the winning candidate is known. Item 1
+            # can beat item 2 on the same row, and a caveat written here would
+            # name the 7-business-day pathway the row did not take and a
+            # deadline earlier than the one it actually got.
             item2 = cal.add_business_days(line.next_standard_qe_day, 7)
-            caveats.append(
-                f"a next standard QE day {line.next_standard_qe_day.isoformat()} is "
-                "supplied but the out-of-cycle flag is not set, so the strict "
-                "7-business-day deadline was used. If this payday is out of cycle, set "
-                f"out_of_cycle=yes and the deadline becomes {item2.isoformat()} "
-                "(s 18C(2) item 2, LI 2026/20)"
-            )
 
     if line.first_to_fund:
         candidates.append(
@@ -163,6 +170,29 @@ def compute_due(line: ContribLine, cal: BusinessCalendar) -> Deadline:
             "both the out-of-cycle and first-contribution rules apply; using the "
             "later deadline"
         )
+
+    # The missing-flag caveat, written against the deadline the row actually
+    # got. It is worth saying only where setting the flag would move that
+    # deadline; where item 1 already carried the row past the item 2 date,
+    # the flag changes nothing and a caveat naming an earlier date is wrong.
+    if item2 is not None:
+        pathway_words = PATHWAY_WORDS.get(pathway, pathway)
+        if item2 > due:
+            caveats.append(
+                f"a next standard QE day {line.next_standard_qe_day.isoformat()} is "
+                "supplied but the out-of-cycle flag is not set, so the "
+                f"{pathway_words} deadline {due.isoformat()} was used. If this payday "
+                "is out of cycle, set out_of_cycle=yes and the deadline becomes "
+                f"{item2.isoformat()} (s 18C(2) item 2, LI 2026/20)"
+            )
+        else:
+            caveats.append(
+                f"a next standard QE day {line.next_standard_qe_day.isoformat()} is "
+                f"supplied but the out-of-cycle flag is not set. The {pathway_words} "
+                f"deadline {due.isoformat()} was used, and setting out_of_cycle=yes "
+                f"would not change it: the item 2 deadline is {item2.isoformat()}, "
+                "which is no later (s 18C(2) items 1 and 2)"
+            )
 
     # Calendar caveats are attached later, by annotate_calendar_risk, because
     # apply_item4 can still move this deadline.

@@ -76,6 +76,44 @@ def test_next_payday_without_the_flag_names_the_item_2_deadline(cal):
     assert cal.add_business_days(date(2026, 7, 23), 7).isoformat() in caveat[0]
 
 
+def test_next_payday_caveat_names_the_deadline_the_row_actually_got(cal):
+    """A first-to-fund row takes the 20-business-day period, so the caveat
+    must not claim the strict 7-business-day deadline was used, and must not
+    name an item 2 date four business days EARLIER than the row's own."""
+    dl = compute_due(
+        line(
+            qe_day=date(2026, 7, 10),
+            first_to_fund=True,
+            next_standard_qe_day=date(2026, 7, 23),
+        ),
+        cal,
+    )
+    assert dl.pathway == EXTENDED_20BD
+    assert dl.due == date(2026, 8, 10)
+    caveat = [c for c in dl.caveats if "out_of_cycle=yes" in c]
+    assert caveat, dl.caveats
+    assert "20-business-day deadline 2026-08-10 was used" in caveat[0]
+    assert "would not change it" in caveat[0]
+    assert "strict 7-business-day" not in caveat[0]
+    # The item 2 date is named as the thing that is NOT later, never as the
+    # deadline the row would get.
+    assert "the item 2 deadline is 2026-08-04, which is no later" in caveat[0]
+
+
+def test_next_payday_caveat_still_fires_where_item_2_would_win(cal):
+    """The other side of the same branch: item 2 beats the row's own period,
+    so setting the flag really would move the deadline."""
+    dl = compute_due(
+        line(qe_day=date(2026, 7, 10), next_standard_qe_day=date(2026, 7, 23)), cal
+    )
+    assert dl.pathway == USUAL_7BD
+    assert dl.due == date(2026, 7, 21)
+    caveat = [c for c in dl.caveats if "out_of_cycle=yes" in c]
+    assert caveat, dl.caveats
+    assert "strict 7-business-day deadline 2026-07-21 was used" in caveat[0]
+    assert "the deadline becomes 2026-08-04" in caveat[0]
+
+
 def test_next_payday_without_the_flag_is_flagged_when_it_is_not_later(cal):
     dl = compute_due(
         line(qe_day=date(2026, 7, 15), next_standard_qe_day=date(2026, 7, 1)), cal
