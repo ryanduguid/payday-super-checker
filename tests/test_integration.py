@@ -1384,3 +1384,38 @@ def test_ordinary_employee_ids_are_not_rewritten(tmp_path):
 def test_cli_rejects_an_absurd_as_at_date(tmp_path, capsys):
     assert main([str(FIXTURE), "-o", str(tmp_path / "r.csv"), "--as-at", "9999-01-01"]) == 1
     assert "not a real date" in capsys.readouterr().err
+
+
+def test_the_csv_marks_an_unassessable_row_apart_from_a_nil_one(tmp_path):
+    """Console and exit code covered this; the CSV did not.
+
+    Both rows below carry verdict UNKNOWN with a blank shortfall. One is a
+    9,000 contribution nobody can assess because the deadline runs past the
+    calendar's coverage; the other is a nil payday with nothing to assess.
+    Anyone parsing the file rather than watching the console could not tell
+    real exposure from nothing at all.
+    """
+    src = tmp_path / "mixed.csv"
+    src.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        "VERYLATE29,2029-03-01,9000.00,2029-03-20,2029-03-20,no,no,,no\n"
+        "NIL29,2026-07-09,0.00,,,no,no,,no\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.csv"
+    main([str(src), "-o", str(out), "--as-at", "2029-06-01"])
+    with open(out, newline="", encoding="utf-8") as f:
+        rows = {r["employee_id"]: r for r in csv.DictReader(f)}
+
+    exposed, nil = rows["VERYLATE29"], rows["NIL29"]
+    assert exposed["verdict"] == nil["verdict"] == "UNKNOWN"
+    assert exposed["final_shortfall"] == nil["final_shortfall"] == ""
+    # The column that tells them apart.
+    assert exposed["unassessable_between"] == "LATE or ON_TIME"
+    assert nil["unassessable_between"] == ""
+
+    # And the trailing note still lands in "notes", not in the new last column.
+    note = rows["NOTE"]
+    assert "2026-08-02" in note["notes"]
+    assert note["unassessable_between"] == ""
