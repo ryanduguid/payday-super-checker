@@ -539,6 +539,14 @@ CSV_HEADER = [
     "sgc_estimate_high",
     "caveats",
     "notes",
+    # Appended, never inserted: a positional consumer keeps its column
+    # numbers. Blank on every row except the ones the calendar cannot settle,
+    # where it holds the two candidate verdicts as "WORSE or BETTER". Without
+    # it the CSV wrote UNKNOWN for a 9,000 contribution nobody can assess and
+    # UNKNOWN for a nil row with nothing to assess, with the same blank
+    # shortfall on both, so anyone reading the file rather than the console or
+    # the exit code could not tell real exposure from nothing at all.
+    "unassessable_between",
 ]
 
 
@@ -598,6 +606,7 @@ def write_csv(
                     money(figures["high"]),
                     " | ".join(r.caveats),
                     " | ".join(r.notes),
+                    " or ".join(r.horizon_verdicts) if r.horizon_verdicts else "",
                 ]
             )
 
@@ -611,7 +620,9 @@ def write_csv(
             else "No assessment date given, so contributions received late are assumed "
             "to have reached the fund before any assessment. "
         )
-        note[-1] = (
+        # By name, not by position: the trailing note belongs in "notes", and
+        # note[-1] silently moved it into whatever column was appended last.
+        note[CSV_HEADER.index("notes")] = (
             f"payday-super-checker {__version__}"
             + (f", source {source}" if source else "")
             + f", as at {as_at.isoformat()}. {assessment_text}"
