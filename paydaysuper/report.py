@@ -18,6 +18,7 @@ from .deadlines import (
     Deadline,
     PreRegimeError,
     annotate_calendar_risk,
+    annotate_missing_flag,
     apply_item4,
     compute_due,
 )
@@ -243,6 +244,7 @@ def assess(
 
     pairs = [(line, compute_due(line, cal)) for line in lines]
     apply_item4(pairs)
+    annotate_missing_flag(pairs)
     annotate_calendar_risk(pairs, cal)
 
     donors = _donor_index(pairs)
@@ -302,7 +304,8 @@ def assess(
             f"the date recorded here is after that deadline, and a holiday the "
             "calendar does not hold could move the deadline past it, so the line is "
             "left unassessed rather than called late. Supply the missing holidays "
-            "with --holidays-override, or extend paydaysuper/data/business_days.json, "
+            "with --holidays-override and set its \"verified_until\" to the last date "
+            "you entered them for, or extend paydaysuper/data/business_days.json, "
             "to assess it"
         )
         horizon_figures = (
@@ -352,14 +355,29 @@ def assess(
             result.verdict = AT_RISK if line.remitted <= dl.due else LATE
         elif dl.due < as_at:
             # Nothing recorded and the deadline has passed. This is the
-            # largest exposure the tool can see, so it must not be silent.
+            # largest exposure the tool can see, so it must not be silent -
+            # past the horizon the verdict still stands rather than becoming
+            # UNKNOWN, because a missing holiday moves a deadline by days
+            # while an unrecorded contribution is money owed either way.
+            # Only the claim that the deadline HAS passed is softened: past
+            # the coverage end the real deadline can only be later, and it
+            # may not have arrived at all.
             result.verdict = UNPAID
-            result.caveats.append(
-                f"the deadline passed on {dl.due.isoformat()} and no remittance or "
-                "fund-receipt date is recorded. Figures assume the contribution is still "
-                "unpaid; if your export has no date columns, supply them before relying "
-                "on this"
-            )
+            if past_horizon:
+                result.caveats.append(
+                    f"no remittance or fund-receipt date is recorded, and the deadline "
+                    f"shown ({dl.due.isoformat()}) runs past the calendar's coverage, so "
+                    "it may fall later than shown and may not have passed yet. Figures "
+                    "assume the contribution is still unpaid; if your export has no date "
+                    "columns, supply them before relying on this"
+                )
+            else:
+                result.caveats.append(
+                    f"the deadline passed on {dl.due.isoformat()} and no remittance or "
+                    "fund-receipt date is recorded. Figures assume the contribution is "
+                    "still unpaid; if your export has no date columns, supply them "
+                    "before relying on this"
+                )
         else:
             result.caveats.append(
                 "no remittance or fund-receipt date supplied, and the deadline has not "

@@ -50,7 +50,20 @@ Full detail goes to `report.csv`: due date, which deadline rule applied, days la
 
 Verdicts are `ON_TIME`, `AT_RISK` (remitted in time but no fund receipt recorded), `LATE`, `UNPAID` (the deadline has passed and nothing is recorded against it), `UNKNOWN` (the verdict is not available) and `SKIPPED` (defined-benefit interests). `LATE` and `UNPAID` both carry exposure figures.
 
-`UNKNOWN` covers three cases. Two are quiet: nothing recorded and not yet due, and a row carrying no SG amount. The third is not. Where the deadline runs past the last date the calendar records a holiday for, and the date on the row is AFTER that deadline, the line could be late or could be on time, because a holiday the calendar does not hold would move the deadline later. Those lines get their own console block naming the row, the employee, the amount and both candidate verdicts. Supply the missing holidays with `--holidays-override` to get a real verdict.
+`UNKNOWN` covers three cases. Two are quiet: nothing recorded and not yet due, and a row carrying no SG amount. The third is not. Where the deadline runs past the last date the calendar's holiday table is complete to, and the date on the row is AFTER that deadline, the line could be late or could be on time, because a holiday the calendar does not hold would move the deadline later. Those lines get their own console block naming the row, the employee, the amount and both candidate verdicts.
+
+To get a real verdict, enter the missing holidays in a `--holidays-override` file and add `"verified_until": "YYYY-MM-DD"` naming the last date you entered them for. The holidays alone are not enough, and that is deliberate: a file holding one 2029 holiday is not a file that has 2029 covered, and treating it as one would silence the warning across every gap it left. Only you know how far you went.
+
+```json
+{
+  "verified_until": "2029-12-31",
+  "add": [
+    {"date": "2029-03-30", "name": "Good Friday", "jurisdictions": ["ALL"]},
+    {"date": "2029-04-02", "name": "Easter Monday", "jurisdictions": ["ALL"]}
+  ],
+  "remove": ["2026-11-03"]
+}
+```
 
 A date on or before a deadline that runs past the calendar's coverage still gets a verdict. A missing holiday can only push the real deadline later, so paying early is provably on time whatever the calendar is missing.
 
@@ -65,7 +78,7 @@ The exit code is 0 when nothing is exposed and nothing is left undecided, 2 when
 | `--assessment-date DATE` | The day the ATO assessed the charge for these paydays. Only contributions received before it clear the shortfall. Omit if no assessment has issued |
 | `--map FIELD=COLUMN` | Point one field at your column name; repeatable |
 | `--mapping-file FILE` | Same thing as JSON, see `examples/mapping.example.json` |
-| `--holidays-override FILE` | Add or remove public holidays from the bundled calendar |
+| `--holidays-override FILE` | Add or remove public holidays from the bundled calendar; its optional `verified_until` declares how far you have entered them |
 
 ### Input columns
 
