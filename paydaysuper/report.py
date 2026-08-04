@@ -36,6 +36,16 @@ EXPOSED = (LATE, UNPAID)
 
 CENTS = Decimal("0.01")
 
+# Every AT_RISK row carries this by construction: the verdict is only ever set
+# where a remittance date exists and a fund-receipt date does not, which is the
+# same condition that appends it. Named here so the console can tell it apart
+# from a caveat that says something about the particular row.
+NO_RECEIPT_CAVEAT = (
+    "no fund-receipt date supplied: the statutory test is receipt by the "
+    "fund (SGAA s 18C(1)), so a remittance date alone cannot show the "
+    "contribution was on time"
+)
+
 # Characters Excel and Sheets evaluate at the start of a cell. A plain code
 # such as -00123 or @home is left alone: rewriting it would break a lookup
 # from this report back to the payroll export.
@@ -614,13 +624,21 @@ def console_summary(
         # count, so without this its caveats never reached the console at all
         # -- including the one saying two rows are identical and the payday is
         # counted twice, which is the data-quality warning most worth reading.
-        flagged = [r for r in at_risk if r.caveats]
-        for r in flagged[:10]:
+        #
+        # The no-fund-receipt caveat is excluded because EVERY at-risk row
+        # carries it and the header above already says it. Listed, it filled
+        # the ten-row cap with rows whose only note repeated the header, and
+        # truncated away the rows that had something of their own to say.
+        flagged = [
+            (r, [c for c in r.caveats if c != NO_RECEIPT_CAVEAT]) for r in at_risk
+        ]
+        flagged = [(r, others) for r, others in flagged if others]
+        for r, others in flagged[:10]:
             lines.append(
                 f"  row {r.line.row}  {r.line.employee_id}  QE day "
                 f"{r.line.qe_day.isoformat()}  due {r.deadline.due.isoformat()}"
             )
-            for caveat in r.caveats:
+            for caveat in others:
                 lines.append(f"      note: {caveat}")
         if len(flagged) > 10:
             lines.append(
