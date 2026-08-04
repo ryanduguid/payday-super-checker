@@ -1,5 +1,6 @@
 import codecs
 import csv
+import json
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -544,27 +545,83 @@ def _past_horizon_line(**kwargs) -> ContribLine:
 
 
 def test_receipt_past_the_calendar_horizon_is_not_called_late():
+    """The only genuinely unknowable side. The receipt is after the deadline
+    this calendar computes, and a holiday the calendar does not hold could
+    move that deadline past it."""
     cal = load_calendar()
     line = _past_horizon_line(received=date(2029, 3, 13))
     r = assess([line], cal, load_gic(), date(2029, 4, 1))[0]
-    assert r.deadline.due > cal.verified_until
+    assert r.deadline.due == date(2029, 3, 12)
+    assert r.deadline.due > cal.coverage_until
     assert r.verdict == "UNKNOWN"
+    assert r.horizon_verdicts == ("LATE", "ON_TIME")
     assert r.final_shortfall is None
     assert r.sgc_high is None
     assert any("left unassessed" in c for c in r.caveats)
 
 
-def test_receipt_past_the_calendar_horizon_is_not_called_on_time():
+def test_receipt_before_a_past_horizon_deadline_is_on_time():
+    """A missing holiday can only push the real deadline LATER, so a receipt
+    on or before the computed deadline is on time under every possible
+    holiday set. Forcing UNKNOWN there hid a provable answer."""
     line = _past_horizon_line(received=date(2029, 3, 2))
     r = assess([line], load_calendar(), load_gic(), date(2029, 4, 1))[0]
-    assert r.verdict == "UNKNOWN"
+    assert r.verdict == "ON_TIME"
+    assert r.horizon_verdicts is None
 
 
-def test_remittance_past_the_calendar_horizon_is_not_called_at_risk():
+def test_remittance_before_a_past_horizon_deadline_is_at_risk():
     line = _past_horizon_line(remitted=date(2029, 3, 2))
     r = assess([line], load_calendar(), load_gic(), date(2029, 4, 1))[0]
+    assert r.verdict == "AT_RISK"
+    assert r.horizon_verdicts is None
+
+
+def test_receipt_on_a_past_horizon_deadline_is_on_time():
+    """The boundary itself. The deadline is 2029-03-12, so a receipt that
+    day is on time however many holidays the calendar is missing."""
+    line = _past_horizon_line(received=date(2029, 3, 12))
+    r = assess([line], load_calendar(), load_gic(), date(2029, 4, 1))[0]
+    assert r.deadline.due == date(2029, 3, 12)
+    assert r.verdict == "ON_TIME"
+
+
+def test_remittance_past_a_past_horizon_deadline_is_unassessable():
+    line = _past_horizon_line(remitted=date(2029, 3, 13))
+    r = assess([line], load_calendar(), load_gic(), date(2029, 4, 1))[0]
     assert r.verdict == "UNKNOWN"
+    assert r.horizon_verdicts == ("LATE", "AT_RISK")
     assert any("left unassessed" in c for c in r.caveats)
+
+
+def test_an_unassessable_line_gets_its_own_block_and_a_non_zero_exit(tmp_path, capsys):
+    """A 9,000 payday whose receipt is 41 days past the deadline used to be
+    summarised as one line of "other line(s) carry data-quality notes" behind
+    exit 0, which README documents as nothing exposed."""
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        "VERYLATE29,2029-03-01,9000.00,2029-04-20,2029-04-22,no,no,,no\n",
+        encoding="utf-8",
+    )
+    code = main([str(path), "-o", str(tmp_path / "r.csv"), "--as-at", "2029-06-01"])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "cannot be assessed" in out
+    assert "row 2  VERYLATE29  QE day 2029-03-01  due 2029-03-12" in out
+    assert "super $9000.00" in out
+    assert "LATE or ON_TIME" in out
+    # It must no longer be swept into the silent data-quality bucket.
+    assert "other line(s) carry data-quality notes" not in out
+
+
+def test_an_unassessable_line_is_not_counted_as_a_plain_data_quality_note():
+    line = _past_horizon_line(received=date(2029, 3, 13))
+    results = assess([line], load_calendar(), load_gic(), date(2029, 4, 1))
+    text = console_summary(results, date(2029, 4, 1), "report.csv", "2026-08-02", load_rates())
+    assert "cannot be assessed" in text
+    assert "other line(s) carry data-quality notes" not in text
 
 
 def test_a_deadline_inside_the_horizon_is_still_assessed():
@@ -641,6 +698,116 @@ def test_item4_inherited_from_an_unrecorded_payday_is_flagged():
     results = assess(rows, cal, load_gic(), AS_AT)
     assert results[1].verdict == "ON_TIME"
     assert any("no payment is recorded" in c for c in results[1].caveats)
+
+
+def test_a_supplied_2029_calendar_produces_a_real_verdict(tmp_path):
+    """--holidays-override is the remedy the horizon caveat recommends, so a
+    user who takes it must get a verdict, not the same caveat back."""
+    override = tmp_path / "holidays.json"
+    override.write_text(
+        json.dumps(
+            {
+                "add": [
+                    {"date": "2029-03-30", "name": "Good Friday", "jurisdictions": ["ALL"]},
+                    {"date": "2029-04-02", "name": "Easter Monday", "jurisdictions": ["ALL"]},
+                    {"date": "2029-04-25", "name": "Anzac Day", "jurisdictions": ["ALL"]},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    def row(received):
+        return ContribLine(
+            employee_id="E9",
+            qe_day=date(2029, 3, 27),
+            sg_amount=Decimal("500.00"),
+            received=received,
+            row=2,
+        )
+
+    patched = load_calendar(override)
+    on_time = assess([row(date(2029, 4, 6))], patched, load_gic(), date(2029, 5, 1))[0]
+    assert on_time.deadline.due == date(2029, 4, 9)
+    assert on_time.verdict == "ON_TIME"
+    assert not any("verified horizon" in c for c in on_time.caveats)
+
+    # The late side is the half that needs report.py to read the coverage end
+    # rather than verified_until: a receipt past the deadline is unassessable
+    # while the calendar cannot see 2029, and a settled verdict once it can.
+    late = assess([row(date(2029, 4, 12))], patched, load_gic(), date(2029, 5, 1))[0]
+    assert late.verdict == "LATE"
+    assert late.days_late == 3
+    assert late.final_shortfall == Decimal("0")  # received before any assessment
+    assert not any("verified horizon" in c for c in late.caveats)
+
+    # Without the override the same rows sit on a four-day-earlier deadline
+    # that the calendar cannot vouch for, which is why the caveat exists.
+    bare_cal = load_calendar()
+    bare = assess([row(date(2029, 4, 12))], bare_cal, load_gic(), date(2029, 5, 1))[0]
+    assert bare.deadline.due == date(2029, 4, 5)
+    assert bare.verdict == "UNKNOWN"
+    assert bare.horizon_verdicts == ("LATE", "ON_TIME")
+    assert any("verified horizon" in c for c in bare.caveats)
+
+
+def test_exposure_past_the_horizon_leaves_days_late_blank_and_labels_a_maximum():
+    """An unpaid payday past the calendar's coverage is still exposure, but
+    the deadline it is measured from can only move later, so a definite whole
+    number of days late and a settled dollar figure claim too much."""
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2029, 3, 1),
+        sg_amount=Decimal("500.00"),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), date(2029, 6, 1))[0]
+    assert r.verdict == "UNPAID"
+    assert r.days_late is None
+    assert r.nec > Decimal("0")
+    assert any("are a maximum" in c for c in r.caveats)
+
+    text = console_summary(
+        [r], date(2029, 6, 1), "report.csv", "2026-08-02", load_rates()
+    )
+    assert "days late not pinned down" in text
+    assert "notional earnings at most $" in text
+    assert "SG charge estimate at most $" in text
+    assert "None days late" not in text
+
+
+def test_days_late_inside_the_horizon_is_still_a_definite_number():
+    """The other side: nothing about the carve-out leaks into an ordinary
+    row, whose deadline the calendar does pin down."""
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("500.00"),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+    assert r.verdict == "UNPAID"
+    assert r.days_late == 21
+    assert not any("are a maximum" in c for c in r.caveats)
+    text = console_summary([r], AS_AT, "report.csv", "2026-08-02", load_rates())
+    assert "21 days late" in text
+    assert "at most $" not in text
+
+
+def test_days_late_blank_reaches_the_report_csv(tmp_path):
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        "E9,2029-03-01,500.00,,,no,no,,no\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "r.csv"
+    assert main([str(path), "-o", str(out), "--as-at", "2029-06-01"]) == 2
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        row = next(csv.DictReader(f))
+    assert row["verdict"] == "UNPAID"
+    assert row["days_late"] == ""
+    assert Decimal(row["final_shortfall"]) == Decimal("500.00")
 
 
 def test_missed_new_starter_flag_is_suggested_on_late_lines():

@@ -19,7 +19,7 @@ from .csv_io import (
 from .deadlines import PreRegimeError
 from .profiles import Profile
 from .rates import RatesError, load_gic, load_rates
-from .report import EXPOSED, assess, console_summary, write_csv
+from .report import assess, console_summary, needs_attention, write_csv
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -358,7 +358,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
 
-    return EXIT_LATE_FOUND if any(r.verdict in EXPOSED for r in results) else EXIT_OK
+    return EXIT_LATE_FOUND if needs_attention(results) else EXIT_OK
 
 
 if __name__ == "__main__":
