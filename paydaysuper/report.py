@@ -187,7 +187,15 @@ def _item4_seeded_by_unrecorded(
         for other in index.get((line.employee_id, dl.due), [])
         if other.qe_day < line.qe_day
     ]
-    if donors and all(d.received is None and d.remitted is None for d in donors):
+
+    def unrecorded(d: ContribLine) -> bool:
+        # A nil payday is not an eligible contribution whatever dates it
+        # carries, so a remittance date on one cannot show the earlier
+        # contribution item 4 needs. Testing the dates alone let a 0.00 donor
+        # suppress this caveat outright.
+        return d.sg_amount <= 0 or (d.received is None and d.remitted is None)
+
+    if donors and all(unrecorded(d) for d in donors):
         earlier = ", ".join(sorted({d.qe_day.isoformat() for d in donors}))
         own = dl.own_due
         return (

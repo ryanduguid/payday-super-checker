@@ -700,6 +700,68 @@ def test_item4_inherited_from_an_unrecorded_payday_is_flagged():
     assert any("no payment is recorded" in c for c in results[1].caveats)
 
 
+def test_a_nil_payday_does_not_extend_a_later_real_paydays_verdict():
+    """End to end for the item 4 seed: a 0.00 payday flagged first-to-fund
+    stretched the next real payday's deadline from 4 Aug to 7 Aug and turned
+    a 1,000 late contribution on time."""
+    rows = [
+        ContribLine(
+            employee_id="EMP200",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("0.00"),
+            remitted=date(2026, 7, 15),
+            first_to_fund=True,
+            row=2,
+        ),
+        ContribLine(
+            employee_id="EMP200",
+            qe_day=date(2026, 7, 23),
+            sg_amount=Decimal("1000.00"),
+            remitted=date(2026, 8, 5),
+            received=date(2026, 8, 6),
+            row=3,
+        ),
+    ]
+    results = assess(rows, load_calendar(), load_gic(), AS_AT)
+    real = results[1]
+    assert real.deadline.due == date(2026, 8, 4)
+    assert real.verdict == "LATE"
+    assert real.days_late == 2
+
+
+def test_a_nil_donor_does_not_suppress_the_unrecorded_item_4_caveat():
+    """The donor test read dates only, so a nil donor carrying a remittance
+    date made the whole donor set look recorded and the caveat vanished."""
+    rows = [
+        ContribLine(
+            employee_id="E9",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("100.00"),
+            first_to_fund=True,
+            row=2,
+        ),
+        ContribLine(
+            employee_id="E9",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("0.00"),
+            remitted=date(2026, 7, 15),
+            first_to_fund=True,
+            row=3,
+        ),
+        ContribLine(
+            employee_id="E9",
+            qe_day=date(2026, 7, 23),
+            sg_amount=Decimal("100.00"),
+            received=date(2026, 8, 6),
+            row=4,
+        ),
+    ]
+    results = assess(rows, load_calendar(), load_gic(), AS_AT)
+    aligned = results[2]
+    assert aligned.deadline.pathway == "ITEM4_ALIGNED"
+    assert any("no payment is recorded" in c for c in aligned.caveats)
+
+
 def test_a_supplied_2029_calendar_produces_a_real_verdict(tmp_path):
     """--holidays-override is the remedy the horizon caveat recommends, so a
     user who takes it must get a verdict, not the same caveat back."""
