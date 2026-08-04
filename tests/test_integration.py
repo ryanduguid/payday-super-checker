@@ -528,7 +528,7 @@ def test_calendar_caveats_describe_the_aligned_deadline():
     results = assess([inside, later], cal, load_gic(), date(2029, 3, 1))
     aligned = results[1]
     assert aligned.deadline.pathway == "ITEM4_ALIGNED"
-    horizon = [c for c in aligned.caveats if "verified horizon" in c]
+    horizon = [c for c in aligned.caveats if "beyond the calendar's coverage" in c]
     assert horizon and aligned.deadline.due.isoformat() in horizon[0]
 
 
@@ -647,11 +647,114 @@ def test_prepayment_past_the_horizon_keeps_its_verdict():
     assert r.verdict == "ON_TIME"
 
 
-def test_horizon_caveat_says_the_calendar_holds_no_holidays():
+def test_horizon_caveat_says_the_table_may_be_missing_holidays():
+    """The caveat used to claim the table "holds no holidays at all" past the
+    horizon, which stopped being true once coverage became a declared span:
+    a partial override can hold a 2029 holiday while 2029 stays uncovered.
+    It now claims only what is true either way - a missing holiday can push
+    the real deadline later, never earlier."""
     cal = load_calendar()
     text = cal.check_horizon(date(2029, 1, 1))
-    assert "holds no holidays at all" in text
-    assert "weekends are the only non-business days" in text
+    assert "the last day the holiday table is complete to" in text
+    assert "may be missing" in text
+    assert "can only be later than the one shown" in text
+    assert "holds no holidays at all" not in text
+
+
+def test_an_unrelated_added_holiday_does_not_silence_the_horizon(tmp_path, capsys):
+    """End to end for the coverage regression, on the CLI the README tells you
+    to schedule. An override adding only Christmas 2029 used to jump the
+    coverage end nine months forward, so an EARLIER 2029 payday lost its
+    horizon caveat entirely and was reported LATE with an SG charge attached -
+    while the holidays actually missing from that window (Good Friday, Easter
+    Monday) would have moved the deadline and made it on time."""
+    src = tmp_path / "east.csv"
+    src.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        "EAST29,2029-03-27,5000.00,2029-04-05,2029-04-06,no,no,,no\n",
+        encoding="utf-8",
+    )
+    sparse = tmp_path / "sparse.json"
+    sparse.write_text(
+        json.dumps(
+            {"add": [{"date": "2029-12-25", "name": "Christmas Day",
+                      "jurisdictions": ["ALL"]}]}
+        ),
+        encoding="utf-8",
+    )
+    code = main([
+        str(src), "-o", str(tmp_path / "out.csv"), "--as-at", "2029-05-01",
+        "--holidays-override", str(sparse),
+    ])
+    printed = capsys.readouterr().out
+    assert code == EXIT_LATE_FOUND
+    assert "LATE: 0" in printed
+    assert "UNKNOWN: 1" in printed
+    assert "beyond the calendar's coverage (2028-12-31" in printed
+
+    # Declaring the year is what earns a verdict, and it is the RIGHT verdict:
+    # with Easter in the table the receipt on 6 Apr beat a 9 Apr deadline.
+    declared = tmp_path / "declared.json"
+    declared.write_text(
+        json.dumps(
+            {
+                "verified_until": "2029-12-31",
+                "add": [
+                    {"date": "2029-03-30", "name": "Good Friday", "jurisdictions": ["ALL"]},
+                    {"date": "2029-04-02", "name": "Easter Monday", "jurisdictions": ["ALL"]},
+                    {"date": "2029-04-25", "name": "Anzac Day", "jurisdictions": ["ALL"]},
+                    {"date": "2029-12-25", "name": "Christmas Day", "jurisdictions": ["ALL"]},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    code = main([
+        str(src), "-o", str(tmp_path / "out2.csv"), "--as-at", "2029-05-01",
+        "--holidays-override", str(declared),
+    ])
+    printed = capsys.readouterr().out
+    assert code == 0
+    assert "ON_TIME: 1" in printed
+
+
+def test_an_unpaid_row_past_the_horizon_does_not_claim_the_deadline_passed(tmp_path, capsys):
+    """The UNPAID verdict stays - an unrecorded contribution is money owed
+    whatever the calendar knows - but past the coverage end the sentence
+    "the deadline passed on X" contradicted the row's own horizon caveat.
+
+    Canberra Day 2029 falls on 12 Mar and is an ACT-wide public holiday, so
+    the deadline this row is told passed on 12 Mar is really 13 Mar."""
+    src = tmp_path / "edge.csv"
+    src.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        "EDGE29,2029-03-01,4000.00,,,no,no,,no\n",
+        encoding="utf-8",
+    )
+    code = main([str(src), "-o", str(tmp_path / "out.csv"), "--as-at", "2029-03-13"])
+    printed = capsys.readouterr().out
+    assert code == EXIT_LATE_FOUND
+    assert "UNPAID: 1" in printed          # exposure stays visible
+    assert "the deadline passed on" not in printed
+    assert "may not have passed yet" in printed
+
+
+def test_a_rates_file_whose_years_are_not_a_map_is_an_error_not_a_traceback(
+    tmp_path, monkeypatch
+):
+    """Guarding only the top level left the field the code dereferences
+    unchecked: console_summary does fy.get(label) then entry.get(...), and
+    cli.py calls it outside every try block, so either shape reached the user
+    as a raw AttributeError."""
+    from paydaysuper import rates as rates_module
+
+    for doc in ({"financial_years": []}, {"financial_years": {"2026-27": "12"}}):
+        (tmp_path / "rates.json").write_text(json.dumps(doc), encoding="utf-8")
+        monkeypatch.setattr(rates_module, "DATA_DIR", tmp_path)
+        with pytest.raises(rates_module.RatesError, match="financial.year"):
+            rates_module.load_rates()
 
 
 def test_case_variant_employee_ids_are_flagged_not_merged():
@@ -769,11 +872,12 @@ def test_a_supplied_2029_calendar_produces_a_real_verdict(tmp_path):
     override.write_text(
         json.dumps(
             {
+                "verified_until": "2029-04-25",
                 "add": [
                     {"date": "2029-03-30", "name": "Good Friday", "jurisdictions": ["ALL"]},
                     {"date": "2029-04-02", "name": "Easter Monday", "jurisdictions": ["ALL"]},
                     {"date": "2029-04-25", "name": "Anzac Day", "jurisdictions": ["ALL"]},
-                ]
+                ],
             }
         ),
         encoding="utf-8",
@@ -791,7 +895,7 @@ def test_a_supplied_2029_calendar_produces_a_real_verdict(tmp_path):
     on_time = assess([row(date(2029, 4, 6))], patched, load_gic(), date(2029, 5, 1))[0]
     assert on_time.deadline.due == date(2029, 4, 9)
     assert on_time.verdict == "ON_TIME"
-    assert not any("verified horizon" in c for c in on_time.caveats)
+    assert not any("beyond the calendar's coverage" in c for c in on_time.caveats)
 
     # The late side is the half that needs report.py to read the coverage end
     # rather than verified_until: a receipt past the deadline is unassessable
@@ -800,7 +904,7 @@ def test_a_supplied_2029_calendar_produces_a_real_verdict(tmp_path):
     assert late.verdict == "LATE"
     assert late.days_late == 3
     assert late.final_shortfall == Decimal("0")  # received before any assessment
-    assert not any("verified horizon" in c for c in late.caveats)
+    assert not any("beyond the calendar's coverage" in c for c in late.caveats)
 
     # Without the override the same rows sit on a four-day-earlier deadline
     # that the calendar cannot vouch for, which is why the caveat exists.
@@ -809,7 +913,7 @@ def test_a_supplied_2029_calendar_produces_a_real_verdict(tmp_path):
     assert bare.deadline.due == date(2029, 4, 5)
     assert bare.verdict == "UNKNOWN"
     assert bare.horizon_verdicts == ("LATE", "ON_TIME")
-    assert any("verified horizon" in c for c in bare.caveats)
+    assert any("beyond the calendar's coverage" in c for c in bare.caveats)
 
 
 def test_exposure_past_the_horizon_leaves_days_late_blank_and_labels_a_maximum():

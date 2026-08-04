@@ -13,6 +13,7 @@ from paydaysuper.deadlines import (
     ContribLine,
     PreRegimeError,
     annotate_calendar_risk,
+    annotate_missing_flag,
     apply_item4,
     compute_due,
 )
@@ -21,6 +22,18 @@ from paydaysuper.deadlines import (
 @pytest.fixture(scope="module")
 def cal():
     return load_calendar()
+
+
+def due_for(lines, cal):
+    """compute_due plus the passes report.py runs after it. The missing-flag
+    caveat is written against the FINAL deadline, so a test that calls
+    compute_due alone sees the deadline before apply_item4 has had its say."""
+    if isinstance(lines, ContribLine):
+        lines = [lines]
+    pairs = [(l, compute_due(l, cal)) for l in lines]
+    apply_item4(pairs)
+    annotate_missing_flag(pairs)
+    return pairs
 
 
 def line(**kwargs) -> ContribLine:
@@ -66,9 +79,9 @@ def test_out_of_cycle_without_next_payday_falls_back(cal):
 def test_next_payday_without_the_flag_names_the_item_2_deadline(cal):
     """A row that supplies the next payday but leaves out_of_cycle blank was
     given the strict 7-business-day deadline with nothing said about it."""
-    dl = compute_due(
+    _, dl = due_for(
         line(qe_day=date(2026, 7, 15), next_standard_qe_day=date(2026, 7, 23)), cal
-    )
+    )[0]
     assert dl.pathway == USUAL_7BD
     assert dl.due == cal.add_business_days(date(2026, 7, 15), 7)
     caveat = [c for c in dl.caveats if "out_of_cycle=yes" in c]
@@ -80,14 +93,14 @@ def test_next_payday_caveat_names_the_deadline_the_row_actually_got(cal):
     """A first-to-fund row takes the 20-business-day period, so the caveat
     must not claim the strict 7-business-day deadline was used, and must not
     name an item 2 date four business days EARLIER than the row's own."""
-    dl = compute_due(
+    _, dl = due_for(
         line(
             qe_day=date(2026, 7, 10),
             first_to_fund=True,
             next_standard_qe_day=date(2026, 7, 23),
         ),
         cal,
-    )
+    )[0]
     assert dl.pathway == EXTENDED_20BD
     assert dl.due == date(2026, 8, 10)
     caveat = [c for c in dl.caveats if "out_of_cycle=yes" in c]
@@ -103,15 +116,47 @@ def test_next_payday_caveat_names_the_deadline_the_row_actually_got(cal):
 def test_next_payday_caveat_still_fires_where_item_2_would_win(cal):
     """The other side of the same branch: item 2 beats the row's own period,
     so setting the flag really would move the deadline."""
-    dl = compute_due(
+    _, dl = due_for(
         line(qe_day=date(2026, 7, 10), next_standard_qe_day=date(2026, 7, 23)), cal
-    )
+    )[0]
     assert dl.pathway == USUAL_7BD
     assert dl.due == date(2026, 7, 21)
     caveat = [c for c in dl.caveats if "out_of_cycle=yes" in c]
     assert caveat, dl.caveats
     assert "strict 7-business-day deadline 2026-07-21 was used" in caveat[0]
     assert "the deadline becomes 2026-08-04" in caveat[0]
+
+
+def test_the_missing_flag_caveat_reads_the_deadline_item_4_left(cal):
+    """Written inside compute_due, this caveat named the deadline the row had
+    BEFORE apply_item4 moved it. An item-4-aligned row then carried a caveat
+    naming a pathway it did not have, a deadline earlier than its own due_date
+    column, and advice that moved nothing: setting out_of_cycle=yes on that
+    row leaves it item 4 aligned at the same date."""
+    first = line(
+        employee_id="EMP300",
+        qe_day=date(2026, 7, 9),
+        remitted=date(2026, 8, 6),
+        first_to_fund=True,
+        row=2,
+    )
+    later = line(
+        employee_id="EMP300",
+        qe_day=date(2026, 7, 15),
+        remitted=date(2026, 8, 6),
+        next_standard_qe_day=date(2026, 7, 23),
+        row=3,
+    )
+    _, dl = due_for([first, later], cal)[1]
+    assert dl.pathway == ITEM4_ALIGNED
+    caveat = [c for c in dl.caveats if "out_of_cycle=yes" in c]
+    assert caveat, dl.caveats
+    # The deadline named is the one the row ends up with, not its own period end.
+    assert dl.due.isoformat() in caveat[0]
+    assert dl.own_due is not None and dl.own_due.isoformat() not in caveat[0]
+    assert "item 4 aligned" in caveat[0]
+    # And the advice is honest: the flag would not move this deadline.
+    assert "would not change it" in caveat[0]
 
 
 def test_next_payday_without_the_flag_is_flagged_when_it_is_not_later(cal):
@@ -288,7 +333,7 @@ def test_deadline_past_the_calendar_horizon_warns(cal):
     l = line(qe_day=qe)
     pairs = [(l, compute_due(l, cal))]
     annotate_calendar_risk(pairs, cal)
-    assert any("verified horizon" in n for n in pairs[0][1].caveats)
+    assert any("beyond the calendar's coverage" in n for n in pairs[0][1].caveats)
 
 
 def test_a_nil_payday_does_not_seed_an_item_4_alignment(cal):
