@@ -180,4 +180,20 @@ def load_rates() -> dict:
             f"{path} must be a JSON object with a 'financial_years' map; it holds a "
             f"{type(doc).__name__} instead"
         )
+    # Guarding the top level alone left the field the code actually
+    # dereferences unchecked: console_summary does fy.get(label) and then
+    # entry.get("max_contributions_base"), so a list at either depth is the
+    # same uncaught AttributeError one level down.
+    years = doc.get("financial_years", {})
+    if not isinstance(years, dict):
+        raise RatesError(
+            f"{path}: 'financial_years' must be a map of labels like '2026-27' to "
+            f"their figures; it holds a {type(years).__name__} instead"
+        )
+    for label, entry in years.items():
+        if not isinstance(entry, dict):
+            raise RatesError(
+                f"{path}: financial year {label!r} must hold an object of figures; "
+                f"it holds a {type(entry).__name__} instead"
+            )
     return doc

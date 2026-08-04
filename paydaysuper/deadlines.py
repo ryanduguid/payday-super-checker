@@ -76,6 +76,10 @@ class Deadline:
     # it from qe_day cannot work: it would have to know which pathway won,
     # and the out-of-cycle period is not qe_day plus 7 or 20 business days.
     own_due: date | None = None
+    # The item 2 deadline this row WOULD have had, held for annotate_missing_flag
+    # to write about once apply_item4 has settled `due`. Set only where the row
+    # supplies a usable next standard QE day without the out-of-cycle flag.
+    item2_due: date | None = None
 
 
 def compute_due(line: ContribLine, cal: BusinessCalendar) -> Deadline:
@@ -171,32 +175,45 @@ def compute_due(line: ContribLine, cal: BusinessCalendar) -> Deadline:
             "later deadline"
         )
 
-    # The missing-flag caveat, written against the deadline the row actually
-    # got. It is worth saying only where setting the flag would move that
-    # deadline; where item 1 already carried the row past the item 2 date,
-    # the flag changes nothing and a caveat naming an earlier date is wrong.
-    if item2 is not None:
-        pathway_words = PATHWAY_WORDS.get(pathway, pathway)
-        if item2 > due:
-            caveats.append(
+    # The missing-flag caveat is deferred to annotate_missing_flag for the
+    # same reason the calendar caveats are: apply_item4 can still move `due`,
+    # and a caveat written here would name the pathway and deadline the row
+    # had before that move rather than the ones it ends up with.
+    return Deadline(
+        due=due, pathway=pathway, notes=notes, caveats=caveats, item2_due=item2
+    )
+
+
+def annotate_missing_flag(pairs: list[tuple[ContribLine, Deadline]]) -> None:
+    """Caveat the rows that supply a next standard QE day without the
+    out-of-cycle flag, written against the FINAL deadline.
+
+    Run after apply_item4. It is worth saying only where setting the flag
+    would move the deadline the row actually got; where item 1 or an item 4
+    alignment already carried the row past the item 2 date, the flag changes
+    nothing and a caveat urging it would send the operator after a deadline
+    that does not move."""
+    for line, dl in pairs:
+        if dl.item2_due is None or dl.due is None:
+            continue
+        pathway_words = PATHWAY_WORDS.get(dl.pathway, dl.pathway)
+        if dl.item2_due > dl.due:
+            dl.caveats.append(
                 f"a next standard QE day {line.next_standard_qe_day.isoformat()} is "
                 "supplied but the out-of-cycle flag is not set, so the "
-                f"{pathway_words} deadline {due.isoformat()} was used. If this payday "
+                f"{pathway_words} deadline {dl.due.isoformat()} was used. If this payday "
                 "is out of cycle, set out_of_cycle=yes and the deadline becomes "
-                f"{item2.isoformat()} (s 18C(2) item 2, LI 2026/20)"
+                f"{dl.item2_due.isoformat()} (s 18C(2) item 2, LI 2026/20)"
             )
         else:
-            caveats.append(
+            dl.caveats.append(
                 f"a next standard QE day {line.next_standard_qe_day.isoformat()} is "
                 f"supplied but the out-of-cycle flag is not set. The {pathway_words} "
-                f"deadline {due.isoformat()} was used, and setting out_of_cycle=yes "
-                f"would not change it: the item 2 deadline is {item2.isoformat()}, "
-                "which is no later (s 18C(2) items 1 and 2)"
+                f"deadline {dl.due.isoformat()} was used, and setting out_of_cycle=yes "
+                f"would not change it: the item 2 deadline is "
+                f"{dl.item2_due.isoformat()}, which is no later "
+                "(s 18C(2) items 1, 2 and 4)"
             )
-
-    # Calendar caveats are attached later, by annotate_calendar_risk, because
-    # apply_item4 can still move this deadline.
-    return Deadline(due=due, pathway=pathway, notes=notes, caveats=caveats)
 
 
 def apply_item4(pairs: list[tuple[ContribLine, Deadline]]) -> None:
