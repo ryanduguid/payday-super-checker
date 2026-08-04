@@ -253,6 +253,51 @@ def test_deadline_past_the_calendar_horizon_warns(cal):
     assert any("verified horizon" in n for n in pairs[0][1].caveats)
 
 
+def test_a_nil_payday_does_not_seed_an_item_4_alignment(cal):
+    """s 18C(2) item 4 aligns to an earlier ELIGIBLE CONTRIBUTION. A payday
+    carrying 0.00 SG is not one, so its extended window must not stretch a
+    later real payday's deadline."""
+    nil = line(
+        employee_id="EMP200",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("0.00"),
+        remitted=date(2026, 7, 15),
+        first_to_fund=True,
+        row=2,
+    )
+    real = line(
+        employee_id="EMP200",
+        qe_day=date(2026, 7, 23),
+        sg_amount=Decimal("1000.00"),
+        remitted=date(2026, 8, 5),
+        received=date(2026, 8, 6),
+        row=3,
+    )
+    pairs = [(l, compute_due(l, cal)) for l in (nil, real)]
+    assert pairs[0][1].due == date(2026, 8, 7)  # the nil row's own 20bd window
+    apply_item4(pairs)
+    assert pairs[1][1].due == date(2026, 8, 4)  # its own period, not inherited
+    assert pairs[1][1].pathway == USUAL_7BD
+
+
+def test_a_real_payday_still_seeds_an_item_4_alignment(cal):
+    """The other side of the same guard: only the amount changes."""
+    paid = line(
+        employee_id="EMP200",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("0.01"),
+        first_to_fund=True,
+        row=2,
+    )
+    real = line(
+        employee_id="EMP200", qe_day=date(2026, 7, 23), sg_amount=Decimal("1000.00"), row=3
+    )
+    pairs = [(l, compute_due(l, cal)) for l in (paid, real)]
+    apply_item4(pairs)
+    assert pairs[1][1].due == date(2026, 8, 7)
+    assert pairs[1][1].pathway == ITEM4_ALIGNED
+
+
 def test_out_of_cycle_without_next_payday_keeps_its_warning_when_item_1_wins(cal):
     """The missing-data warning must survive even when the 20-business-day
     period is the later deadline, because the real item 2 deadline could be
