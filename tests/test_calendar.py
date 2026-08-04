@@ -67,6 +67,157 @@ def test_horizon_warning(cal):
     assert "verified horizon" in cal.check_horizon(date(2029, 1, 1))
 
 
+def _easter_2029_override(tmp_path):
+    """The 2029 national holidays the bundled table stops short of."""
+    override = tmp_path / "override.json"
+    override.write_text(
+        json.dumps(
+            {
+                "add": [
+                    {
+                        "date": "2029-03-30",
+                        "name": "Good Friday",
+                        "jurisdictions": ["ALL"],
+                    },
+                    {
+                        "date": "2029-04-02",
+                        "name": "Easter Monday",
+                        "jurisdictions": ["ALL"],
+                    },
+                    {
+                        "date": "2029-04-25",
+                        "name": "Anzac Day",
+                        "jurisdictions": ["ALL"],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return override
+
+
+def test_an_override_raises_the_coverage_end_past_verified_until(tmp_path, cal):
+    """verified_until records when the BUNDLED table was last checked. A user
+    who supplies later holidays has a calendar that covers them, and the
+    coverage end has to say so or every horizon test reads a stale date."""
+    patched = load_calendar(_easter_2029_override(tmp_path))
+    assert patched.verified_until == date(2028, 12, 31)
+    assert patched.coverage_until == date(2029, 4, 25)
+    assert cal.coverage_until == date(2028, 12, 31)
+
+
+def test_check_horizon_reads_the_table_not_the_verified_date(tmp_path):
+    """A deadline the supplied holidays actually moved must not be told the
+    calendar cannot see them."""
+    patched = load_calendar(_easter_2029_override(tmp_path))
+    assert patched.add_business_days(date(2029, 3, 27), 7) == date(2029, 4, 9)
+    assert patched.check_horizon(date(2029, 4, 9)) is None
+    # Past the last holiday it now holds, the warning is still owed.
+    warning = patched.check_horizon(date(2029, 5, 1))
+    assert warning is not None
+    assert "2029-04-25" in warning
+
+
+def test_an_unpatched_calendar_computes_the_earlier_deadline(cal):
+    """The other half of the pair above: without the override the same QE day
+    lands four days earlier, which is what makes the horizon warning real."""
+    assert cal.add_business_days(date(2029, 3, 27), 7) == date(2029, 4, 5)
+    assert cal.check_horizon(date(2029, 4, 5)) is not None
+
+
+def _write_bundled(tmp_path, doc):
+    (tmp_path / "business_days.json").write_text(
+        json.dumps(doc), encoding="utf-8"
+    )
+    return tmp_path
+
+
+GOOD_DOC = {
+    "verified_from": "2026-07-01",
+    "verified_until": "2028-12-31",
+    "non_business_days": [
+        {"date": "2026-08-03", "name": "Picnic Day", "jurisdictions": ["NT"]}
+    ],
+}
+
+
+def test_a_good_bundled_table_still_loads(tmp_path, monkeypatch):
+    from paydaysuper import calendar as cal_module
+
+    monkeypatch.setattr(cal_module, "DATA_DIR", _write_bundled(tmp_path, GOOD_DOC))
+    loaded = load_calendar()
+    assert not loaded.is_business_day(date(2026, 8, 3))
+    assert loaded.coverage_until == date(2028, 12, 31)
+
+
+@pytest.mark.parametrize("key", ["non_business_days", "verified_from", "verified_until"])
+def test_a_missing_top_level_key_is_named(tmp_path, monkeypatch, key):
+    """These three were read straight off the parsed JSON, so a renamed key
+    raised KeyError, which the CLI's handler tuple does not catch."""
+    from paydaysuper import calendar as cal_module
+
+    doc = {k: v for k, v in GOOD_DOC.items() if k != key}
+    monkeypatch.setattr(cal_module, "DATA_DIR", _write_bundled(tmp_path, doc))
+    with pytest.raises(CalendarError) as exc:
+        load_calendar()
+    message = str(exc.value)
+    assert key in message
+    assert "business_days.json" in message
+
+
+def test_a_list_at_the_top_level_is_refused(tmp_path, monkeypatch):
+    """A JSON list gave TypeError, which the CLI does not catch either."""
+    from paydaysuper import calendar as cal_module
+
+    monkeypatch.setattr(
+        cal_module, "DATA_DIR", _write_bundled(tmp_path, [GOOD_DOC])
+    )
+    with pytest.raises(CalendarError) as exc:
+        load_calendar()
+    assert "must be a JSON object" in str(exc.value)
+
+
+def test_non_business_days_must_be_a_list(tmp_path, monkeypatch):
+    from paydaysuper import calendar as cal_module
+
+    doc = dict(GOOD_DOC, non_business_days={"2026-08-03": "Picnic Day"})
+    monkeypatch.setattr(cal_module, "DATA_DIR", _write_bundled(tmp_path, doc))
+    with pytest.raises(CalendarError) as exc:
+        load_calendar()
+    assert "must be a list" in str(exc.value)
+
+
+@pytest.mark.parametrize("key", ["verified_from", "verified_until"])
+def test_an_unreadable_verified_date_is_named(tmp_path, monkeypatch, key):
+    from paydaysuper import calendar as cal_module
+
+    doc = dict(GOOD_DOC, **{key: "31/12/2028"})
+    monkeypatch.setattr(cal_module, "DATA_DIR", _write_bundled(tmp_path, doc))
+    with pytest.raises(CalendarError) as exc:
+        load_calendar()
+    message = str(exc.value)
+    assert key in message
+    assert "YYYY-MM-DD" in message
+
+
+def test_the_cli_prints_a_calendar_error_without_a_traceback(tmp_path, monkeypatch, capsys):
+    from conftest import SAMPLE
+    from paydaysuper import calendar as cal_module
+    from paydaysuper.cli import EXIT_ERROR, main
+
+    doc = {k: v for k, v in GOOD_DOC.items() if k != "non_business_days"}
+    doc["holidays"] = GOOD_DOC["non_business_days"]
+    monkeypatch.setattr(cal_module, "DATA_DIR", _write_bundled(tmp_path, doc))
+    assert main([str(SAMPLE), "-o", str(tmp_path / "r.csv"), "--as-at", "2026-08-10"]) == (
+        EXIT_ERROR
+    )
+    err = capsys.readouterr().err
+    assert err.startswith("error: ")
+    assert "Traceback" not in err
+    assert "non_business_days" in err
+
+
 def test_provisional_hits_flags_grand_final_day(cal):
     hits = cal.provisional_hits(date(2026, 9, 1), date(2026, 10, 1))
     assert any("Grand Final" in h for h in hits)
