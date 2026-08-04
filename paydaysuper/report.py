@@ -108,6 +108,10 @@ class Result:
     uplift: dict[str, dict[str, Decimal]] | None = None
     notes: list[str] = field(default_factory=list)
     caveats: list[str] = field(default_factory=list)
+    # Set only where a date landed AFTER a deadline that runs past the
+    # calendar's coverage, so the verdict genuinely cannot be pinned down.
+    # Holds the two verdicts the row is between, worst case first.
+    horizon_verdicts: tuple[str, str] | None = None
 
     @property
     def warnings(self) -> list[str]:
@@ -271,25 +275,33 @@ def assess(
 
         settled = line.received
         if settled is None and line.remitted is not None:
-            result.caveats.append(
-                "no fund-receipt date supplied: the statutory test is receipt by the "
-                "fund (SGAA s 18C(1)), so a remittance date alone cannot show the "
-                "contribution was on time"
-            )
+            result.caveats.append(NO_RECEIPT_CAVEAT)
 
-        # Past the calendar's verified horizon the holiday table is empty, so
-        # every weekday counts as a business day and the deadline computed
-        # here can only be too early. A verdict that turns on comparing a
-        # supplied date against that deadline is therefore not knowable, and
-        # calling it LATE or ON_TIME asserts more than the calendar supports.
-        # A pre-payment verdict is not affected: it compares the receipt with
-        # the QE day and a 12-month calendar window, never with the deadline.
-        past_horizon = dl.due > cal.verified_until
+        # Past the calendar's coverage the holiday table is empty, so every
+        # weekday counts as a business day and the deadline computed here can
+        # only be too EARLY. That asymmetry decides which verdicts survive.
+        #
+        # A date on or before the computed deadline is on time under every
+        # possible holiday set, because a missing holiday can only push the
+        # real deadline later, never earlier. Those verdicts are provable and
+        # are given. Only a date after the computed deadline is indeterminable:
+        # it is late on this calendar and could be on time on the real one.
+        #
+        # A pre-payment verdict is not affected either: it compares the receipt
+        # with the QE day and a 12-month calendar window, never the deadline.
+        past_horizon = dl.due > cal.coverage_until
         horizon_unknown = (
-            f"the deadline {dl.due.isoformat()} falls past the calendar's verified "
-            f"horizon {cal.verified_until.isoformat()}, so it cannot be pinned down and "
-            "this line is left unassessed rather than called on time or late. Extend "
-            "paydaysuper/data/business_days.json to assess it"
+            f"the date recorded here is after that deadline, and a holiday the "
+            "calendar does not hold could move the deadline past it, so the line is "
+            "left unassessed rather than called late. Supply the missing holidays "
+            "with --holidays-override, or extend paydaysuper/data/business_days.json, "
+            "to assess it"
+        )
+        horizon_figures = (
+            f"the deadline {dl.due.isoformat()} runs past the calendar's coverage "
+            f"({cal.coverage_until.isoformat()}) and can only move later, so days late "
+            "is left blank and the notional earnings and SG charge figures on this "
+            "line are a maximum, not a settled amount"
         )
 
         stale_prepayment = False
@@ -314,16 +326,18 @@ def assess(
                         "window in s 18C(1)(c)(ii), so it cannot be applied to this payday. "
                         "The payday is treated as unfunded"
                     )
-            elif past_horizon:
+            elif past_horizon and settled > dl.due:
                 result.verdict = UNKNOWN
+                result.horizon_verdicts = (LATE, ON_TIME)
                 result.caveats.append(horizon_unknown)
                 results.append(result)
                 continue
             else:
                 result.verdict = ON_TIME if settled <= dl.due else LATE
         elif line.remitted is not None:
-            if past_horizon:
+            if past_horizon and line.remitted > dl.due:
                 result.verdict = UNKNOWN
+                result.horizon_verdicts = (LATE, AT_RISK)
                 result.caveats.append(horizon_unknown)
                 results.append(result)
                 continue
@@ -384,7 +398,17 @@ def assess(
                     "interest charge, which this tool does not estimate"
                 )
 
-            result.days_late = max((outstanding_to - dl.due).days, 0)
+            # A row still exposed past the calendar's coverage got there
+            # without comparing a date against the deadline (an unpaid payday,
+            # or a receipt outside the 12-month pre-payment window), so the
+            # verdict holds. The arithmetic hanging off the deadline does not:
+            # printing a whole number of days late from a date the row's own
+            # caveat says cannot be pinned down states more than is known.
+            result.days_late = (
+                None if past_horizon else max((outstanding_to - dl.due).days, 0)
+            )
+            if past_horizon:
+                result.caveats.append(horizon_figures)
             result.nec = (
                 notional_earnings(base_shortfall, dl.due, nec_end, gic)
                 if nec_end > dl.due
@@ -451,6 +475,24 @@ def assess(
         results.append(result)
 
     return results
+
+
+def horizon_indeterminate(results: list[Result]) -> list[Result]:
+    """Rows whose verdict could not be decided because the date landed after a
+    deadline running past the calendar's coverage.
+
+    These drive the same non-zero exit code LATE does. A run that cannot tell
+    whether a 9,000 shortfall exists has not found nothing, and README
+    documents exit 0 as nothing exposed."""
+    return [r for r in results if r.horizon_verdicts is not None]
+
+
+def needs_attention(results: list[Result]) -> bool:
+    """True where the run must not exit 0: real exposure, or a line the
+    calendar could not decide."""
+    return any(r.verdict in EXPOSED for r in results) or bool(
+        horizon_indeterminate(results)
+    )
 
 
 CSV_HEADER = [
@@ -582,19 +624,28 @@ def console_summary(
         lines.append("Lines with exposure (largest first):")
         for r in exposed[:10]:
             figures = _rounded_figures(r)
+            # days_late is left unset where the deadline runs past the
+            # calendar's coverage. Printing "None days late" there would be
+            # worse than the definite figure it replaced.
+            lateness = (
+                f"{r.days_late} days late to {r.lateness_basis}"
+                if r.days_late is not None
+                else f"days late not pinned down, measured to {r.lateness_basis}"
+            )
             lines.append(
                 f"  row {r.line.row}  {r.line.employee_id}  QE day {r.line.qe_day.isoformat()}"
-                f"  due {r.deadline.due.isoformat()}  {r.verdict}, {r.days_late} days late"
-                f" to {r.lateness_basis}"
+                f"  due {r.deadline.due.isoformat()}  {r.verdict}, {lateness}"
             )
             shortfall_text = (
                 f"super ${money(r.line.sg_amount)} (received, so the shortfall is nil)"
                 if r.offset_s18d
                 else f"shortfall ${money(figures['shortfall'])}"
             )
+            at_most = "" if r.days_late is not None else "at most "
             lines.append(
-                f"      {shortfall_text}  notional earnings ${money(figures['nec'])}"
-                f"  SG charge estimate ${money(figures['low'])} - ${money(figures['high'])}"
+                f"      {shortfall_text}  notional earnings {at_most}"
+                f"${money(figures['nec'])}  SG charge estimate {at_most}"
+                f"${money(figures['low'])} - ${money(figures['high'])}"
             )
             for caveat in r.caveats:
                 lines.append(f"      note: {caveat}")
@@ -647,10 +698,42 @@ def console_summary(
             )
         lines.append("")
 
+    # A row left UNKNOWN because it landed after a deadline the calendar
+    # cannot pin down is not a data-quality note. It is a payday that may be
+    # the whole shortfall, and it used to be summarised as "N other line(s)
+    # carry data-quality notes" with exit 0 behind it, which a scheduled job
+    # reads as nothing found.
+    indeterminate = horizon_indeterminate(results)
+    if indeterminate:
+        lines.append(
+            f"{len(indeterminate)} line(s) cannot be assessed: the date recorded is "
+            "after the deadline shown, and that deadline runs past the calendar's "
+            "coverage, so a holiday the calendar does not hold could still make the "
+            "line on time. Each one is either verdict below and needs a decision."
+        )
+        for r in indeterminate[:10]:
+            worse, better = r.horizon_verdicts
+            lines.append(
+                f"  row {r.line.row}  {r.line.employee_id}  QE day "
+                f"{r.line.qe_day.isoformat()}  due {r.deadline.due.isoformat()}"
+                f"  super ${money(r.line.sg_amount)}  {worse} or {better}"
+            )
+            for caveat in r.caveats:
+                lines.append(f"      note: {caveat}")
+        if len(indeterminate) > 10:
+            lines.append(
+                f"  ... and {len(indeterminate) - 10} more unassessable line(s) "
+                f"(see {csv_path})"
+            )
+        lines.append("")
+
     unflagged = [
         r
         for r in results
-        if r.verdict not in EXPOSED and r.verdict != AT_RISK and r.caveats
+        if r.verdict not in EXPOSED
+        and r.verdict != AT_RISK
+        and r.horizon_verdicts is None
+        and r.caveats
     ]
     if unflagged:
         lines.append(

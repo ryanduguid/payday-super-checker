@@ -48,9 +48,13 @@ The block above is abridged: the real run lists every exposed line and then a pa
 
 Full detail goes to `report.csv`: due date, which deadline rule applied, days late, the final shortfall after any offset, notional earnings, best and worst case uplift, and every warning that applies to that line.
 
-Verdicts are `ON_TIME`, `AT_RISK` (remitted in time but no fund receipt recorded), `LATE`, `UNPAID` (the deadline has passed and nothing is recorded against it), `UNKNOWN` (nothing to assess: not due yet with nothing recorded, no SG amount on the row, or a deadline past the calendar's verified horizon) and `SKIPPED` (defined-benefit interests). `LATE` and `UNPAID` both carry exposure figures.
+Verdicts are `ON_TIME`, `AT_RISK` (remitted in time but no fund receipt recorded), `LATE`, `UNPAID` (the deadline has passed and nothing is recorded against it), `UNKNOWN` (the verdict is not available) and `SKIPPED` (defined-benefit interests). `LATE` and `UNPAID` both carry exposure figures.
 
-The exit code is 0 when nothing is exposed, 2 when something is, and 1 on a data or file error, so you can run it from a scheduled job. Argparse also uses 2 for a bad command line, so a wrapper should check stderr before raising an alarm.
+`UNKNOWN` covers three cases. Two are quiet: nothing recorded and not yet due, and a row carrying no SG amount. The third is not. Where the deadline runs past the last date the calendar records a holiday for, and the date on the row is AFTER that deadline, the line could be late or could be on time, because a holiday the calendar does not hold would move the deadline later. Those lines get their own console block naming the row, the employee, the amount and both candidate verdicts. Supply the missing holidays with `--holidays-override` to get a real verdict.
+
+A date on or before a deadline that runs past the calendar's coverage still gets a verdict. A missing holiday can only push the real deadline later, so paying early is provably on time whatever the calendar is missing.
+
+The exit code is 0 when nothing is exposed and nothing is left undecided, 2 when either is true, and 1 on a data or file error, so you can run it from a scheduled job. Argparse also uses 2 for a bad command line, so a wrapper should check stderr before raising an alarm.
 
 ### Options
 
