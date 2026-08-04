@@ -33,6 +33,13 @@ class RatesError(ValueError):
     pass
 
 
+# A GIC rate above this is a typo, not a rate. The ATO general interest charge
+# is a base rate plus 7 points and has never approached 100% a year, so the
+# ceiling costs nothing real and catches the two hand-edit slips that print
+# money: a dropped decimal point (1143 for 11.43) and a stray minus sign.
+RATE_CEILING = Decimal("100")
+
+
 class GicTable:
     def __init__(self, quarters: list[GicQuarter]):
         self._quarters = sorted(quarters, key=lambda q: q.start)
@@ -97,6 +104,18 @@ def _rate(raw: object, where: str) -> Decimal:
             f"{where} has annual_pct {raw!r}; a rate must be a finite number, and "
             "nan or infinity would silently poison every figure in the report"
         )
+    if value < 0:
+        raise RatesError(
+            f"{where} has annual_pct {raw!r}; a GIC rate cannot be negative. A minus "
+            "sign here prints negative notional earnings and inverts the SG charge "
+            "estimate, so the report reads as money owed back to the employer"
+        )
+    if value > RATE_CEILING:
+        raise RatesError(
+            f"{where} has annual_pct {raw!r}, above the {RATE_CEILING}% a year this "
+            "tool will accept. The ATO general interest charge has never come near "
+            "that, so this is a typo, most likely a missing decimal point"
+        )
     return value
 
 
@@ -107,10 +126,29 @@ def _rate_date(raw: object, key: str, where: str) -> date:
         raise RatesError(f"{where} has {key} {raw!r}; write it as YYYY-MM-DD")
 
 
+def _checked_document(doc: object, path: Path) -> dict:
+    """Guard the TOP LEVEL of the rates file.
+
+    Every field of every quarter is checked below, but the key those quarters
+    hang off was read straight out of the parsed JSON: a renamed 'quarters'
+    raised KeyError and a top level that is a JSON list raised TypeError. The
+    CLI catches neither, so either one printed a traceback."""
+    if not isinstance(doc, dict):
+        raise RatesError(
+            f"{path} must be a JSON object with a 'quarters' list; it holds a "
+            f"{type(doc).__name__} instead"
+        )
+    if "quarters" not in doc:
+        raise RatesError(f"{path} is missing the 'quarters' key")
+    if not isinstance(doc["quarters"], list):
+        raise RatesError(f"{path}: 'quarters' must be a list of quarter objects")
+    return doc
+
+
 def load_gic() -> GicTable:
     path = DATA_DIR / "gic_rates.json"
     with open(path, encoding="utf-8") as f:
-        doc = json.load(f)
+        doc = _checked_document(json.load(f), path)
     quarters = []
     for n, e in enumerate(doc["quarters"], start=1):
         if not isinstance(e, dict):
@@ -131,5 +169,15 @@ def load_gic() -> GicTable:
 
 
 def load_rates() -> dict:
-    with open(DATA_DIR / "rates.json", encoding="utf-8") as f:
-        return json.load(f)
+    # Same top-level guard, for the same reason: console_summary calls .get()
+    # on this, and a JSON list here would reach the user as an AttributeError
+    # traceback rather than "error: ...".
+    path = DATA_DIR / "rates.json"
+    with open(path, encoding="utf-8") as f:
+        doc = json.load(f)
+    if not isinstance(doc, dict):
+        raise RatesError(
+            f"{path} must be a JSON object with a 'financial_years' map; it holds a "
+            f"{type(doc).__name__} instead"
+        )
+    return doc
