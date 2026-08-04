@@ -224,7 +224,13 @@ def apply_item4(pairs: list[tuple[ContribLine, Deadline]]) -> None:
                     dl.own_due = dl.due
                     dl.due = running_latest
                     dl.pathway = ITEM4_ALIGNED
-                if dl.due is not None:
+                # Item 4 aligns to an earlier ELIGIBLE CONTRIBUTION. A payday
+                # carrying no SG is not one, so it cannot seed the window a
+                # later real payday inherits: letting it through extended a
+                # genuine deadline and turned a late line on time. A nil line
+                # can still receive an alignment; it has nothing to assess
+                # either way.
+                if dl.due is not None and line.sg_amount > 0:
                     group_latest = dl.due if group_latest is None else max(group_latest, dl.due)
 
             running_latest = group_latest
