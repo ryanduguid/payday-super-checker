@@ -712,6 +712,103 @@ def test_at_risk_caveats_reach_the_console():
     assert "receipt by the fund" in text
 
 
+def test_the_universal_at_risk_caveat_does_not_fill_the_listing():
+    """Every AT_RISK row carries the no-fund-receipt caveat by construction,
+    so listing it made ten rows whose only note repeated the block header, and
+    the duplicate-payday warning on rows 12 and 13 was truncated away."""
+    plain = [
+        ContribLine(
+            employee_id=f"E{n:02d}",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("100.00"),
+            remitted=date(2026, 7, 15),
+            row=n + 1,
+        )
+        for n in range(1, 11)
+    ]
+    pair = [
+        ContribLine(
+            employee_id="DUPE",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("100.00"),
+            remitted=date(2026, 7, 15),
+            row=row,
+        )
+        for row in (12, 13)
+    ]
+    results = assess(plain + pair, load_calendar(), load_gic(), AS_AT)
+    assert all(r.verdict == "AT_RISK" for r in results)
+    text = console_summary(results, AS_AT, "report.csv", "2026-08-02", load_rates())
+
+    assert "12 line(s) remitted by the deadline" in text
+    assert "counted 2 times" in text
+    assert "row 12  DUPE" in text and "row 13  DUPE" in text
+    # The ten rows with nothing of their own to say are not listed, and no
+    # truncation notice is owed because only two rows carry a real note.
+    assert "row 2  E01" not in text
+    assert "more at-risk line(s) with notes" not in text
+    assert "statutory test is receipt by the fund" not in text
+
+
+def _at_risk_result(n: int, caveats: list[str]):
+    """An AT_RISK Result built straight, so the console block can be driven
+    with exactly the caveats under test."""
+    from paydaysuper.deadlines import USUAL_7BD, Deadline
+    from paydaysuper.report import NO_RECEIPT_CAVEAT, AT_RISK, Result
+
+    line = ContribLine(
+        employee_id=f"ARK{n:02d}",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("100.00"),
+        remitted=date(2026, 7, 15),
+        row=n + 1,
+    )
+    deadline = Deadline(due=date(2026, 7, 20), pathway=USUAL_7BD)
+    return Result(line, deadline, AT_RISK, caveats=[NO_RECEIPT_CAVEAT] + caveats)
+
+
+def test_the_at_risk_block_names_every_row_and_every_caveat_it_prints():
+    """Four separate mutations of this block used to leave the suite green:
+    dropping the row-identifying line, printing only the first caveat per
+    row, printing only the first flagged row, and never emitting the
+    truncation notice. None of the markers below appear anywhere else."""
+    results = [
+        _at_risk_result(n, [f"alpha marker {n}", f"beta marker {n}"])
+        for n in range(1, 13)
+    ]
+    text = console_summary(results, AS_AT, "report.csv", "2026-08-02", load_rates())
+
+    # Every one of the ten printed rows is named, with its own row number,
+    # employee id, QE day and due date.
+    for n in range(1, 11):
+        assert (
+            f"  row {n + 1}  ARK{n:02d}  QE day 2026-07-09  due 2026-07-20" in text
+        ), n
+        assert f"      note: alpha marker {n}" in text, n
+        assert f"      note: beta marker {n}" in text, n
+
+    # The cap stops at ten, and the two beyond it are counted, not printed.
+    for n in (11, 12):
+        assert f"ARK{n}" not in text
+        assert f"alpha marker {n}" not in text
+        assert f"beta marker {n}" not in text
+    assert "... and 2 more at-risk line(s) with notes" in text
+
+    # Twenty notes for ten rows: exactly two per row, no more and no fewer.
+    assert text.count("      note: ") == 20
+    assert text.count("QE day 2026-07-09  due 2026-07-20") == 10
+
+
+def test_the_at_risk_truncation_notice_counts_only_flagged_rows():
+    """Eleven rows carry a note and ten more carry nothing but the universal
+    caveat, so the overflow is one, not eleven."""
+    results = [_at_risk_result(n, [f"alpha marker {n}"]) for n in range(1, 12)]
+    results += [_at_risk_result(n, []) for n in range(20, 30)]
+    text = console_summary(results, AS_AT, "report.csv", "2026-08-02", load_rates())
+    assert "21 line(s) remitted by the deadline" in text
+    assert "... and 1 more at-risk line(s) with notes" in text
+
+
 def test_report_columns_add_up(tmp_path):
     """Each figure is rounded once, so a row's parts sum to its totals.
 
