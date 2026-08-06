@@ -1,0 +1,22 @@
+{
+  "key": "myob-ar-super",
+  "name": "MYOB AccountRight - Superannuation Payments by Employee",
+  "role": "super",
+  "verified": false,
+  "signature": ["Employee Name", "Paid Date", "Amount"],
+  "columns": {
+    "employee_name": ["Employee Name", "Employee"],
+    "employee_id": ["Card ID", "Employee ID"],
+    "period_start": ["Period From"],
+    "period_end": ["Period To"],
+    "paid_date": ["Paid Date"],
+    "amount": ["Amount"],
+    "contribution_type": ["Superannuation Category"]
+  },
+  "date_formats": ["%d/%m/%Y", "%d/%m/%y"],
+  "sg_filter": {
+    "column": "contribution_type",
+    "include": ["Superannuation Guarantee", "SGC", "SG"]
+  },
+  "notes": "Field names come from MYOB help text, not a real export. Paid Date is when MYOB recorded the payment, not when the fund received it."
+}

@@ -10,7 +10,7 @@ import csv
 import json
 import re
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from .deadlines import ContribLine
@@ -41,6 +41,26 @@ DEFAULT_MAPPING = {
 
 TRUE_WORDS = {"y", "yes", "true", "1", "t"}
 FALSE_WORDS = {"", "n", "no", "false", "0", "f"}
+
+# What an amount may look like once "$" and surrounding space are gone. A
+# comma or space is read as a separator only where a THOUSANDS separator
+# belongs: stripping every comma regardless of position turns the European
+# decimal 612,00 into 61200, a hundredfold overstatement of a shortfall in
+# a file this tool invites you to hand-edit. `importers.py` reads this same
+# constant, so one package cannot ship two amount parsers that disagree
+# about what a figure means.
+#
+# Everything Decimal itself reads is allowed through wherever no comma or
+# space is involved: a leading "+", a bare fraction (.50), a trailing point
+# (612.), and exponent notation (1e2), all of which a spreadsheet or an ERP
+# extract emits and all of which this reader accepted until the separator
+# rule arrived and narrowed the pattern past its own purpose. The rule is
+# about WHERE a separator sits, so it constrains nothing else; 612,00 and
+# 1,23 and 12,34,567 stay refused.
+AMOUNT_TEXT = re.compile(
+    r"^[-+]?(?:\d{1,3}(?:[ ,]\d{3})+|\d+)(?:\.\d*)?(?:[eE][-+]?\d+)?$"
+    r"|^[-+]?\.\d+(?:[eE][-+]?\d+)?$"
+)
 
 
 class CsvError(ValueError):
@@ -110,11 +130,6 @@ TIME_FORMATS = (
     "%I:%M:%S %p",
 )
 
-# Commas are permitted only as conventional three-digit thousands separators.
-# Do not "clean" every comma or space before Decimal sees the value: malformed
-# strings such as ``1,2`` would otherwise silently become $12.
-AMOUNT = re.compile(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?")
-
 # No payroll date is beyond this. Sentinels such as 9999-12-31 are routine in
 # ERP extracts and would otherwise compound interest for millennia.
 LATEST_SANE_YEAR = 2200
@@ -165,29 +180,38 @@ def _parse_date(value: str, field: str, row: int) -> date:
 
 
 def _parse_amount(value: str, field: str, row: int) -> Decimal:
-    text = value.strip()
-    negative = False
+    # Stripped AGAIN after the "$" comes out. Excel's accounting format puts
+    # the sign flush left and the figure flush right, so a copied cell reads
+    # "$ 612.00" or "$  1,234.00", and the space the dollar sign left behind
+    # is still in `text` when AMOUNT_TEXT is matched against it below. That
+    # refused the file and blamed a comma for a space.
+    text = value.strip().replace("$", "").strip()
     if text.startswith("(") and text.endswith(")"):
-        negative = True
-        text = text[1:-1].strip()
-    elif text.startswith("-"):
-        negative = True
-        text = text[1:].strip()
-
-    if text.startswith("$"):
-        text = text[1:].strip()
-
-    if not AMOUNT.fullmatch(text):
+        text = "-" + text[1:-1].strip()
+    loose = text.replace(",", "").replace(" ", "")
+    try:
+        amount = Decimal(loose)
+        finite = amount.is_finite()
+    except (InvalidOperation, ValueError):
         raise CsvError(f"row {row}: cannot read {field} value {value!r} as an amount")
-
-    amount = Decimal(text.replace(",", ""))
+    if not finite:
+        # Decimal accepts "nan" and "Infinity"; neither is an amount.
+        raise CsvError(f"row {row}: cannot read {field} value {value!r} as an amount")
     if amount.adjusted() > 15:
         # Beyond this the value cannot be rounded to cents under the default
         # decimal context, and no super contribution is this large.
         raise CsvError(
             f"row {row}: {field} value {value!r} is too large to be a real amount"
         )
-    if negative:
+    if not AMOUNT_TEXT.match(text):
+        # Checked after the magnitude guard so an out-of-range figure still
+        # gets the message that names its real problem.
+        raise CsvError(
+            f"row {row}: cannot read {field} value {value!r} as an amount. A comma or "
+            "space is only read as a thousands separator, so 612,00 is refused rather "
+            "than read as 61200."
+        )
+    if amount < 0:
         raise CsvError(f"row {row}: {field} is negative ({value!r})")
     return amount
 
