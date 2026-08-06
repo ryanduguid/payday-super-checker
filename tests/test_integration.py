@@ -176,7 +176,22 @@ def test_console_summary_ranks_by_exposure():
     """Largest estimated exposure first, as the heading claims."""
     text = console_summary(run_fixture(), AS_AT, "report.csv", "2026-08-02", load_rates())
     body = text.split("Lines with exposure")[1]
-    assert body.index("EMP002") < body.index("EMP001")
+    assert body.index("row 3") < body.index("row 9")
+
+
+def test_console_summary_does_not_disclose_employee_identifiers():
+    """Payroll identifiers belong in the private CSV report, not process logs."""
+    results = run_fixture()
+    exposed = next(
+        result for result in results if result.verdict in {"LATE", "UNPAID"}
+    )
+    exposed.line.employee_id = "ava.lawson@example.test"
+
+    text = console_summary(results, AS_AT, "report.csv", "2026-08-02", load_rates())
+
+    assert "ava.lawson@example.test" not in text
+    assert all(result.line.employee_id not in text for result in results)
+    assert "row 3" in text
 
 
 def test_cli_refuses_to_overwrite_the_input(tmp_path, capsys):
@@ -299,7 +314,7 @@ def test_receipt_before_remittance_is_rejected():
         assess([line], load_calendar(), load_gic(), AS_AT)
 
 
-def test_receipt_after_the_as_at_date_still_accrues_to_receipt():
+def test_receipt_after_the_as_at_date_is_not_used_to_settle_the_report():
     line = ContribLine(
         employee_id="E9",
         qe_day=date(2026, 7, 9),
@@ -309,10 +324,35 @@ def test_receipt_after_the_as_at_date_still_accrues_to_receipt():
     )
     r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
     expected = notional_earnings(
-        Decimal("300.00"), date(2026, 7, 20), date(2026, 8, 20), load_gic()
+        Decimal("300.00"), date(2026, 7, 20), AS_AT, load_gic()
     )
+    assert r.verdict == "UNPAID"
+    assert r.days_late == (AS_AT - r.deadline.due).days
+    assert r.final_shortfall == Decimal("300.00")
     assert r.nec == expected
-    assert any("after the as-at date" in w for w in r.warnings)
+    assert any("ignored for this as-at report" in w for w in r.warnings)
+
+
+def test_remittance_after_the_as_at_date_is_not_used_to_settle_the_report():
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("300.00"),
+        remitted=date(2026, 8, 20),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+
+    assert r.verdict == "UNPAID"
+    assert r.days_late == (AS_AT - r.deadline.due).days
+    assert r.final_shortfall == Decimal("300.00")
+    assert r.nec == notional_earnings(
+        Decimal("300.00"), date(2026, 7, 20), AS_AT, load_gic()
+    )
+    assert any(
+        "remittance date 2026-08-20 is after the as-at date" in warning
+        for warning in r.warnings
+    )
 
 
 def test_stale_prepayment_keeps_the_full_shortfall():
@@ -609,7 +649,8 @@ def test_an_unassessable_line_gets_its_own_block_and_a_non_zero_exit(tmp_path, c
     out = capsys.readouterr().out
     assert code == 2
     assert "cannot be assessed" in out
-    assert "row 2  VERYLATE29  QE day 2029-03-01  due 2029-03-12" in out
+    assert "row 2  QE day 2029-03-01  due 2029-03-12" in out
+    assert "VERYLATE29" not in out
     assert "super $9000.00" in out
     assert "LATE or ON_TIME" in out
     # It must no longer be swept into the silent data-quality bucket.
@@ -1075,7 +1116,9 @@ def test_the_universal_at_risk_caveat_does_not_fill_the_listing():
 
     assert "12 line(s) remitted by the deadline" in text
     assert "counted 2 times" in text
-    assert "row 12  DUPE" in text and "row 13  DUPE" in text
+    assert "row 12  QE day 2026-07-09  due 2026-07-20" in text
+    assert "row 13  QE day 2026-07-09  due 2026-07-20" in text
+    assert "DUPE" not in text
     # The ten rows with nothing of their own to say are not listed, and no
     # truncation notice is owed because only two rows carry a real note.
     assert "row 2  E01" not in text
@@ -1111,12 +1154,13 @@ def test_the_at_risk_block_names_every_row_and_every_caveat_it_prints():
     ]
     text = console_summary(results, AS_AT, "report.csv", "2026-08-02", load_rates())
 
-    # Every one of the ten printed rows is named, with its own row number,
-    # employee id, QE day and due date.
+    # Every one of the ten printed rows is named by its row number, QE day and
+    # due date. Employee identifiers stay in the private CSV, not stdout.
     for n in range(1, 11):
         assert (
-            f"  row {n + 1}  ARK{n:02d}  QE day 2026-07-09  due 2026-07-20" in text
+            f"  row {n + 1}  QE day 2026-07-09  due 2026-07-20" in text
         ), n
+        assert f"ARK{n:02d}" not in text, n
         assert f"      note: alpha marker {n}" in text, n
         assert f"      note: beta marker {n}" in text, n
 
@@ -1239,19 +1283,25 @@ def test_new_starter_hint_wording_matches_the_verdict_it_would_produce():
     assert hint and "stays at risk" in hint[0]
 
 
-def test_zero_amount_line_is_not_exposure(tmp_path):
+def test_zero_amount_line_with_late_payment_dates_is_not_exposure(tmp_path):
     line = ContribLine(
-        employee_id="E0", qe_day=date(2026, 7, 9), sg_amount=Decimal("0.00"), row=2
+        employee_id="E0",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("0.00"),
+        remitted=date(2026, 7, 15),
+        received=date(2026, 7, 25),
+        row=2,
     )
     r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
     assert r.verdict == "UNKNOWN"
     assert r.sgc_high is None
+    assert any("nothing to assess" in caveat for caveat in r.caveats)
 
     path = tmp_path / "pay.csv"
     path.write_text(
         "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
         "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
-        "E0,2026-07-09,0.00,,,no,no,,no\n",
+        "E0,2026-07-09,0.00,2026-07-15,2026-07-25,no,no,,no\n",
         encoding="utf-8",
     )
     assert main([str(path), "-o", str(tmp_path / "r.csv"), "--as-at", "2026-08-10"]) == 0

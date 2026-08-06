@@ -125,7 +125,19 @@ def test_every_amount_shape_that_parsed_before_the_separator_rule_still_parses(
     assert parse_rows(path, *load_mapping(None))[0].sg_amount == Decimal(expected)
 
 
-@pytest.mark.parametrize("text", ["612,00", "1,23", "1234,567", "12,34,567", "1,,234"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "612,00",
+        "1,2",
+        "1,23",
+        "1 2",
+        "1234,567",
+        "1,234,56",
+        "12,34,567",
+        "1,,234",
+    ],
+)
 def test_a_separator_out_of_the_thousands_position_stays_refused(tmp_path, text):
     # The other side of the same pattern, and the reason it exists: each of
     # these parsed at fd58595 and each read a hundred or a thousand times
@@ -139,6 +151,17 @@ def test_impossible_date_is_rejected_with_row_number(tmp_path):
     path = write_csv(tmp_path, "E1,31/02/2026,600.00,,,no,no,,no")
     with pytest.raises(CsvError, match="row 2"):
         parse_rows(path, *load_mapping(None))
+
+
+def test_date_with_trailing_junk_is_rejected(tmp_path):
+    path = write_csv(tmp_path, "E1,2026-07-09 not-a-time,600.00,,,no,no,,no")
+    with pytest.raises(CsvError, match="row 2"):
+        parse_rows(path, *load_mapping(None))
+
+
+def test_iso_datetime_is_accepted_as_its_calendar_day(tmp_path):
+    path = write_csv(tmp_path, "E1,2026-07-09T14:30:00+10:00,600.00,,,no,no,,no")
+    assert parse_rows(path, *load_mapping(None))[0].qe_day == date(2026, 7, 9)
 
 
 def test_unreadable_amount_is_rejected(tmp_path):
@@ -284,6 +307,6 @@ def test_mapping_file_that_is_not_an_object_is_rejected(tmp_path):
 
 
 def test_absurdly_large_amount_is_rejected(tmp_path):
-    path = write_csv(tmp_path, "E1,2026-07-09,1e26,,,no,no,,no")
+    path = write_csv(tmp_path, "E1,2026-07-09,10000000000000000,,,no,no,,no")
     with pytest.raises(CsvError, match="too large"):
         parse_rows(path, *load_mapping(None))
