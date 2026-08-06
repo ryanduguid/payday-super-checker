@@ -263,7 +263,7 @@ def test_receipt_before_remittance_is_rejected():
         assess([line], load_calendar(), load_gic(), AS_AT)
 
 
-def test_receipt_after_the_as_at_date_still_accrues_to_receipt():
+def test_receipt_after_the_as_at_date_is_not_used_to_settle_the_report():
     line = ContribLine(
         employee_id="E9",
         qe_day=date(2026, 7, 9),
@@ -273,10 +273,13 @@ def test_receipt_after_the_as_at_date_still_accrues_to_receipt():
     )
     r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
     expected = notional_earnings(
-        Decimal("300.00"), date(2026, 7, 20), date(2026, 8, 20), load_gic()
+        Decimal("300.00"), date(2026, 7, 20), AS_AT, load_gic()
     )
+    assert r.verdict == "UNPAID"
+    assert r.days_late == (AS_AT - r.deadline.due).days
+    assert r.final_shortfall == Decimal("300.00")
     assert r.nec == expected
-    assert any("after the as-at date" in w for w in r.warnings)
+    assert any("ignored for this as-at report" in w for w in r.warnings)
 
 
 def test_stale_prepayment_keeps_the_full_shortfall():

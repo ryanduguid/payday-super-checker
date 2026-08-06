@@ -21,13 +21,14 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "holidays==0.101"]
+dev = ["build==1.3.0", "pytest>=8", "holidays==0.101"]
 
 [project.scripts]
 payday-super-check = "paydaysuper.cli:main"
 
 [tool.setuptools]
 packages = ["paydaysuper"]
+include-package-data = false
 
 [tool.setuptools.package-data]
 paydaysuper = ["data/*.json"]
