@@ -29,10 +29,9 @@ EXIT_LATE_FOUND = 2
 def _reconfigure_stdout_for_unicode() -> None:
     """Redirected stdout on Windows falls back to the locale encoding (cp1252
     under PEP 528), which cannot represent every character a run might need
-    to print. The check path prints employee names read straight from the
-    input file; the import path never prints one, but it prints the output
-    filename the caller chose with -o/--output, which is exactly as free to
-    carry non-ASCII text. Both call this, once, before their first print()."""
+    to print. The check and import paths both print caller-supplied output
+    filenames, which are exactly as free to carry non-ASCII text. Both call
+    this, once, before their first print()."""
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure is not None:
         reconfigure(encoding="utf-8", errors="backslashreplace")

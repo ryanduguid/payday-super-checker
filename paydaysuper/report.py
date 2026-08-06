@@ -283,9 +283,28 @@ def assess(
             results.append(result)
             continue
 
-        settled = line.received
-        if settled is None and line.remitted is not None:
-            result.caveats.append(NO_RECEIPT_CAVEAT)
+        # An as-at report must not use a future remittance or receipt to settle
+        # a historical shortfall. Keeping that future fact in the calculation
+        # made the report say a contribution was already offset on a date when
+        # the fund had not received it yet.
+        settled = line.received if line.received is not None and line.received <= as_at else None
+        remitted = line.remitted if line.remitted is not None and line.remitted <= as_at else None
+        if line.received is not None and line.received > as_at:
+            result.caveats.append(
+                f"fund receipt date {line.received.isoformat()} is after the as-at date "
+                f"{as_at.isoformat()}: it is ignored for this as-at report"
+            )
+        if line.remitted is not None and line.remitted > as_at:
+            result.caveats.append(
+                f"remittance date {line.remitted.isoformat()} is after the as-at date "
+                f"{as_at.isoformat()}: it is ignored for this as-at report"
+            )
+        if settled is None and remitted is not None:
+            result.caveats.append(
+                "no fund-receipt date supplied: the statutory test is receipt by the "
+                "fund (SGAA s 18C(1)), so a remittance date alone cannot show the "
+                "contribution was on time"
+            )
 
         # Past the calendar's coverage the holiday table is empty, so every
         # weekday counts as a business day and the deadline computed here can
@@ -345,14 +364,14 @@ def assess(
                 continue
             else:
                 result.verdict = ON_TIME if settled <= dl.due else LATE
-        elif line.remitted is not None:
-            if past_horizon and line.remitted > dl.due:
+        elif remitted is not None:
+            if past_horizon and remitted > dl.due:
                 result.verdict = UNKNOWN
                 result.horizon_verdicts = (LATE, AT_RISK)
                 result.caveats.append(horizon_unknown)
                 results.append(result)
                 continue
-            result.verdict = AT_RISK if line.remitted <= dl.due else LATE
+            result.verdict = AT_RISK if remitted <= dl.due else LATE
         elif dl.due < as_at:
             # Nothing recorded and the deadline has passed. This is the
             # largest exposure the tool can see, so it must not be silent -
@@ -388,14 +407,7 @@ def assess(
 
         if result.verdict in EXPOSED:
             base_shortfall = line.sg_amount
-            landed = settled if settled is not None else line.remitted
-
-            if settled is not None and settled > as_at:
-                result.caveats.append(
-                    f"fund receipt date {settled.isoformat()} is after the as-at date "
-                    f"{as_at.isoformat()}: check it is not a typo, since notional "
-                    "earnings run to the receipt date"
-                )
+            landed = settled if settled is not None else remitted
 
             # Notional earnings compound on the base shortfall until the fund
             # receives money that counts for this payday (s 19A). Where none
@@ -661,16 +673,19 @@ def console_summary(
         lines.append("Lines with exposure (largest first):")
         for r in exposed[:10]:
             figures = _rounded_figures(r)
-            # days_late is left unset where the deadline runs past the
-            # calendar's coverage. Printing "None days late" there would be
-            # worse than the definite figure it replaced.
+            # Standard output is commonly retained by task runners and CI logs.
+            # The report CSV is the private, row-level artifact; retain the source
+            # row here so an operator can locate the result without leaking an
+            # employee identifier into those logs. Days late is left unset where
+            # the deadline runs past the calendar's coverage, so never print
+            # "None days late" in that case.
             lateness = (
                 f"{r.days_late} days late to {r.lateness_basis}"
                 if r.days_late is not None
                 else f"days late not pinned down, measured to {r.lateness_basis}"
             )
             lines.append(
-                f"  row {r.line.row}  {r.line.employee_id}  QE day {r.line.qe_day.isoformat()}"
+                f"  row {r.line.row}  QE day {r.line.qe_day.isoformat()}"
                 f"  due {r.deadline.due.isoformat()}  {r.verdict}, {lateness}"
             )
             shortfall_text = (
@@ -723,8 +738,8 @@ def console_summary(
         flagged = [(r, others) for r, others in flagged if others]
         for r, others in flagged[:10]:
             lines.append(
-                f"  row {r.line.row}  {r.line.employee_id}  QE day "
-                f"{r.line.qe_day.isoformat()}  due {r.deadline.due.isoformat()}"
+                f"  row {r.line.row}  QE day {r.line.qe_day.isoformat()}  "
+                f"due {r.deadline.due.isoformat()}"
             )
             for caveat in others:
                 lines.append(f"      note: {caveat}")
@@ -751,8 +766,8 @@ def console_summary(
         for r in indeterminate[:10]:
             worse, better = r.horizon_verdicts
             lines.append(
-                f"  row {r.line.row}  {r.line.employee_id}  QE day "
-                f"{r.line.qe_day.isoformat()}  due {r.deadline.due.isoformat()}"
+                f"  row {r.line.row}  QE day {r.line.qe_day.isoformat()}  "
+                f"due {r.deadline.due.isoformat()}"
                 f"  super ${money(r.line.sg_amount)}  {worse} or {better}"
             )
             for caveat in r.caveats:

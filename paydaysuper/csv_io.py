@@ -118,6 +118,18 @@ DATE_FORMATS = (
     "%d %B %Y",  # 9 July 2026
 )
 
+# Payroll exports use either an ISO date, an Australian day-first date, or one
+# of the spelled-month forms above. A time of day is harmless because the law
+# tests whole days, but arbitrary text is not: accepting ``2026-07-09 typo``
+# as a real payday can turn a source-data problem into a compliance verdict.
+TIME_FORMATS = (
+    "%H:%M",
+    "%H:%M:%S",
+    "%H:%M:%S.%f",
+    "%I:%M %p",
+    "%I:%M:%S %p",
+)
+
 # No payroll date is beyond this. Sentinels such as 9999-12-31 are routine in
 # ERP extracts and would otherwise compound interest for millennia.
 LATEST_SANE_YEAR = 2200
@@ -131,22 +143,24 @@ def parse_date_text(text: str) -> date | None:
     text = text.strip()
     if not text:
         return None
-    candidates = [text, text.split("T")[0].strip(), text.split(" ")[0].strip()]
-    for candidate in candidates:
-        for fmt in DATE_FORMATS:
+    # datetime.fromisoformat accepts ISO dates and ISO date-times (including a
+    # space or T separator). Z is normalised for Python versions before 3.11.
+    try:
+        iso_text = text.removesuffix("Z") + "+00:00" if text.endswith("Z") else text
+        return datetime.fromisoformat(iso_text).date()
+    except ValueError:
+        pass
+
+    for fmt in DATE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            pass
+        for time_fmt in TIME_FORMATS:
             try:
-                return datetime.strptime(candidate, fmt).date()
+                return datetime.strptime(text, f"{fmt} {time_fmt}").date()
             except ValueError:
-                continue
-    # "9 Jul 2026 00:00:00" needs the first three words, not the first one.
-    words = text.split()
-    if len(words) >= 3:
-        head = " ".join(words[:3])
-        for fmt in DATE_FORMATS:
-            try:
-                return datetime.strptime(head, fmt).date()
-            except ValueError:
-                continue
+                pass
     return None
 
 

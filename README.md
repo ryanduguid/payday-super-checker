@@ -34,17 +34,21 @@ payday-super-checker: 10 contribution lines, as at 2026-08-10
   ON_TIME: 5  AT_RISK: 1  LATE: 2  UNPAID: 1  UNKNOWN: 0  SKIPPED: 1
 
 Lines with exposure (largest first):
-  row 5  EMP004  QE day 2026-07-09  due 2026-07-20  UNPAID, 21 days late to as-at date (nothing applied to this payday)
+  row 5  QE day 2026-07-09  due 2026-07-20  UNPAID, 21 days late to as-at date (nothing applied to this payday)
       shortfall $780.00  notional earnings $5.15  SG charge estimate $785.15 - $1256.24
       note: the deadline passed on 2026-07-20 and no remittance or fund-receipt date is recorded...
-  row 3  EMP002  QE day 2026-07-09  due 2026-07-20  LATE, 15 days late to fund receipt
+  row 3  QE day 2026-07-09  due 2026-07-20  LATE, 15 days late to fund receipt
       super $540.00 (received, so the shortfall is nil)  notional earnings $2.54  SG charge estimate $2.54 - $4.07
 
   Total across 3 line(s): shortfall $780.00, notional earnings $8.07,
   estimated SG charge $788.07 - $1260.92.
 ```
 
-The block above is abridged: the real run lists every exposed line and then a page of assumptions.
+The block above is abridged: the real run lists every exposed line and then a page
+of assumptions. It deliberately identifies an exposed record by its input row
+rather than its employee identifier, so redirected output does not place payroll
+identifiers in process logs. Use that row number to find the full record in
+`report.csv`.
 
 Full detail goes to `report.csv`: due date, which deadline rule applied, days late, the final shortfall after any offset, notional earnings, best and worst case uplift, and every warning that applies to that line.
 
