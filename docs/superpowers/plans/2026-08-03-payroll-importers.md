@@ -1058,7 +1058,7 @@ from paydaysuper.importers import PayrollRow, SuperRow, join
 
 
 def payroll(name, payday, amount, period_end=None, row=2):
-    return PayrollRow(None, name, date.fromisoformat(payday), 
+    return PayrollRow(None, name, date.fromisoformat(payday),
                       date.fromisoformat(period_end) if period_end else None,
                       Decimal(amount), row)
 
