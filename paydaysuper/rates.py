@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -31,6 +31,13 @@ class GicQuarter:
 
 class RatesError(ValueError):
     pass
+
+
+# A GIC rate above this is a typo, not a rate. The ATO general interest charge
+# is a base rate plus 7 points and has never approached 100% a year, so the
+# ceiling costs nothing real and catches the two hand-edit slips that print
+# money: a dropped decimal point (1143 for 11.43) and a stray minus sign.
+RATE_CEILING = Decimal("100")
 
 
 class GicTable:
@@ -73,22 +80,120 @@ class GicTable:
         return None
 
 
+def _quarter_label(entry: dict, n: int) -> str:
+    where = f"GIC quarter {n} in {DATA_DIR / 'gic_rates.json'}"
+    span = f"{entry.get('from')} to {entry.get('to')}"
+    return f"{where} ({span})"
+
+
+def _rate(raw: object, where: str) -> Decimal:
+    """A quarterly rate update is hand-edited, and Decimal is happy to build
+    NaN or Infinity from a typo. decimal.InvalidOperation is an
+    ArithmeticError rather than a ValueError, so an unguarded conversion here
+    escapes the CLI's error handling and prints a traceback; a NaN escapes
+    nothing at all and poisons every money figure downstream."""
+    try:
+        value = Decimal(str(raw))
+    except InvalidOperation:
+        raise RatesError(
+            f"{where} has annual_pct {raw!r}, which is not a number. Fix it and "
+            "run again"
+        )
+    if not value.is_finite():
+        raise RatesError(
+            f"{where} has annual_pct {raw!r}; a rate must be a finite number, and "
+            "nan or infinity would silently poison every figure in the report"
+        )
+    if value < 0:
+        raise RatesError(
+            f"{where} has annual_pct {raw!r}; a GIC rate cannot be negative. A minus "
+            "sign here prints negative notional earnings and inverts the SG charge "
+            "estimate, so the report reads as money owed back to the employer"
+        )
+    if value > RATE_CEILING:
+        raise RatesError(
+            f"{where} has annual_pct {raw!r}, above the {RATE_CEILING}% a year this "
+            "tool will accept. The ATO general interest charge has never come near "
+            "that, so this is a typo, most likely a missing decimal point"
+        )
+    return value
+
+
+def _rate_date(raw: object, key: str, where: str) -> date:
+    try:
+        return date.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        raise RatesError(f"{where} has {key} {raw!r}; write it as YYYY-MM-DD")
+
+
+def _checked_document(doc: object, path: Path) -> dict:
+    """Guard the TOP LEVEL of the rates file.
+
+    Every field of every quarter is checked below, but the key those quarters
+    hang off was read straight out of the parsed JSON: a renamed 'quarters'
+    raised KeyError and a top level that is a JSON list raised TypeError. The
+    CLI catches neither, so either one printed a traceback."""
+    if not isinstance(doc, dict):
+        raise RatesError(
+            f"{path} must be a JSON object with a 'quarters' list; it holds a "
+            f"{type(doc).__name__} instead"
+        )
+    if "quarters" not in doc:
+        raise RatesError(f"{path} is missing the 'quarters' key")
+    if not isinstance(doc["quarters"], list):
+        raise RatesError(f"{path}: 'quarters' must be a list of quarter objects")
+    return doc
+
+
 def load_gic() -> GicTable:
-    with open(DATA_DIR / "gic_rates.json", encoding="utf-8") as f:
-        doc = json.load(f)
-    return GicTable(
-        [
+    path = DATA_DIR / "gic_rates.json"
+    with open(path, encoding="utf-8") as f:
+        doc = _checked_document(json.load(f), path)
+    quarters = []
+    for n, e in enumerate(doc["quarters"], start=1):
+        if not isinstance(e, dict):
+            raise RatesError(f"GIC quarter {n} in {path} is not an object")
+        where = _quarter_label(e, n)
+        for key in ("from", "to", "annual_pct"):
+            if key not in e:
+                raise RatesError(f"{where} is missing {key!r}")
+        quarters.append(
             GicQuarter(
-                start=date.fromisoformat(e["from"]),
-                end=date.fromisoformat(e["to"]),
-                annual_pct=Decimal(e["annual_pct"]),
-                seen=e.get("seen", ""),
+                start=_rate_date(e["from"], "from", where),
+                end=_rate_date(e["to"], "to", where),
+                annual_pct=_rate(e["annual_pct"], where),
+                seen=str(e.get("seen", "")),
             )
-            for e in doc["quarters"]
-        ]
-    )
+        )
+    return GicTable(quarters)
 
 
 def load_rates() -> dict:
-    with open(DATA_DIR / "rates.json", encoding="utf-8") as f:
-        return json.load(f)
+    # Same top-level guard, for the same reason: console_summary calls .get()
+    # on this, and a JSON list here would reach the user as an AttributeError
+    # traceback rather than "error: ...".
+    path = DATA_DIR / "rates.json"
+    with open(path, encoding="utf-8") as f:
+        doc = json.load(f)
+    if not isinstance(doc, dict):
+        raise RatesError(
+            f"{path} must be a JSON object with a 'financial_years' map; it holds a "
+            f"{type(doc).__name__} instead"
+        )
+    # Guarding the top level alone left the field the code actually
+    # dereferences unchecked: console_summary does fy.get(label) and then
+    # entry.get("max_contributions_base"), so a list at either depth is the
+    # same uncaught AttributeError one level down.
+    years = doc.get("financial_years", {})
+    if not isinstance(years, dict):
+        raise RatesError(
+            f"{path}: 'financial_years' must be a map of labels like '2026-27' to "
+            f"their figures; it holds a {type(years).__name__} instead"
+        )
+    for label, entry in years.items():
+        if not isinstance(entry, dict):
+            raise RatesError(
+                f"{path}: financial year {label!r} must hold an object of figures; "
+                f"it holds a {type(entry).__name__} instead"
+            )
+    return doc

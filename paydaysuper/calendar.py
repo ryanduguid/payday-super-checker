@@ -32,10 +32,31 @@ class CalendarError(ValueError):
 
 
 class BusinessCalendar:
-    def __init__(self, holidays: list[Holiday], verified_from: date, verified_until: date):
+    """`verified_until` is the last day the BUNDLED table was checked against
+    the gazettes. `coverage_until` is the last day the table is COMPLETE to,
+    which an override raises only by saying so in its own `verified_until`.
+
+    Completeness is a claim, and holding a holiday is not evidence for it.
+    An override that adds Christmas 2029 says nothing about whether the 2029
+    Easter holidays are in the table, so inferring coverage from the latest
+    date present would silence the horizon warning across a gap the table
+    cannot see - turning an on-time contribution into a reported LATE with an
+    SG charge attached. Only the user knows they entered a whole year, so
+    only the user can declare it."""
+
+    def __init__(
+        self,
+        holidays: list[Holiday],
+        verified_from: date,
+        verified_until: date,
+        coverage_until: date | None = None,
+    ):
         self._holidays: dict[date, Holiday] = {h.day: h for h in holidays}
         self.verified_from = verified_from
         self.verified_until = verified_until
+        # An override declaring an EARLIER date cannot shrink the bundled
+        # table's own verified span; adding holidays never invalidates it.
+        self.coverage_until = max(verified_until, coverage_until or verified_until)
 
     def is_business_day(self, d: date) -> bool:
         if d.weekday() >= 5:  # Saturday=5, Sunday=6
@@ -66,11 +87,20 @@ class BusinessCalendar:
         ]
 
     def check_horizon(self, d: date) -> str | None:
-        if d > self.verified_until:
+        """Past the day the table is complete to, it is incomplete rather than
+        merely unverified: holidays already legislated may be missing. A
+        missing holiday can only add a non-business day, so a deadline computed
+        across that gap can only be too early.
+
+        Measured against coverage_until, so a user who supplied a whole year
+        with --holidays-override and declared it is not told the calendar
+        cannot see holidays it is using."""
+        if d > self.coverage_until:
             return (
-                f"{d.isoformat()} is beyond the calendar's verified horizon "
-                f"({self.verified_until.isoformat()}); holidays proclaimed later "
-                "could move this deadline"
+                f"{d.isoformat()} is beyond the calendar's coverage "
+                f"({self.coverage_until.isoformat()}, the last day the holiday table "
+                "is complete to). Holidays after that date may be missing, so the "
+                "real deadline can only be later than the one shown"
             )
         return None
 
@@ -87,21 +117,71 @@ def _parse_entry(e: dict, where: str) -> Holiday:
         raise CalendarError(
             f"{where} has date {e['date']!r}; write it as YYYY-MM-DD"
         )
+    # An override file is user-authored by design, so a scalar here is a
+    # plausible typo rather than a corrupt bundle: tuple(5) is a TypeError
+    # the CLI's handler does not catch, and a bare string would silently
+    # become one jurisdiction per character.
+    juris = e.get("jurisdictions", [])
+    if not isinstance(juris, list):
+        raise CalendarError(
+            f"{where} has jurisdictions {juris!r}; write it as a list of "
+            'codes, e.g. ["NSW", "VIC"] or ["ALL"]'
+        )
+    if not all(isinstance(j, str) for j in juris):
+        raise CalendarError(f"{where} has a jurisdiction that is not a string: {juris!r}")
     return Holiday(
         day=day,
         name=str(e["name"]),
-        jurisdictions=tuple(e.get("jurisdictions", [])),
+        jurisdictions=tuple(juris),
         provisional=bool(e.get("provisional", False)),
     )
 
 
+def _calendar_date(raw: object, key: str, where: str) -> date:
+    try:
+        return date.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        raise CalendarError(f"{where} has {key} {raw!r}; write it as YYYY-MM-DD")
+
+
+def _checked_document(doc: object, path: Path) -> dict:
+    """Guard the TOP LEVEL of the bundled table.
+
+    Every field of every entry is already checked below, but the keys those
+    entries hang off were read straight out of the parsed JSON: a renamed
+    'non_business_days' raised KeyError and a top level that is a JSON list
+    raised TypeError, and the CLI catches neither, so a one-character edit to
+    a data file printed a traceback instead of 'error: ...'."""
+    if not isinstance(doc, dict):
+        raise CalendarError(
+            f"{path} must be a JSON object with 'non_business_days', "
+            f"'verified_from' and 'verified_until'; it holds a "
+            f"{type(doc).__name__} instead"
+        )
+    for key in ("non_business_days", "verified_from", "verified_until"):
+        if key not in doc:
+            raise CalendarError(f"{path} is missing the {key!r} key")
+    if not isinstance(doc["non_business_days"], list):
+        raise CalendarError(
+            f"{path}: 'non_business_days' must be a list of holiday entries"
+        )
+    return doc
+
+
 def load_calendar(override_path: str | Path | None = None) -> BusinessCalendar:
     """Load the bundled table, optionally patched by a user override file:
-    {"add": [{"date": "...", "name": "...", ...}], "remove": ["2026-11-03"]}
+    {"add": [{"date": "...", "name": "...", ...}], "remove": ["2026-11-03"],
+     "verified_until": "2029-12-31"}
     Overrides exist for late proclamations (one-off public holidays, days of
-    mourning) and for the documented Melbourne Cup / part-day ambiguities."""
-    with open(DATA_DIR / "business_days.json", encoding="utf-8") as f:
-        doc = json.load(f)
+    mourning) and for the documented Melbourne Cup / part-day ambiguities.
+
+    `verified_until` is optional and is the user asserting they have entered
+    EVERY national holiday through that date. It alone moves the horizon;
+    adding holidays does not, because a file holding one 2029 holiday is not
+    a file that has 2029 covered."""
+    path = DATA_DIR / "business_days.json"
+    with open(path, encoding="utf-8") as f:
+        doc = _checked_document(json.load(f), path)
     holidays = {
         h.day: h
         for h in (
@@ -110,6 +190,7 @@ def load_calendar(override_path: str | Path | None = None) -> BusinessCalendar:
         )
     }
 
+    declared_until: date | None = None
     if override_path is not None:
         with open(override_path, encoding="utf-8") as f:
             override = json.load(f)
@@ -117,9 +198,14 @@ def load_calendar(override_path: str | Path | None = None) -> BusinessCalendar:
             raise CalendarError(
                 f"{override_path} must be an object with 'add' and 'remove' lists"
             )
-        unknown = set(override) - {"add", "remove"}
+        unknown = set(override) - {"add", "remove", "verified_until"}
         if unknown:
             raise CalendarError(f"override file has unknown keys: {sorted(unknown)}")
+
+        if "verified_until" in override:
+            declared_until = _calendar_date(
+                override["verified_until"], "verified_until", str(override_path)
+            )
 
         add = override.get("add", [])
         remove = override.get("remove", [])
@@ -144,6 +230,7 @@ def load_calendar(override_path: str | Path | None = None) -> BusinessCalendar:
 
     return BusinessCalendar(
         holidays=list(holidays.values()),
-        verified_from=date.fromisoformat(doc["verified_from"]),
-        verified_until=date.fromisoformat(doc["verified_until"]),
+        verified_from=_calendar_date(doc["verified_from"], "verified_from", str(path)),
+        verified_until=_calendar_date(doc["verified_until"], "verified_until", str(path)),
+        coverage_until=declared_until,
     )

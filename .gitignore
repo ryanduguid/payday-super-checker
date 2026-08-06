@@ -9,6 +9,7 @@
 *.[pP][dD][fF]
 *.[cC][sS][vV]
 !examples/*.csv
+!tests/fixtures/importers/*.csv
 
 # Python
 __pycache__/

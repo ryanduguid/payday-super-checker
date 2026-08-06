@@ -1,0 +1,16 @@
+{
+  "key": "myob-ar-payroll",
+  "name": "MYOB AccountRight - Payroll Activity [Detail]",
+  "role": "payroll",
+  "verified": false,
+  "signature": ["Employee Name", "Date"],
+  "columns": {
+    "employee_name": ["Employee Name", "Employee"],
+    "employee_id": ["Card ID", "Employee ID"],
+    "payday": ["Date", "Payment Date", "Cheque Date"],
+    "period_end": ["Pay Period End", "Period To"],
+    "amount": ["Superannuation Guarantee", "Superannuation", "Amount"]
+  },
+  "date_formats": ["%d/%m/%Y", "%d/%m/%y"],
+  "notes": "MYOB publishes no column list for this report."
+}

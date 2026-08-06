@@ -18,6 +18,7 @@ from .deadlines import (
     Deadline,
     PreRegimeError,
     annotate_calendar_risk,
+    annotate_missing_flag,
     apply_item4,
     compute_due,
 )
@@ -36,6 +37,16 @@ EXPOSED = (LATE, UNPAID)
 
 CENTS = Decimal("0.01")
 
+# Every AT_RISK row carries this by construction: the verdict is only ever set
+# where a remittance date exists and a fund-receipt date does not, which is the
+# same condition that appends it. Named here so the console can tell it apart
+# from a caveat that says something about the particular row.
+NO_RECEIPT_CAVEAT = (
+    "no fund-receipt date supplied: the statutory test is receipt by the "
+    "fund (SGAA s 18C(1)), so a remittance date alone cannot show the "
+    "contribution was on time"
+)
+
 # Characters Excel and Sheets evaluate at the start of a cell. A plain code
 # such as -00123 or @home is left alone: rewriting it would break a lookup
 # from this report back to the payroll export.
@@ -53,8 +64,13 @@ def cents(value: Decimal | None) -> Decimal:
 
 
 def csv_safe(text: str) -> str:
-    """Stop a spreadsheet treating a cell as a formula. Only employee ids
-    come from the input, so only they can carry a payload."""
+    """Stop a spreadsheet treating a cell as a formula.
+
+    Applied to every field written from input text, not to a single
+    trusted-looking one. This report writes employee ids; `importers.
+    write_canonical` writes employee names as well, and puts its dates and
+    amounts through the same guard rather than reasoning per field about
+    which of them could ever start with `=`."""
     if text[:1] == "=":
         return "'" + text
     if text[:1] in FORMULA_LEAD and not text[1:].replace("_", "").isalnum():
@@ -93,6 +109,10 @@ class Result:
     uplift: dict[str, dict[str, Decimal]] | None = None
     notes: list[str] = field(default_factory=list)
     caveats: list[str] = field(default_factory=list)
+    # Set only where a date landed AFTER a deadline that runs past the
+    # calendar's coverage, so the verdict genuinely cannot be pinned down.
+    # Holds the two verdicts the row is between, worst case first.
+    horizon_verdicts: tuple[str, str] | None = None
 
     @property
     def warnings(self) -> list[str]:
@@ -151,22 +171,34 @@ def _item4_seeded_by_unrecorded(
     line: ContribLine,
     dl: Deadline,
     index: dict[tuple[str, date], list[ContribLine]],
-    cal: BusinessCalendar,
 ) -> str | None:
     """Item 4 needs an EARLIER ELIGIBLE CONTRIBUTION. The tool cannot see
     whether one was made, so where every earlier line it could have inherited
     from records no payment at all, name both deadlines rather than quietly
-    presenting the longer one as settled."""
-    if dl.pathway != ITEM4_ALIGNED or dl.due is None:
+    presenting the longer one as settled.
+
+    The line's own deadline is the one apply_item4 recorded before it moved
+    `due`. Recomputing it here from qe_day would drop the out-of-cycle
+    pathway and the items 1 + 2 max(), naming a date up to a fortnight
+    earlier than the one the row actually had."""
+    if dl.pathway != ITEM4_ALIGNED or dl.due is None or dl.own_due is None:
         return None
     donors = [
         other
         for other in index.get((line.employee_id, dl.due), [])
         if other.qe_day < line.qe_day
     ]
-    if donors and all(d.received is None and d.remitted is None for d in donors):
+
+    def unrecorded(d: ContribLine) -> bool:
+        # A nil payday is not an eligible contribution whatever dates it
+        # carries, so a remittance date on one cannot show the earlier
+        # contribution item 4 needs. Testing the dates alone let a 0.00 donor
+        # suppress this caveat outright.
+        return d.sg_amount <= 0 or (d.received is None and d.remitted is None)
+
+    if donors and all(unrecorded(d) for d in donors):
         earlier = ", ".join(sorted({d.qe_day.isoformat() for d in donors}))
-        own = cal.add_business_days(line.qe_day, 20 if line.first_to_fund else 7)
+        own = dl.own_due
         return (
             f"this deadline is inherited from the QE day {earlier}, for which no payment "
             "is recorded. s 18C(2) item 4 needs an earlier eligible contribution, so if "
@@ -212,6 +244,7 @@ def assess(
 
     pairs = [(line, compute_due(line, cal)) for line in lines]
     apply_item4(pairs)
+    annotate_missing_flag(pairs)
     annotate_calendar_risk(pairs, cal)
 
     donors = _donor_index(pairs)
@@ -221,12 +254,32 @@ def assess(
         result = Result(line, dl, UNKNOWN, notes=list(dl.notes), caveats=list(dl.caveats))
         if line.duplicate_note:
             result.caveats.append(line.duplicate_note)
-        inherited = _item4_seeded_by_unrecorded(line, dl, donors, cal)
+        inherited = _item4_seeded_by_unrecorded(line, dl, donors)
         if inherited:
             result.caveats.append(inherited)
 
         if dl.pathway == SKIP_DB or dl.due is None:
             result.verdict = SKIPPED
+            results.append(result)
+            continue
+
+        # A row carrying no SG has no exposure behind any verdict, so the
+        # amount is tested once here rather than bolted onto one branch of
+        # the ladder. Bolted to the UNPAID branch alone, a 0.00 row with a
+        # late remittance or receipt date still came out LATE and still
+        # forced exit code 2.
+        if line.sg_amount <= 0:
+            if dl.due < as_at:
+                result.caveats.append(
+                    f"the deadline passed on {dl.due.isoformat()}, but this row records "
+                    "no SG amount, so there is nothing to assess. Check the amount "
+                    "column if this payday should have carried super"
+                )
+            else:
+                result.caveats.append(
+                    "this row records no SG amount, so there is nothing to assess. "
+                    "Check the amount column if this payday should have carried super"
+                )
             results.append(result)
             continue
 
@@ -253,6 +306,34 @@ def assess(
                 "contribution was on time"
             )
 
+        # Past the calendar's coverage the holiday table is empty, so every
+        # weekday counts as a business day and the deadline computed here can
+        # only be too EARLY. That asymmetry decides which verdicts survive.
+        #
+        # A date on or before the computed deadline is on time under every
+        # possible holiday set, because a missing holiday can only push the
+        # real deadline later, never earlier. Those verdicts are provable and
+        # are given. Only a date after the computed deadline is indeterminable:
+        # it is late on this calendar and could be on time on the real one.
+        #
+        # A pre-payment verdict is not affected either: it compares the receipt
+        # with the QE day and a 12-month calendar window, never the deadline.
+        past_horizon = dl.due > cal.coverage_until
+        horizon_unknown = (
+            f"the date recorded here is after that deadline, and a holiday the "
+            "calendar does not hold could move the deadline past it, so the line is "
+            "left unassessed rather than called late. Supply the missing holidays "
+            "with --holidays-override and set its \"verified_until\" to the last date "
+            "you entered them for, or extend paydaysuper/data/business_days.json, "
+            "to assess it"
+        )
+        horizon_figures = (
+            f"the deadline {dl.due.isoformat()} runs past the calendar's coverage "
+            f"({cal.coverage_until.isoformat()}) and can only move later, so days late "
+            "is left blank and the notional earnings and SG charge figures on this "
+            "line are a maximum, not a settled amount"
+        )
+
         stale_prepayment = False
         if settled is not None:
             if settled < line.qe_day:
@@ -275,20 +356,47 @@ def assess(
                         "window in s 18C(1)(c)(ii), so it cannot be applied to this payday. "
                         "The payday is treated as unfunded"
                     )
+            elif past_horizon and settled > dl.due:
+                result.verdict = UNKNOWN
+                result.horizon_verdicts = (LATE, ON_TIME)
+                result.caveats.append(horizon_unknown)
+                results.append(result)
+                continue
             else:
                 result.verdict = ON_TIME if settled <= dl.due else LATE
         elif remitted is not None:
+            if past_horizon and remitted > dl.due:
+                result.verdict = UNKNOWN
+                result.horizon_verdicts = (LATE, AT_RISK)
+                result.caveats.append(horizon_unknown)
+                results.append(result)
+                continue
             result.verdict = AT_RISK if remitted <= dl.due else LATE
-        elif dl.due < as_at and line.sg_amount > 0:
+        elif dl.due < as_at:
             # Nothing recorded and the deadline has passed. This is the
-            # largest exposure the tool can see, so it must not be silent.
+            # largest exposure the tool can see, so it must not be silent -
+            # past the horizon the verdict still stands rather than becoming
+            # UNKNOWN, because a missing holiday moves a deadline by days
+            # while an unrecorded contribution is money owed either way.
+            # Only the claim that the deadline HAS passed is softened: past
+            # the coverage end the real deadline can only be later, and it
+            # may not have arrived at all.
             result.verdict = UNPAID
-            result.caveats.append(
-                f"the deadline passed on {dl.due.isoformat()} and no remittance or "
-                "fund-receipt date is recorded. Figures assume the contribution is still "
-                "unpaid; if your export has no date columns, supply them before relying "
-                "on this"
-            )
+            if past_horizon:
+                result.caveats.append(
+                    f"no remittance or fund-receipt date is recorded, and the deadline "
+                    f"shown ({dl.due.isoformat()}) runs past the calendar's coverage, so "
+                    "it may fall later than shown and may not have passed yet. Figures "
+                    "assume the contribution is still unpaid; if your export has no date "
+                    "columns, supply them before relying on this"
+                )
+            else:
+                result.caveats.append(
+                    f"the deadline passed on {dl.due.isoformat()} and no remittance or "
+                    "fund-receipt date is recorded. Figures assume the contribution is "
+                    "still unpaid; if your export has no date columns, supply them "
+                    "before relying on this"
+                )
         else:
             result.caveats.append(
                 "no remittance or fund-receipt date supplied, and the deadline has not "
@@ -328,7 +436,17 @@ def assess(
                     "interest charge, which this tool does not estimate"
                 )
 
-            result.days_late = max((outstanding_to - dl.due).days, 0)
+            # A row still exposed past the calendar's coverage got there
+            # without comparing a date against the deadline (an unpaid payday,
+            # or a receipt outside the 12-month pre-payment window), so the
+            # verdict holds. The arithmetic hanging off the deadline does not:
+            # printing a whole number of days late from a date the row's own
+            # caveat says cannot be pinned down states more than is known.
+            result.days_late = (
+                None if past_horizon else max((outstanding_to - dl.due).days, 0)
+            )
+            if past_horizon:
+                result.caveats.append(horizon_figures)
             result.nec = (
                 notional_earnings(base_shortfall, dl.due, nec_end, gic)
                 if nec_end > dl.due
@@ -397,6 +515,24 @@ def assess(
     return results
 
 
+def horizon_indeterminate(results: list[Result]) -> list[Result]:
+    """Rows whose verdict could not be decided because the date landed after a
+    deadline running past the calendar's coverage.
+
+    These drive the same non-zero exit code LATE does. A run that cannot tell
+    whether a 9,000 shortfall exists has not found nothing, and README
+    documents exit 0 as nothing exposed."""
+    return [r for r in results if r.horizon_verdicts is not None]
+
+
+def needs_attention(results: list[Result]) -> bool:
+    """True where the run must not exit 0: real exposure, or a line the
+    calendar could not decide."""
+    return any(r.verdict in EXPOSED for r in results) or bool(
+        horizon_indeterminate(results)
+    )
+
+
 CSV_HEADER = [
     "row",
     "employee_id",
@@ -415,6 +551,14 @@ CSV_HEADER = [
     "sgc_estimate_high",
     "caveats",
     "notes",
+    # Appended, never inserted: a positional consumer keeps its column
+    # numbers. Blank on every row except the ones the calendar cannot settle,
+    # where it holds the two candidate verdicts as "WORSE or BETTER". Without
+    # it the CSV wrote UNKNOWN for a 9,000 contribution nobody can assess and
+    # UNKNOWN for a nil row with nothing to assess, with the same blank
+    # shortfall on both, so anyone reading the file rather than the console or
+    # the exit code could not tell real exposure from nothing at all.
+    "unassessable_between",
 ]
 
 
@@ -446,7 +590,11 @@ def write_csv(
     source: str | Path | None = None,
     gic_provenance: str = "",
 ) -> None:
-    with open(path, "w", newline="", encoding="utf-8") as f:
+    # utf-8-sig, not utf-8: Excel on a cp1252 Windows box reads a BOM-less
+    # CSV in the locale code page, so a non-ASCII employee id comes out
+    # mojibake and stops joining back to the payroll export. parse_rows
+    # already reads with utf-8-sig, so a report fed back in still parses.
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         writer.writerow(CSV_HEADER)
         for r in results:
@@ -470,6 +618,7 @@ def write_csv(
                     money(figures["high"]),
                     " | ".join(r.caveats),
                     " | ".join(r.notes),
+                    " or ".join(r.horizon_verdicts) if r.horizon_verdicts else "",
                 ]
             )
 
@@ -483,7 +632,9 @@ def write_csv(
             else "No assessment date given, so contributions received late are assumed "
             "to have reached the fund before any assessment. "
         )
-        note[-1] = (
+        # By name, not by position: the trailing note belongs in "notes", and
+        # note[-1] silently moved it into whatever column was appended last.
+        note[CSV_HEADER.index("notes")] = (
             f"payday-super-checker {__version__}"
             + (f", source {source}" if source else "")
             + f", as at {as_at.isoformat()}. {assessment_text}"
@@ -525,20 +676,28 @@ def console_summary(
             # Standard output is commonly retained by task runners and CI logs.
             # The report CSV is the private, row-level artifact; retain the source
             # row here so an operator can locate the result without leaking an
-            # employee identifier into those logs.
+            # employee identifier into those logs. Days late is left unset where
+            # the deadline runs past the calendar's coverage, so never print
+            # "None days late" in that case.
+            lateness = (
+                f"{r.days_late} days late to {r.lateness_basis}"
+                if r.days_late is not None
+                else f"days late not pinned down, measured to {r.lateness_basis}"
+            )
             lines.append(
                 f"  row {r.line.row}  QE day {r.line.qe_day.isoformat()}"
-                f"  due {r.deadline.due.isoformat()}  {r.verdict}, {r.days_late} days late"
-                f" to {r.lateness_basis}"
+                f"  due {r.deadline.due.isoformat()}  {r.verdict}, {lateness}"
             )
             shortfall_text = (
                 f"super ${money(r.line.sg_amount)} (received, so the shortfall is nil)"
                 if r.offset_s18d
                 else f"shortfall ${money(figures['shortfall'])}"
             )
+            at_most = "" if r.days_late is not None else "at most "
             lines.append(
-                f"      {shortfall_text}  notional earnings ${money(figures['nec'])}"
-                f"  SG charge estimate ${money(figures['low'])} - ${money(figures['high'])}"
+                f"      {shortfall_text}  notional earnings {at_most}"
+                f"${money(figures['nec'])}  SG charge estimate {at_most}"
+                f"${money(figures['low'])} - ${money(figures['high'])}"
             )
             for caveat in r.caveats:
                 lines.append(f"      note: {caveat}")
@@ -564,12 +723,69 @@ def console_summary(
             "date. Compliance turns on receipt by the fund, not the day you paid, and "
             "clearing-house transit time is the employer's risk."
         )
+        # An at-risk line is in neither the exposure listing nor the unflagged
+        # count, so without this its caveats never reached the console at all
+        # -- including the one saying two rows are identical and the payday is
+        # counted twice, which is the data-quality warning most worth reading.
+        #
+        # The no-fund-receipt caveat is excluded because EVERY at-risk row
+        # carries it and the header above already says it. Listed, it filled
+        # the ten-row cap with rows whose only note repeated the header, and
+        # truncated away the rows that had something of their own to say.
+        flagged = [
+            (r, [c for c in r.caveats if c != NO_RECEIPT_CAVEAT]) for r in at_risk
+        ]
+        flagged = [(r, others) for r, others in flagged if others]
+        for r, others in flagged[:10]:
+            lines.append(
+                f"  row {r.line.row}  QE day {r.line.qe_day.isoformat()}  "
+                f"due {r.deadline.due.isoformat()}"
+            )
+            for caveat in others:
+                lines.append(f"      note: {caveat}")
+        if len(flagged) > 10:
+            lines.append(
+                f"  ... and {len(flagged) - 10} more at-risk line(s) with notes "
+                f"(see {csv_path})"
+            )
+        lines.append("")
+
+    # A row left UNKNOWN because it landed after a deadline the calendar
+    # cannot pin down is not a data-quality note. It is a payday that may be
+    # the whole shortfall, and it used to be summarised as "N other line(s)
+    # carry data-quality notes" with exit 0 behind it, which a scheduled job
+    # reads as nothing found.
+    indeterminate = horizon_indeterminate(results)
+    if indeterminate:
+        lines.append(
+            f"{len(indeterminate)} line(s) cannot be assessed: the date recorded is "
+            "after the deadline shown, and that deadline runs past the calendar's "
+            "coverage, so a holiday the calendar does not hold could still make the "
+            "line on time. Each one is either verdict below and needs a decision."
+        )
+        for r in indeterminate[:10]:
+            worse, better = r.horizon_verdicts
+            lines.append(
+                f"  row {r.line.row}  QE day {r.line.qe_day.isoformat()}  "
+                f"due {r.deadline.due.isoformat()}"
+                f"  super ${money(r.line.sg_amount)}  {worse} or {better}"
+            )
+            for caveat in r.caveats:
+                lines.append(f"      note: {caveat}")
+        if len(indeterminate) > 10:
+            lines.append(
+                f"  ... and {len(indeterminate) - 10} more unassessable line(s) "
+                f"(see {csv_path})"
+            )
         lines.append("")
 
     unflagged = [
         r
         for r in results
-        if r.verdict not in EXPOSED and r.verdict != AT_RISK and r.caveats
+        if r.verdict not in EXPOSED
+        and r.verdict != AT_RISK
+        and r.horizon_verdicts is None
+        and r.caveats
     ]
     if unflagged:
         lines.append(
