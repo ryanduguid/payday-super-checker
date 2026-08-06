@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 
 from .deadlines import ContribLine
@@ -97,6 +98,23 @@ DATE_FORMATS = (
     "%d %B %Y",  # 9 July 2026
 )
 
+# Payroll exports use either an ISO date, an Australian day-first date, or one
+# of the spelled-month forms above. A time of day is harmless because the law
+# tests whole days, but arbitrary text is not: accepting ``2026-07-09 typo``
+# as a real payday can turn a source-data problem into a compliance verdict.
+TIME_FORMATS = (
+    "%H:%M",
+    "%H:%M:%S",
+    "%H:%M:%S.%f",
+    "%I:%M %p",
+    "%I:%M:%S %p",
+)
+
+# Commas are permitted only as conventional three-digit thousands separators.
+# Do not "clean" every comma or space before Decimal sees the value: malformed
+# strings such as ``1,2`` would otherwise silently become $12.
+AMOUNT = re.compile(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?")
+
 # No payroll date is beyond this. Sentinels such as 9999-12-31 are routine in
 # ERP extracts and would otherwise compound interest for millennia.
 LATEST_SANE_YEAR = 2200
@@ -110,22 +128,24 @@ def parse_date_text(text: str) -> date | None:
     text = text.strip()
     if not text:
         return None
-    candidates = [text, text.split("T")[0].strip(), text.split(" ")[0].strip()]
-    for candidate in candidates:
-        for fmt in DATE_FORMATS:
+    # datetime.fromisoformat accepts ISO dates and ISO date-times (including a
+    # space or T separator). Z is normalised for Python versions before 3.11.
+    try:
+        iso_text = text.removesuffix("Z") + "+00:00" if text.endswith("Z") else text
+        return datetime.fromisoformat(iso_text).date()
+    except ValueError:
+        pass
+
+    for fmt in DATE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            pass
+        for time_fmt in TIME_FORMATS:
             try:
-                return datetime.strptime(candidate, fmt).date()
+                return datetime.strptime(text, f"{fmt} {time_fmt}").date()
             except ValueError:
-                continue
-    # "9 Jul 2026 00:00:00" needs the first three words, not the first one.
-    words = text.split()
-    if len(words) >= 3:
-        head = " ".join(words[:3])
-        for fmt in DATE_FORMATS:
-            try:
-                return datetime.strptime(head, fmt).date()
-            except ValueError:
-                continue
+                pass
     return None
 
 
@@ -145,24 +165,29 @@ def _parse_date(value: str, field: str, row: int) -> date:
 
 
 def _parse_amount(value: str, field: str, row: int) -> Decimal:
-    text = value.strip().replace("$", "").replace(",", "").replace(" ", "")
+    text = value.strip()
+    negative = False
     if text.startswith("(") and text.endswith(")"):
-        text = "-" + text[1:-1]
-    try:
-        amount = Decimal(text)
-        finite = amount.is_finite()
-    except (InvalidOperation, ValueError):
+        negative = True
+        text = text[1:-1].strip()
+    elif text.startswith("-"):
+        negative = True
+        text = text[1:].strip()
+
+    if text.startswith("$"):
+        text = text[1:].strip()
+
+    if not AMOUNT.fullmatch(text):
         raise CsvError(f"row {row}: cannot read {field} value {value!r} as an amount")
-    if not finite:
-        # Decimal accepts "nan" and "Infinity"; neither is an amount.
-        raise CsvError(f"row {row}: cannot read {field} value {value!r} as an amount")
+
+    amount = Decimal(text.replace(",", ""))
     if amount.adjusted() > 15:
         # Beyond this the value cannot be rounded to cents under the default
         # decimal context, and no super contribution is this large.
         raise CsvError(
             f"row {row}: {field} value {value!r} is too large to be a real amount"
         )
-    if amount < 0:
+    if negative:
         raise CsvError(f"row {row}: {field} is negative ({value!r})")
     return amount
 
