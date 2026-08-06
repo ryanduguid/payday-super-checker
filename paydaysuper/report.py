@@ -522,8 +522,12 @@ def console_summary(
         lines.append("Lines with exposure (largest first):")
         for r in exposed[:10]:
             figures = _rounded_figures(r)
+            # Standard output is commonly retained by task runners and CI logs.
+            # The report CSV is the private, row-level artifact; retain the source
+            # row here so an operator can locate the result without leaking an
+            # employee identifier into those logs.
             lines.append(
-                f"  row {r.line.row}  {r.line.employee_id}  QE day {r.line.qe_day.isoformat()}"
+                f"  row {r.line.row}  QE day {r.line.qe_day.isoformat()}"
                 f"  due {r.deadline.due.isoformat()}  {r.verdict}, {r.days_late} days late"
                 f" to {r.lateness_basis}"
             )
