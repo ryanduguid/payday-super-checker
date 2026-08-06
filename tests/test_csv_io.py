@@ -52,10 +52,28 @@ def test_currency_formatting_is_accepted(tmp_path):
     assert parse_rows(path, *load_mapping(None))[0].sg_amount == Decimal("1234.56")
 
 
+@pytest.mark.parametrize("value", ("1,2", "1 2", "1,234,56"))
+def test_malformed_amount_formatting_is_rejected_not_rewritten(tmp_path, value):
+    path = write_csv(tmp_path, f'E1,2026-07-09,"{value}",,,no,no,,no')
+    with pytest.raises(CsvError, match="cannot read"):
+        parse_rows(path, *load_mapping(None))
+
+
 def test_impossible_date_is_rejected_with_row_number(tmp_path):
     path = write_csv(tmp_path, "E1,31/02/2026,600.00,,,no,no,,no")
     with pytest.raises(CsvError, match="row 2"):
         parse_rows(path, *load_mapping(None))
+
+
+def test_date_with_trailing_junk_is_rejected(tmp_path):
+    path = write_csv(tmp_path, "E1,2026-07-09 not-a-time,600.00,,,no,no,,no")
+    with pytest.raises(CsvError, match="row 2"):
+        parse_rows(path, *load_mapping(None))
+
+
+def test_iso_datetime_is_accepted_as_its_calendar_day(tmp_path):
+    path = write_csv(tmp_path, "E1,2026-07-09T14:30:00+10:00,600.00,,,no,no,,no")
+    assert parse_rows(path, *load_mapping(None))[0].qe_day == date(2026, 7, 9)
 
 
 def test_unreadable_amount_is_rejected(tmp_path):
@@ -201,6 +219,6 @@ def test_mapping_file_that_is_not_an_object_is_rejected(tmp_path):
 
 
 def test_absurdly_large_amount_is_rejected(tmp_path):
-    path = write_csv(tmp_path, "E1,2026-07-09,1e26,,,no,no,,no")
+    path = write_csv(tmp_path, "E1,2026-07-09,10000000000000000,,,no,no,,no")
     with pytest.raises(CsvError, match="too large"):
         parse_rows(path, *load_mapping(None))

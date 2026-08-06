@@ -230,8 +230,23 @@ def assess(
             results.append(result)
             continue
 
-        settled = line.received
-        if settled is None and line.remitted is not None:
+        # An as-at report must not use a future remittance or receipt to settle
+        # a historical shortfall. Keeping that future fact in the calculation
+        # made the report say a contribution was already offset on a date when
+        # the fund had not received it yet.
+        settled = line.received if line.received is not None and line.received <= as_at else None
+        remitted = line.remitted if line.remitted is not None and line.remitted <= as_at else None
+        if line.received is not None and line.received > as_at:
+            result.caveats.append(
+                f"fund receipt date {line.received.isoformat()} is after the as-at date "
+                f"{as_at.isoformat()}: it is ignored for this as-at report"
+            )
+        if line.remitted is not None and line.remitted > as_at:
+            result.caveats.append(
+                f"remittance date {line.remitted.isoformat()} is after the as-at date "
+                f"{as_at.isoformat()}: it is ignored for this as-at report"
+            )
+        if settled is None and remitted is not None:
             result.caveats.append(
                 "no fund-receipt date supplied: the statutory test is receipt by the "
                 "fund (SGAA s 18C(1)), so a remittance date alone cannot show the "
@@ -262,8 +277,8 @@ def assess(
                     )
             else:
                 result.verdict = ON_TIME if settled <= dl.due else LATE
-        elif line.remitted is not None:
-            result.verdict = AT_RISK if line.remitted <= dl.due else LATE
+        elif remitted is not None:
+            result.verdict = AT_RISK if remitted <= dl.due else LATE
         elif dl.due < as_at and line.sg_amount > 0:
             # Nothing recorded and the deadline has passed. This is the
             # largest exposure the tool can see, so it must not be silent.
@@ -284,14 +299,7 @@ def assess(
 
         if result.verdict in EXPOSED:
             base_shortfall = line.sg_amount
-            landed = settled if settled is not None else line.remitted
-
-            if settled is not None and settled > as_at:
-                result.caveats.append(
-                    f"fund receipt date {settled.isoformat()} is after the as-at date "
-                    f"{as_at.isoformat()}: check it is not a typo, since notional "
-                    "earnings run to the receipt date"
-                )
+            landed = settled if settled is not None else remitted
 
             # Notional earnings compound on the base shortfall until the fund
             # receives money that counts for this payday (s 19A). Where none
