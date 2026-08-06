@@ -174,7 +174,22 @@ def test_console_summary_ranks_by_exposure():
     """Largest estimated exposure first, as the heading claims."""
     text = console_summary(run_fixture(), AS_AT, "report.csv", "2026-08-02", load_rates())
     body = text.split("Lines with exposure")[1]
-    assert body.index("EMP002") < body.index("EMP001")
+    assert body.index("row 3") < body.index("row 9")
+
+
+def test_console_summary_does_not_disclose_employee_identifiers():
+    """Payroll identifiers belong in the private CSV report, not process logs."""
+    results = run_fixture()
+    exposed = next(
+        result for result in results if result.verdict in {"LATE", "UNPAID"}
+    )
+    exposed.line.employee_id = "ava.lawson@example.test"
+
+    text = console_summary(results, AS_AT, "report.csv", "2026-08-02", load_rates())
+
+    assert "ava.lawson@example.test" not in text
+    assert all(result.line.employee_id not in text for result in results)
+    assert "row 3" in text
 
 
 def test_cli_refuses_to_overwrite_the_input(tmp_path, capsys):
