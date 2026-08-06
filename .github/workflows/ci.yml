@@ -9,6 +9,8 @@ permissions:
 
 jobs:
   test:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -30,6 +32,8 @@ jobs:
       - run: uv run --locked --extra dev --python ${{ matrix.python }} pytest -q
 
   dependency-audit:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -42,6 +46,8 @@ jobs:
         run: uv run --locked --extra dev --with "pip-audit==2.10.1" pip-audit --local --strict
 
   package:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
