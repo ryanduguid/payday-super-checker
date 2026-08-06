@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ERROR
 
     # Redirected stdout on Windows falls back to the locale encoding, which
-    # cannot represent every employee name.
+    # cannot represent all output text reliably.
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure is not None:
         reconfigure(encoding="utf-8", errors="backslashreplace")
