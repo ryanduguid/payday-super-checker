@@ -1,0 +1,22 @@
+{
+  "key": "xero-super",
+  "name": "Xero Payroll - Superannuation Payments",
+  "role": "super",
+  "verified": false,
+  "signature": ["Employee", "Contribution Type", "Amount"],
+  "columns": {
+    "employee_name": ["Employee", "Employee Name"],
+    "employee_id": ["Employee Number", "Employee Code"],
+    "period_start": ["Period Start", "Pay Period Start", "Period From"],
+    "period_end": ["Period End", "Pay Period End", "Period To"],
+    "paid_date": ["Payment Date", "Super Payment Date", "Date Sent To Fund", "Sent To Fund"],
+    "amount": ["Amount", "Super Amount"],
+    "contribution_type": ["Contribution Type"]
+  },
+  "date_formats": ["%d/%m/%Y", "%Y-%m-%d", "%d %b %Y"],
+  "sg_filter": {
+    "column": "contribution_type",
+    "include": ["Superannuation Guarantee", "SGC", "SG", "Employer Contributions"]
+  },
+  "notes": "Column names inferred from Xero Central, which publishes no column list. Xero groups this report by Contribution Type, so that column exists. The date is when the payment was sent to the fund, never when the fund received it."
+}

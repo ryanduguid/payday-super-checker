@@ -52,9 +52,26 @@ identifiers in process logs. Use that row number to find the full record in
 
 Full detail goes to `report.csv`: due date, which deadline rule applied, days late, the final shortfall after any offset, notional earnings, best and worst case uplift, and every warning that applies to that line.
 
-Verdicts are `ON_TIME`, `AT_RISK` (remitted in time but no fund receipt recorded), `LATE`, `UNPAID` (the deadline has passed and nothing is recorded against it), `UNKNOWN` (not due yet, nothing recorded) and `SKIPPED` (defined-benefit interests). `LATE` and `UNPAID` both carry exposure figures.
+Verdicts are `ON_TIME`, `AT_RISK` (remitted in time but no fund receipt recorded), `LATE`, `UNPAID` (the deadline has passed and nothing is recorded against it), `UNKNOWN` (the verdict is not available) and `SKIPPED` (defined-benefit interests). `LATE` and `UNPAID` both carry exposure figures.
 
-The exit code is 0 when nothing is exposed, 2 when something is, and 1 on a data or file error, so you can run it from a scheduled job. Argparse also uses 2 for a bad command line, so a wrapper should check stderr before raising an alarm.
+`UNKNOWN` covers three cases. Two are quiet: nothing recorded and not yet due, and a row carrying no SG amount. The third is not. Where the deadline runs past the last date the calendar's holiday table is complete to, and the date on the row is AFTER that deadline, the line could be late or could be on time, because a holiday the calendar does not hold would move the deadline later. Those lines get their own console block naming the row, the employee, the amount and both candidate verdicts, and the report CSV carries them in `unassessable_between` as `LATE or ON_TIME`. Read that column if you parse the file: the verdict alone says `UNKNOWN` for a nine-thousand-dollar contribution nobody can assess and `UNKNOWN` for a nil row with nothing to assess, with the same blank shortfall on both.
+
+To get a real verdict, enter the missing holidays in a `--holidays-override` file and add `"verified_until": "YYYY-MM-DD"` naming the last date you entered them for. The holidays alone are not enough, and that is deliberate: a file holding one 2029 holiday is not a file that has 2029 covered, and treating it as one would silence the warning across every gap it left. Only you know how far you went.
+
+```json
+{
+  "verified_until": "2029-12-31",
+  "add": [
+    {"date": "2029-03-30", "name": "Good Friday", "jurisdictions": ["ALL"]},
+    {"date": "2029-04-02", "name": "Easter Monday", "jurisdictions": ["ALL"]}
+  ],
+  "remove": ["2026-11-03"]
+}
+```
+
+A date on or before a deadline that runs past the calendar's coverage still gets a verdict. A missing holiday can only push the real deadline later, so paying early is provably on time whatever the calendar is missing.
+
+The exit code is 0 when nothing is exposed and nothing is left undecided, 2 when either is true, and 1 on a data or file error, so you can run it from a scheduled job. Argparse also uses 2 for a bad command line, so a wrapper should check stderr before raising an alarm.
 
 ### Options
 
@@ -65,7 +82,7 @@ The exit code is 0 when nothing is exposed, 2 when something is, and 1 on a data
 | `--assessment-date DATE` | The day the ATO assessed the charge for these paydays. Only contributions received before it clear the shortfall. Omit if no assessment has issued |
 | `--map FIELD=COLUMN` | Point one field at your column name; repeatable |
 | `--mapping-file FILE` | Same thing as JSON, see `examples/mapping.example.json` |
-| `--holidays-override FILE` | Add or remove public holidays from the bundled calendar |
+| `--holidays-override FILE` | Add or remove public holidays from the bundled calendar; its optional `verified_until` declares how far you have entered them |
 
 ### Input columns
 
@@ -88,6 +105,33 @@ Dates read as `YYYY-MM-DD`, day-first `DD/MM/YYYY`, or `9 Jul 2026`, and a time 
 **The amount column must hold super guarantee only.** Salary sacrifice and additional contributions have a different base and a different deadline, so filter them out of the export first or the shortfall will be overstated.
 
 **Where the fund receipt date comes from.** Payroll exports (Xero, MYOB, KeyPay, Employment Hero) give you the payday and the batch remittance date, which is what `remitted` is for and why those lines come back `AT_RISK`. A fund receipt date lives somewhere else: your clearing house's per-contribution settlement or status report, or the fund's own contribution history. Without it the tool tells you what you sent and when, not what the law tests.
+
+## Import from your payroll system
+
+Two commands turn a payroll export and a super payments export into a checked report, with no column mapping to write by hand:
+
+```bash
+payday-super-check import --payroll "Payroll Activity Details.csv" --super "Superannuation Payments.csv" -o contributions.csv
+payday-super-check contributions.csv
+```
+
+The first command reads both exports, matches each super payment to the payday it settles, and writes the canonical CSV the second command already knows how to check.
+
+Profiles ship for Xero Payroll, MYOB AccountRight, MYOB Business and Employment Hero / KeyPay, one profile each for the payroll-activity report and the super-payments report. The importer picks a profile per file by scoring column headings against what it knows. Force one with `--vendor xero`, `--vendor myob-ar`, `--vendor myob-business` or `--vendor employment-hero` when detection cannot pick, or to skip detection outright.
+
+**Every shipped profile is unverified against a real export.** Each one's column names come from vendor help documentation, and Xero, MYOB and Employment Hero do not publish an actual column list for these reports, so the first real export you try may match no profile at all. When that happens the importer prints the column headings it found in your file next to the headings each candidate profile wanted. Send both lists back and fixing the profile is a one-line edit to its JSON file, not a rewrite.
+
+**No payroll system or clearing house exports a fund receipt date.** Xero's report gives the date a payment was sent to the fund. MYOB gives a Paid Date. Employment Hero gives a Beam status (Sent to fund, Reconciled, and so on). None of these is the date the fund received the money. The legal deadline tests receipt by the fund, and time in transit through a clearing house is the employer's risk, not the fund's, so a vendor date is a remittance date and `fund_received_date` is left blank on every row. Fill that column in from your fund or clearing house before treating any verdict from the checker as final. `remitted_date` carries the vendor date only where every super row behind that payday's match has one; where any of them does not, it is blank, for the reason in the next paragraph.
+
+**Two kinds of payday are written the same as a completely unpaid one.** The canonical CSV has one amount column and one remittance-date column per payday, with no room for "999.99 of 1000.00 arrived" and none for "1000.00 arrived, 600.00 of it on a date anyone recorded".
+
+A part payment is written with `remitted_date` blank, the same as a payday nothing was paid against, so the checker reports the whole 1000.00 as a shortfall. So is a payday matched **in full** where any of the super rows behind the match carries no vendor date: writing the date that covers 600.00 of the 1000.00 would tell the checker the whole payday settled that day, which nothing on record supports.
+
+Both figures survive in the importer's own warning lines, written as `row N: partial: 999.99 of 1000.00 matched` and `row N: 400.00 of 1000.00 matched has no payment date on record; latest known payment date 2026-07-15`. Neither line is ever truncated by the warning cap. Apply them by hand until the canonical format has columns for them.
+
+**A full financial-year export needs trimming first.** The check refuses any file holding a payday before 1 July 2026, because the old quarterly law governs those and this tool does not model it. An export that starts at 1 July 2025 therefore imports fine and then fails the check outright. The import names those rows in a warning and writes them anyway; delete them from the canonical file, or re-export from 1 July 2026, before running the second command.
+
+**A bare filename of `import` does not work.** `payday-super-check import`, run against a file that is genuinely named `import` with no extension, is read as the import subcommand and fails on the missing `--payroll`/`--super` arguments instead of checking the file. `payday-super-check import.csv` and `payday-super-check ./import` both check the file as expected; only the exact bare string `import` is swallowed.
 
 ## The rules it applies
 
