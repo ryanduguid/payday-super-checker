@@ -12,7 +12,7 @@ Method (SGAA 1992 s 6(1) "business day"):
   whole-of-jurisdiction, weekends excluded (computed at runtime).
 
 Usage:
-    pip install holidays==0.101
+    pip install holidays==0.102
     python tools/generate_calendar.py > paydaysuper/data/business_days.json
 Then hand-review every line against the 8 state/territory government pages
 before shipping. Dates for proclaimed-yearly holidays are marked
@@ -39,7 +39,7 @@ NOT_WHOLE_OF_JURISDICTION = {
 # Holidays proclaimed (or fixture-dependent) each year: rule-derived future
 # dates are provisional until the state gazettes them.
 PROVISIONAL_RULES = [
-    ("VIC", "Grand Final Day", 2026),   # depends on AFL fixture each year
+    ("VIC", "Friday before the AFL Grand Final", 2026),  # depends on AFL fixture each year
     ("WA", "King's Birthday", 2027),    # proclaimed annually, usually late Sep
 ]
 
