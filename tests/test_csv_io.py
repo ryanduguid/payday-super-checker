@@ -188,7 +188,20 @@ def test_dotnet_timestamp_is_accepted_as_its_calendar_day(tmp_path):
     assert parse_rows(path, *load_mapping(None))[0].qe_day == date(2026, 7, 9)
 
 
-@pytest.mark.parametrize("text", ["20260709", "2026-W28-4", "2026-07"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "20260709",
+        "2026-W28-4",
+        "2026-07",
+        # Shapes newer interpreters read but 3.10, the declared floor,
+        # refuses: comma decimal seconds, compact times, hour-only offsets.
+        # The shape gate refuses them on every version.
+        "2026-07-09T00:00:00,1234567",
+        "2026-07-09T000000",
+        "2026-07-09T00:00:00+10",
+    ],
+)
 def test_iso_shapes_beyond_the_documented_surface_are_refused(text):
     # fromisoformat on Python 3.11+ reads compact dates, week dates and bare
     # year-months (2026-07 as its FIRST day); 3.10 refuses all three and the
@@ -196,6 +209,21 @@ def test_iso_shapes_beyond_the_documented_surface_are_refused(text):
     # parsed on some: version-dependent acceptance is how the same file gets
     # two different compliance verdicts.
     assert parse_date_text(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Python 3.10 fromisoformat accepts only 3- or 6-digit fractions;
+        # zero-padding to microseconds makes short fractions parse the same
+        # on every supported interpreter.
+        "2026-07-09T14:30:00.5+10:00",
+        "2026-07-09T00:00:00.12345",
+        "2026-07-09 23:59:59.1",
+    ],
+)
+def test_short_fractional_seconds_parse_the_same_on_every_supported_python(text):
+    assert parse_date_text(text) == date(2026, 7, 9)
 
 
 def test_unreadable_amount_is_rejected(tmp_path):
