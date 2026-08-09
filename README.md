@@ -4,7 +4,7 @@ Check Australian super contributions against the payday-super deadlines and esti
 
 Since 1 July 2026, super is due within 7 business days of each payday instead of quarterly. Miss it and the SG charge applies automatically: daily-compounding notional earnings, an administrative uplift of up to 60%, and the shortfall itself until the money reaches the fund. This reads a CSV out of your payroll or clearing-house records and tells you, line by line, which contributions landed in time.
 
-Built by Ryan Duguid, a provisional member of Chartered Accountants ANZ working in Australian public practice. Written independently, in his own time and on his own equipment.
+Built by Ryan Duguid, a provisional member of Chartered Accountants ANZ. Written independently, in his own time and on his own equipment.
 
 ## Install
 
@@ -54,7 +54,7 @@ Full detail goes to `report.csv`: due date, which deadline rule applied, days la
 
 Verdicts are `ON_TIME`, `AT_RISK` (remitted in time but no fund receipt recorded), `LATE`, `UNPAID` (the deadline has passed and nothing is recorded against it), `UNKNOWN` (the verdict is not available) and `SKIPPED` (defined-benefit interests). `LATE` and `UNPAID` both carry exposure figures.
 
-`UNKNOWN` covers three cases. Two are quiet: nothing recorded and not yet due, and a row carrying no SG amount. The third is not. Where the deadline runs past the last date the calendar's holiday table is complete to, and the date on the row is AFTER that deadline, the line could be late or could be on time, because a holiday the calendar does not hold would move the deadline later. Those lines get their own console block naming the row, the employee, the amount and both candidate verdicts, and the report CSV carries them in `unassessable_between` as `LATE or ON_TIME`. Read that column if you parse the file: the verdict alone says `UNKNOWN` for a nine-thousand-dollar contribution nobody can assess and `UNKNOWN` for a nil row with nothing to assess, with the same blank shortfall on both.
+`UNKNOWN` covers three cases. Two are quiet: nothing recorded and not yet due, and a row carrying no SG amount. The third is not. Where the deadline runs past the last date the calendar's holiday table is complete to, and the date on the row is AFTER that deadline, the line could be late or could be on time, because a holiday the calendar does not hold would move the deadline later. Those lines get their own console block naming the row, the amount and both candidate verdicts (employee ids stay in `report.csv`), and the report CSV carries them in `unassessable_between` as `LATE or ON_TIME`. Read that column if you parse the file: the verdict alone says `UNKNOWN` for a nine-thousand-dollar contribution nobody can assess and `UNKNOWN` for a nil row with nothing to assess, with the same blank shortfall on both.
 
 To get a real verdict, enter the missing holidays in a `--holidays-override` file and add `"verified_until": "YYYY-MM-DD"` naming the last date you entered them for. The holidays alone are not enough, and that is deliberate: a file holding one 2029 holiday is not a file that has 2029 covered, and treating it as one would silence the warning across every gap it left. Only you know how far you went.
 
