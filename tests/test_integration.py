@@ -382,6 +382,53 @@ def test_remittance_after_the_as_at_date_is_not_used_to_settle_the_report():
     )
 
 
+def test_a_post_as_at_receipt_does_not_claim_no_receipt_was_supplied():
+    """A row remitted in time whose only receipt date post-dates the as-at
+    date used to carry both 'fund receipt date ... is ignored' and 'no
+    fund-receipt date supplied', which contradict each other. The variant
+    caveat says what is actually true as at the report date."""
+    from paydaysuper.report import NO_RECEIPT_CAVEAT
+
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("300.00"),
+        remitted=date(2026, 7, 15),
+        received=date(2026, 8, 20),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+    assert r.verdict == "AT_RISK"
+    assert NO_RECEIPT_CAVEAT not in r.caveats
+    assert not any("no fund-receipt date supplied" in c for c in r.caveats)
+    assert any(
+        "the only fund-receipt date on record (2026-08-20) is after the as-at date"
+        in c
+        for c in r.caveats
+    )
+    # The variant is row-specific, so the console's at-risk block lists it
+    # rather than filtering it out with the universal caveat.
+    text = console_summary([r], AS_AT, "report.csv", "2026-08-02", load_rates())
+    assert "the only fund-receipt date on record (2026-08-20)" in text
+
+
+def test_a_plain_remitted_only_row_still_carries_the_named_constant():
+    """The console's at-risk filter matches NO_RECEIPT_CAVEAT by exact text,
+    so the append site must use the constant, not a re-typed literal."""
+    from paydaysuper.report import NO_RECEIPT_CAVEAT
+
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("300.00"),
+        remitted=date(2026, 7, 15),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+    assert r.verdict == "AT_RISK"
+    assert NO_RECEIPT_CAVEAT in r.caveats
+
+
 def test_stale_prepayment_keeps_the_full_shortfall():
     """s 18D offsets a payment made in the late period. A receipt from
     before the deadline is not one, so the shortfall stands."""
@@ -873,7 +920,45 @@ def test_item4_inherited_from_an_unrecorded_payday_is_flagged():
     ]
     results = assess(rows, cal, load_gic(), AS_AT)
     assert results[1].verdict == "ON_TIME"
-    assert any("no payment is recorded" in c for c in results[1].caveats)
+    assert any(
+        "no payment on or before the as-at date 2026-08-10 is recorded" in c
+        for c in results[1].caveats
+    )
+
+
+def test_item4_inherited_caveat_survives_a_post_as_at_donor_payment():
+    """A donor payment dated after the as-at date must not settle this
+    caveat: the as-at rule says future facts cannot settle a historical
+    report, and at the as-at date no payment seeding the inherited window
+    was on record."""
+    cal = load_calendar()
+    rows = [
+        ContribLine(
+            employee_id="E9",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("100.00"),
+            received=date(2026, 9, 1),  # after AS_AT
+            first_to_fund=True,
+            row=2,
+        ),
+        ContribLine(
+            employee_id="E9",
+            qe_day=date(2026, 7, 23),
+            sg_amount=Decimal("100.00"),
+            received=date(2026, 8, 6),
+            row=3,
+        ),
+    ]
+    results = assess(rows, cal, load_gic(), AS_AT)
+    assert results[1].deadline.due == date(2026, 8, 7)  # inherited
+    assert any(
+        "no payment on or before the as-at date 2026-08-10 is recorded" in c
+        for c in results[1].caveats
+    )
+    # And a donor payment on or before the as-at date still settles it.
+    rows[0].received = date(2026, 8, 6)
+    results = assess(rows, cal, load_gic(), AS_AT)
+    assert not any("inherited from the QE day" in c for c in results[1].caveats)
 
 
 def test_a_nil_payday_does_not_extend_a_later_real_paydays_verdict():
@@ -935,7 +1020,10 @@ def test_a_nil_donor_does_not_suppress_the_unrecorded_item_4_caveat():
     results = assess(rows, load_calendar(), load_gic(), AS_AT)
     aligned = results[2]
     assert aligned.deadline.pathway == "ITEM4_ALIGNED"
-    assert any("no payment is recorded" in c for c in aligned.caveats)
+    assert any(
+        "no payment on or before the as-at date 2026-08-10 is recorded" in c
+        for c in aligned.caveats
+    )
 
 
 def test_a_supplied_2029_calendar_produces_a_real_verdict(tmp_path):
