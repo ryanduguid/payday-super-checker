@@ -1941,6 +1941,24 @@ def test_import_replaces_an_output_symlink_without_touching_its_target(tmp_path)
     assert "employee_id" in output.read_text(encoding="utf-8-sig")
 
 
+def test_import_refuses_an_output_symlink_to_the_payroll_input(tmp_path):
+    """Alias checks must still resolve a selected output symlink to its input."""
+    payroll = FIXTURES / "myob_payroll.csv"
+    super_ = FIXTURES / "myob_super.csv"
+    before = payroll.read_bytes()
+    output = tmp_path / "contributions.csv"
+    try:
+        output.symlink_to(payroll)
+    except OSError as exc:
+        pytest.skip(f"symlinks are unavailable in this test environment: {exc}")
+
+    with pytest.raises(CsvError, match="output would overwrite"):
+        import_files(payroll, super_, output)
+
+    assert output.is_symlink()
+    assert payroll.read_bytes() == before
+
+
 def test_import_returns_two_when_a_payday_has_no_payment(tmp_path):
     src = tmp_path / "payroll.csv"
     src.write_text(
