@@ -48,6 +48,7 @@ def test_generator_provenance_reflects_the_environment_that_ran():
 
     import holidays
 
+    before = date.today()
     completed = subprocess.run(
         [sys.executable, str(ROOT / "tools" / "generate_calendar.py")],
         cwd=ROOT,
@@ -55,7 +56,10 @@ def test_generator_provenance_reflects_the_environment_that_ran():
         capture_output=True,
         text=True,
     )
+    after = date.today()
     generated = json.loads(completed.stdout)
 
     assert f"holidays=={holidays.__version__}" in generated["_comment"]
-    assert generated["generated"] == date.today().isoformat()
+    # Bracketed rather than compared to a single call so a run that crosses
+    # midnight cannot fail spuriously.
+    assert generated["generated"] in {before.isoformat(), after.isoformat()}
