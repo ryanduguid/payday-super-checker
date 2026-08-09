@@ -133,6 +133,12 @@ Both figures survive in the importer's own warning lines, written as `row N: par
 
 **A bare filename of `import` does not work.** `payday-super-check import`, run against a file that is genuinely named `import` with no extension, is read as the import subcommand and fails on the missing `--payroll`/`--super` arguments instead of checking the file. `payday-super-check import.csv` and `payday-super-check ./import` both check the file as expected; only the exact bare string `import` is swallowed.
 
+## Local file boundary
+
+This is a single-user command-line tool. Its positional input, importer input, mapping, calendar override and output arguments designate files the invoking operating-system account has chosen to read or write; they are not a sandbox. Do not expose the command as a web endpoint, multi-user service, or automation that accepts path values from a less-trusted caller without adding an appropriate safe-root boundary.
+
+Generated CSVs are staged in the selected output directory and atomically replace the selected output name. This means an existing output symlink is replaced rather than followed, and a failed write does not leave a partial report at that name. The checker still refuses an output path that resolves to either of its known input files.
+
 ## The rules it applies
 
 All of this is enacted law: the Treasury Laws Amendment (Payday Superannuation) Act 2025 (No. 57 of 2025, assent 6 November 2025), the Superannuation Guarantee Charge Amendment Act 2025 (No. 58 of 2025), and the regulations registered as F2026L00133, which amend the Superannuation Guarantee (Administration) Regulations 2018. It applies to paydays from 1 July 2026. Legal content here was verified on **2 August 2026**; `docs/research-notes-2026-08-02.md` records every source and, just as usefully, the points that rest on secondary commentary because the primary source blocks automated access.

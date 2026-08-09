@@ -229,6 +229,23 @@ def test_cli_refuses_to_overwrite_the_input(tmp_path, capsys):
     assert target.read_text(encoding="utf-8").startswith("employee_id,payment_date")
 
 
+def test_cli_replaces_an_output_symlink_without_touching_its_target(tmp_path):
+    """A report must replace its chosen output link, never write through it."""
+    output = tmp_path / "report.csv"
+    protected_target = tmp_path / "protected.csv"
+    protected_target.write_text("leave this file alone\n", encoding="utf-8")
+    try:
+        output.symlink_to(protected_target)
+    except OSError as exc:
+        pytest.skip(f"symlinks are unavailable in this test environment: {exc}")
+
+    assert main([str(FIXTURE), "-o", str(output), "--as-at", "2026-08-10"]) == EXIT_LATE_FOUND
+
+    assert not output.is_symlink()
+    assert protected_target.read_text(encoding="utf-8") == "leave this file alone\n"
+    assert "employee_id" in output.read_text(encoding="utf-8-sig")
+
+
 def test_cli_reports_missing_file(tmp_path, capsys):
     code = main([str(tmp_path / "nope.csv")])
     assert code == EXIT_ERROR
