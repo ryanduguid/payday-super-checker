@@ -1209,10 +1209,9 @@ def import_files(
     return value, because it is gone once the rows are built into
     `PayrollRow`/`SuperRow` objects (a `None` field on a row is then
     indistinguishable from "this file never had the column at all")."""
-    output = Path(out_path)
-    resolved_output = output.resolve()
+    out = Path(out_path).resolve()
     for source in (payroll_path, super_path):
-        if Path(source).resolve() == resolved_output:
+        if Path(source).resolve() == out:
             raise CsvError(
                 f"the output would overwrite {source}. Choose a different path with -o."
             )
@@ -1226,7 +1225,10 @@ def import_files(
         super_has_period_start="period_start" in super_resolved,
         super_has_period_end="period_end" in super_resolved,
     )
-    write_canonical(result, output)
+    # Keep the original selected path for the writer: it must replace an
+    # existing output symlink, not follow it to its target.  ``out`` above is
+    # only the canonical path used for the input/output alias check.
+    write_canonical(result, out_path)
 
     outcome_counts: dict[str, int] = {}
     for outcome in result.outcomes:
