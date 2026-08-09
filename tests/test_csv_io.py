@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from paydaysuper.csv_io import CsvError, load_mapping, parse_rows
+from paydaysuper.csv_io import CsvError, load_mapping, parse_date_text, parse_rows
 
 from conftest import SAMPLE as FIXTURE
 
@@ -162,6 +162,40 @@ def test_date_with_trailing_junk_is_rejected(tmp_path):
 def test_iso_datetime_is_accepted_as_its_calendar_day(tmp_path):
     path = write_csv(tmp_path, "E1,2026-07-09T14:30:00+10:00,600.00,,,no,no,,no")
     assert parse_rows(path, *load_mapping(None))[0].qe_day == date(2026, 7, 9)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # .NET DateTime and SQL Server datetime2 stamp seven fractional-second
+        # digits; the last case is a nine-digit nanosecond stamp. Python 3.10,
+        # the declared floor, refuses a fraction longer than six digits that
+        # 3.11+ truncates itself, so these are the cases that exercise the
+        # parser's own truncation on the floor version.
+        "2026-07-09T00:00:00.0000000",
+        "2026-07-09 00:00:00.0000000",
+        "2026-07-09T00:00:00.0000000Z",
+        "2026-07-09T14:30:00.1234567+10:00",
+        "2026-07-09 00:00:00.000000000",
+    ],
+)
+def test_long_fractional_seconds_parse_the_same_on_every_supported_python(text):
+    assert parse_date_text(text) == date(2026, 7, 9)
+
+
+def test_dotnet_timestamp_is_accepted_as_its_calendar_day(tmp_path):
+    path = write_csv(tmp_path, "E1,2026-07-09T00:00:00.0000000,600.00,,,no,no,,no")
+    assert parse_rows(path, *load_mapping(None))[0].qe_day == date(2026, 7, 9)
+
+
+@pytest.mark.parametrize("text", ["20260709", "2026-W28-4", "2026-07"])
+def test_iso_shapes_beyond_the_documented_surface_are_refused(text):
+    # fromisoformat on Python 3.11+ reads compact dates, week dates and bare
+    # year-months (2026-07 as its FIRST day); 3.10 refuses all three and the
+    # README documents none of them. Refused on every version rather than
+    # parsed on some: version-dependent acceptance is how the same file gets
+    # two different compliance verdicts.
+    assert parse_date_text(text) is None
 
 
 def test_unreadable_amount_is_rejected(tmp_path):

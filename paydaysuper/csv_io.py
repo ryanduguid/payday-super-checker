@@ -134,6 +134,24 @@ TIME_FORMATS = (
 # ERP extracts and would otherwise compound interest for millennia.
 LATEST_SANE_YEAR = 2200
 
+# .NET and SQL Server timestamps carry seven fractional-second digits
+# (2026-07-09T00:00:00.0000000). fromisoformat on Python 3.11+ truncates a
+# long fraction itself; 3.10, the declared floor, refuses it, so the same
+# export parsed on one interpreter and was refused on another. Truncated to
+# microseconds here, anchored to the seconds field so a digit run elsewhere
+# in a malformed string cannot be rewritten into something parseable.
+FRACTION_OVERFLOW = re.compile(r"(:\d{2}\.\d{6})\d+")
+
+# The ISO surface this tool accepts: a hyphenated calendar date, alone or
+# followed by a time. fromisoformat on 3.11+ also reads compact dates
+# (20260709), week dates (2026-W28-4) and bare year-months (2026-07, as its
+# FIRST day); 3.10 refuses all three, the pre-fromisoformat parser never
+# accepted them, and README documents none of them. They stay refused on
+# every version: a tool that refuses ambiguous dates must not read 2026-07
+# as 2026-07-01, and an eight-digit run in a date column is as likely a
+# mistyped identifier as a date.
+ISO_SHAPE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ].+)?$")
+
 
 def parse_date_text(text: str) -> date | None:
     """Read a date in any format this tool accepts, or None.
@@ -145,11 +163,13 @@ def parse_date_text(text: str) -> date | None:
         return None
     # datetime.fromisoformat accepts ISO dates and ISO date-times (including a
     # space or T separator). Z is normalised for Python versions before 3.11.
-    try:
+    if ISO_SHAPE.match(text):
         iso_text = text.removesuffix("Z") + "+00:00" if text.endswith("Z") else text
-        return datetime.fromisoformat(iso_text).date()
-    except ValueError:
-        pass
+        iso_text = FRACTION_OVERFLOW.sub(r"\1", iso_text)
+        try:
+            return datetime.fromisoformat(iso_text).date()
+        except ValueError:
+            pass
 
     for fmt in DATE_FORMATS:
         try:
