@@ -28,6 +28,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from .atomic_io import atomic_text_output
 from .csv_io import (
     AMOUNT_TEXT,
     LATEST_SANE_YEAR,
@@ -1077,7 +1078,7 @@ def write_canonical(result: JoinResult, path: str | Path) -> None:
         ) or row.employee_id or row.employee_name or ""
         labels.setdefault(_key(row, result.key_mode), preferred)
 
-    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+    with atomic_text_output(path, encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         writer.writerow(CANONICAL_HEADER)
         for outcome in result.outcomes:
@@ -1224,7 +1225,10 @@ def import_files(
         super_has_period_start="period_start" in super_resolved,
         super_has_period_end="period_end" in super_resolved,
     )
-    write_canonical(result, out)
+    # Keep the original selected path for the writer: it must replace an
+    # existing output symlink, not follow it to its target.  ``out`` above is
+    # only the canonical path used for the input/output alias check.
+    write_canonical(result, out_path)
 
     outcome_counts: dict[str, int] = {}
     for outcome in result.outcomes:
