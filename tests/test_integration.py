@@ -193,6 +193,33 @@ def test_console_summary_does_not_disclose_employee_identifiers():
     assert all(result.line.employee_id not in text for result in results)
     assert "row 3" in text
 
+    # The case-variant caveat prints on exposed rows too, so it must carry
+    # rows, not the ids it is about: an id that only ever differs from its
+    # sibling by capitalisation is still a payroll identifier.
+    variant_rows = [
+        ContribLine(
+            employee_id="Ava.Lawson@example.test",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("100.00"),
+            row=2,
+        ),
+        ContribLine(
+            employee_id="ava.lawson@example.test",
+            qe_day=date(2026, 7, 23),
+            sg_amount=Decimal("100.00"),
+            received=date(2026, 8, 4),
+            row=3,
+        ),
+    ]
+    variant_results = assess(variant_rows, load_calendar(), load_gic(), AS_AT)
+    assert variant_results[0].verdict == "UNPAID"  # its caveats are printed
+    text = console_summary(
+        variant_results, AS_AT, "report.csv", "2026-08-02", load_rates()
+    )
+    assert "capitalisation" in text
+    assert "rows 2, 3" in text
+    assert "ava.lawson" not in text.casefold()
+
 
 def test_cli_refuses_to_overwrite_the_input(tmp_path, capsys):
     target = tmp_path / "pay.csv"
@@ -818,7 +845,12 @@ def test_case_variant_employee_ids_are_flagged_not_merged():
     ]
     results = assess(rows, cal, load_gic(), AS_AT)
     assert results[1].deadline.due == date(2026, 8, 4)  # not aligned
-    assert any("capitalisation" in c for c in results[1].caveats)
+    flagged = [c for c in results[1].caveats if "capitalisation" in c]
+    assert flagged
+    # The caveat reaches the console, so it names rows, never the ids: each
+    # row's report CSV line already carries its employee_id in its own column.
+    assert all("rows 2, 3" in c for c in flagged)
+    assert all("EMP001" not in c and "emp001" not in c for c in flagged)
 
 
 def test_item4_inherited_from_an_unrecorded_payday_is_flagged():
