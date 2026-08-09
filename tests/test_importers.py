@@ -1911,6 +1911,36 @@ def test_import_subcommand_writes_the_file(tmp_path, capsys):
     assert "receipt" in printed.lower()
 
 
+def test_import_replaces_an_output_symlink_without_touching_its_target(tmp_path):
+    """The importer has the same output-link boundary as the checker."""
+    output = tmp_path / "contributions.csv"
+    protected_target = tmp_path / "protected.csv"
+    protected_target.write_text("leave this file alone\n", encoding="utf-8")
+    try:
+        output.symlink_to(protected_target)
+    except OSError as exc:
+        pytest.skip(f"symlinks are unavailable in this test environment: {exc}")
+
+    assert (
+        cli_main(
+            [
+                "import",
+                "--payroll",
+                str(FIXTURES / "myob_payroll.csv"),
+                "--super",
+                str(FIXTURES / "myob_super.csv"),
+                "-o",
+                str(output),
+            ]
+        )
+        == EXIT_OK
+    )
+
+    assert not output.is_symlink()
+    assert protected_target.read_text(encoding="utf-8") == "leave this file alone\n"
+    assert "employee_id" in output.read_text(encoding="utf-8-sig")
+
+
 def test_import_returns_two_when_a_payday_has_no_payment(tmp_path):
     src = tmp_path / "payroll.csv"
     src.write_text(
