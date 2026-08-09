@@ -33,3 +33,6 @@ Thumbs.db
 
 # Claude Code local state
 .claude/settings.local.json
+
+# Agent working notes, never part of the shipped tool
+.superpowers/
