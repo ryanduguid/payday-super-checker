@@ -341,7 +341,7 @@ def assess(
         # with the QE day and a 12-month calendar window, never the deadline.
         past_horizon = dl.due > cal.coverage_until
         horizon_unknown = (
-            f"the date recorded here is after that deadline, and a holiday the "
+            "the date recorded here is after that deadline, and a holiday the "
             "calendar does not hold could move the deadline past it, so the line is "
             "left unassessed rather than called late. Supply the missing holidays "
             "with --holidays-override and set its \"verified_until\" to the last date "

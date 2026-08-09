@@ -15,3 +15,11 @@ def test_atomic_text_output_keeps_the_previous_file_when_writing_fails(tmp_path)
 
     assert output.read_text(encoding="utf-8") == "previous complete report\n"
     assert not list(tmp_path.glob(".payday-super-checker-*.tmp"))
+
+
+def test_generated_output_requires_an_explicit_csv_filename(tmp_path):
+    with pytest.raises(ValueError, match=r"must use a \.csv filename"):
+        with atomic_text_output(tmp_path / "existing-report.txt", encoding="utf-8"):
+            pytest.fail("validation must happen before opening a staging file")
+
+    assert not list(tmp_path.glob(".payday-super-checker-*.tmp"))
