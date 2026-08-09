@@ -192,6 +192,39 @@ def test_a_non_list_jurisdictions_value_is_named(tmp_path, bad):
         load_calendar(override)
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("name", 7, "holiday name"),
+        ("name", " ", "holiday name"),
+        ("provisional", "false", "true or false"),
+        ("jurisdictions", ["NSW", "NSW"], "invalid or duplicate"),
+        ("jurisdictions", ["XYZ"], "invalid or duplicate"),
+    ],
+)
+def test_override_entries_reject_ambiguous_metadata(tmp_path, field, value, message):
+    entry = {
+        "date": "2029-03-30",
+        "name": "Good Friday",
+        "jurisdictions": ["ALL"],
+        field: value,
+    }
+    override = tmp_path / "bad-entry.json"
+    override.write_text(json.dumps({"add": [entry]}), encoding="utf-8")
+
+    with pytest.raises(CalendarError, match=message):
+        load_calendar(override)
+
+
+def test_override_rejects_duplicate_additions(tmp_path):
+    entry = {"date": "2029-03-30", "name": "Good Friday", "jurisdictions": ["ALL"]}
+    override = tmp_path / "duplicates.json"
+    override.write_text(json.dumps({"add": [entry, entry]}), encoding="utf-8")
+
+    with pytest.raises(CalendarError, match="duplicate date"):
+        load_calendar(override)
+
+
 def test_an_unpatched_calendar_computes_the_earlier_deadline(cal):
     """The other half of the pair above: without the override the same QE day
     lands four days earlier, which is what makes the horizon warning real."""

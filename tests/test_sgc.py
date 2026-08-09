@@ -67,7 +67,7 @@ def test_accrual_uses_the_rate_of_each_quarter():
     got = notional_earnings(Decimal("1000"), due, date(2026, 10, 1), table)
 
     expected = Decimal("0")
-    for day, pct in ((date(2026, 9, 30), "11.43"), (date(2026, 10, 1), "20.00")):
+    for _day, pct in ((date(2026, 9, 30), "11.43"), (date(2026, 10, 1), "20.00")):
         rate = Decimal(pct) / 100 / 365
         expected += (Decimal("1000") + expected) * rate
     assert got == expected

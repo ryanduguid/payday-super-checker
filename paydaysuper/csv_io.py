@@ -343,7 +343,7 @@ def _parse_rows(
                 continue
             row = {k: (v or "") for k, v in row.items() if k is not None}
 
-            def optional(field: str) -> str:
+            def optional(field: str, row: dict = row) -> str:
                 return row.get(mapping[field], "")
 
             employee = row[mapping["employee_id"]].strip()
