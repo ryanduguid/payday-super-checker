@@ -17,6 +17,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
+JURISDICTIONS = {"ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA", "ALL"}
 
 
 @dataclass(frozen=True)
@@ -111,9 +112,12 @@ def _parse_entry(e: dict, where: str) -> Holiday:
     for key in ("date", "name"):
         if key not in e:
             raise CalendarError(f"{where} is missing '{key}'")
+    raw_date = e["date"]
     try:
-        day = date.fromisoformat(str(e["date"]))
+        day = date.fromisoformat(raw_date) if isinstance(raw_date, str) else None
     except ValueError:
+        day = None
+    if day is None or raw_date != day.isoformat():
         raise CalendarError(
             f"{where} has date {e['date']!r}; write it as YYYY-MM-DD"
         )
@@ -129,19 +133,33 @@ def _parse_entry(e: dict, where: str) -> Holiday:
         )
     if not all(isinstance(j, str) for j in juris):
         raise CalendarError(f"{where} has a jurisdiction that is not a string: {juris!r}")
+    if not juris or len(juris) != len(set(juris)) or not set(juris) <= JURISDICTIONS:
+        raise CalendarError(
+            f"{where} has invalid or duplicate jurisdictions {juris!r}; use one or more of "
+            f"{sorted(JURISDICTIONS)}"
+        )
+    name = e["name"]
+    if not isinstance(name, str) or not name.strip() or any(ord(char) < 32 for char in name):
+        raise CalendarError(f"{where} has an invalid holiday name")
+    provisional = e.get("provisional", False)
+    if not isinstance(provisional, bool):
+        raise CalendarError(f"{where} provisional must be true or false")
     return Holiday(
         day=day,
-        name=str(e["name"]),
+        name=name.strip(),
         jurisdictions=tuple(juris),
-        provisional=bool(e.get("provisional", False)),
+        provisional=provisional,
     )
 
 
 def _calendar_date(raw: object, key: str, where: str) -> date:
     try:
-        return date.fromisoformat(str(raw))
-    except (TypeError, ValueError):
+        parsed = date.fromisoformat(raw) if isinstance(raw, str) else None
+    except ValueError:
+        parsed = None
+    if parsed is None or raw != parsed.isoformat():
         raise CalendarError(f"{where} has {key} {raw!r}; write it as YYYY-MM-DD")
+    return parsed
 
 
 def _checked_document(doc: object, path: Path) -> dict:
@@ -182,13 +200,12 @@ def load_calendar(override_path: str | Path | None = None) -> BusinessCalendar:
     path = DATA_DIR / "business_days.json"
     with open(path, encoding="utf-8") as f:
         doc = _checked_document(json.load(f), path)
-    holidays = {
-        h.day: h
-        for h in (
-            _parse_entry(e, f"bundled calendar entry {n}")
-            for n, e in enumerate(doc["non_business_days"], start=1)
-        )
-    }
+    holidays: dict[date, Holiday] = {}
+    for n, entry in enumerate(doc["non_business_days"], start=1):
+        holiday = _parse_entry(entry, f"bundled calendar entry {n}")
+        if holiday.day in holidays:
+            raise CalendarError(f"bundled calendar contains duplicate date {holiday.day}")
+        holidays[holiday.day] = holiday
 
     declared_until: date | None = None
     if override_path is not None:
@@ -214,13 +231,19 @@ def load_calendar(override_path: str | Path | None = None) -> BusinessCalendar:
         if not isinstance(remove, list):
             raise CalendarError(f"{override_path}: 'remove' must be a list of dates")
 
+        added_dates: set[date] = set()
         for n, e in enumerate(add, start=1):
             h = _parse_entry(e, f"{override_path} add entry {n}")
+            if h.day in added_dates:
+                raise CalendarError(f"override adds duplicate date {h.day}")
+            added_dates.add(h.day)
             holidays[h.day] = h
         for n, iso in enumerate(remove, start=1):
             try:
-                day = date.fromisoformat(str(iso))
+                day = date.fromisoformat(iso) if isinstance(iso, str) else None
             except ValueError:
+                day = None
+            if day is None or iso != day.isoformat():
                 raise CalendarError(
                     f"{override_path} remove entry {n} is {iso!r}; write it as YYYY-MM-DD"
                 )
