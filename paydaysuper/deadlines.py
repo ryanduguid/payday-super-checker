@@ -228,19 +228,29 @@ def apply_item4(pairs: list[tuple[ContribLine, Deadline]]) -> None:
 
     # Ids are grouped exactly as given. Folding case here could only ever
     # extend a deadline and so hide a real liability, which is the wrong way
-    # to be wrong; say so instead and let the operator decide.
+    # to be wrong; say so instead and let the operator decide. The caveat
+    # names row numbers, never the ids themselves: caveats reach the console,
+    # and redirected console output must not place a payroll identifier in a
+    # process log. Each named row already carries its employee_id in its own
+    # report CSV column, so nothing is lost there.
     by_casefold: dict[str, set[str]] = {}
     for employee_id in by_employee:
         by_casefold.setdefault(employee_id.casefold(), set()).add(employee_id)
     for variants in by_casefold.values():
         if len(variants) > 1:
-            listed = ", ".join(sorted(variants))
+            rows = sorted(
+                line.row
+                for employee_id in variants
+                for line, _ in by_employee[employee_id]
+            )
+            listed = ", ".join(str(row) for row in rows)
             for employee_id in variants:
                 for _, dl in by_employee[employee_id]:
                     dl.caveats.append(
-                        f"employee ids {listed} differ only by capitalisation and are "
-                        "treated as different people, so no deadline is aligned between "
-                        "them (s 18C(2) item 4). If they are one person, make the ids match"
+                        f"the employee ids on rows {listed} differ only by "
+                        "capitalisation and are treated as different people, so no "
+                        "deadline is aligned between them (s 18C(2) item 4). If they "
+                        "are one person, make the ids match"
                     )
 
     for items in by_employee.values():

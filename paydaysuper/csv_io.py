@@ -134,6 +134,37 @@ TIME_FORMATS = (
 # ERP extracts and would otherwise compound interest for millennia.
 LATEST_SANE_YEAR = 2200
 
+# .NET and SQL Server timestamps carry seven fractional-second digits
+# (2026-07-09T00:00:00.0000000). fromisoformat on Python 3.11+ truncates a
+# long fraction itself; 3.10, the declared floor, refuses it, so the same
+# export parsed on one interpreter and was refused on another. Truncated to
+# microseconds here, anchored to the seconds field so a digit run elsewhere
+# in a malformed string cannot be rewritten into something parseable.
+FRACTION_OVERFLOW = re.compile(r"(:\d{2}\.\d{6})\d+")
+
+# Python 3.10 fromisoformat accepts only 3- or 6-digit fractions; 3.11+
+# accepts any length. Zero-padding to microseconds makes every interpreter
+# parse the same fraction surface. Anchored to the seconds field like
+# FRACTION_OVERFLOW, and applied after it, so only 1-5 digit runs remain.
+FRACTION_PAD = re.compile(r"(:\d{2})\.(\d{1,5})(?!\d)")
+
+# The ISO surface this tool accepts: a hyphenated calendar date, alone or
+# followed by a colon-separated time and an optional numeric offset — the
+# grammar Python 3.10, the declared floor, itself parses once Z and the
+# fraction are normalised. fromisoformat on 3.11+ additionally reads compact
+# dates (20260709), week dates (2026-W28-4), bare year-months (2026-07, as
+# its FIRST day), compact times (T000000), comma decimal seconds and
+# hour-only offsets; the pre-fromisoformat parser accepted none of them and
+# README documents none of them. The shape gate refuses them all on every
+# version: a tool that refuses ambiguous dates must not read 2026-07 as
+# 2026-07-01, and version-dependent acceptance is how the same file gets
+# two different compliance verdicts.
+ISO_SHAPE = re.compile(
+    r"\d{4}-\d{2}-\d{2}"
+    r"(?:[T ]\d{2}(?::\d{2}(?::\d{2}(?:\.\d{1,6})?)?)?"
+    r"(?:[+-]\d{2}:\d{2}(?::\d{2})?)?)?$"
+)
+
 
 def parse_date_text(text: str) -> date | None:
     """Read a date in any format this tool accepts, or None.
@@ -144,12 +175,18 @@ def parse_date_text(text: str) -> date | None:
     if not text:
         return None
     # datetime.fromisoformat accepts ISO dates and ISO date-times (including a
-    # space or T separator). Z is normalised for Python versions before 3.11.
-    try:
-        iso_text = text.removesuffix("Z") + "+00:00" if text.endswith("Z") else text
-        return datetime.fromisoformat(iso_text).date()
-    except ValueError:
-        pass
+    # space or T separator). Normalise first — Z for Python versions before
+    # 3.11, the fraction truncated then zero-padded to microseconds — and
+    # shape-check the normalised text, so the gate and the parser see the
+    # same string and every supported interpreter accepts the same surface.
+    iso_text = text.removesuffix("Z") + "+00:00" if text.endswith("Z") else text
+    iso_text = FRACTION_OVERFLOW.sub(r"\1", iso_text)
+    iso_text = FRACTION_PAD.sub(lambda m: m.group(1) + "." + m.group(2).ljust(6, "0"), iso_text)
+    if ISO_SHAPE.match(iso_text):
+        try:
+            return datetime.fromisoformat(iso_text).date()
+        except ValueError:
+            pass
 
     for fmt in DATE_FORMATS:
         try:

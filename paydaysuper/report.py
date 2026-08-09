@@ -37,10 +37,14 @@ EXPOSED = (LATE, UNPAID)
 
 CENTS = Decimal("0.01")
 
-# Every AT_RISK row carries this by construction: the verdict is only ever set
-# where a remittance date exists and a fund-receipt date does not, which is the
-# same condition that appends it. Named here so the console can tell it apart
-# from a caveat that says something about the particular row.
+# Appended wherever the verdict rests on a remittance date with no
+# fund-receipt date supplied at all. Named here so the console can tell it
+# apart from a caveat that says something about the particular row: the
+# at-risk block's header already says this, so listing it per row would only
+# repeat the header. A row whose only receipt date post-dates the as-at date
+# gets a distinct variant caveat instead, because "no fund-receipt date
+# supplied" would be false there and the variant says something the header
+# does not.
 NO_RECEIPT_CAVEAT = (
     "no fund-receipt date supplied: the statutory test is receipt by the "
     "fund (SGAA s 18C(1)), so a remittance date alone cannot show the "
@@ -171,11 +175,12 @@ def _item4_seeded_by_unrecorded(
     line: ContribLine,
     dl: Deadline,
     index: dict[tuple[str, date], list[ContribLine]],
+    as_at: date,
 ) -> str | None:
     """Item 4 needs an EARLIER ELIGIBLE CONTRIBUTION. The tool cannot see
     whether one was made, so where every earlier line it could have inherited
-    from records no payment at all, name both deadlines rather than quietly
-    presenting the longer one as settled.
+    from records no payment on or before the as-at date, name both deadlines
+    rather than quietly presenting the longer one as settled.
 
     The line's own deadline is the one apply_item4 recorded before it moved
     `due`. Recomputing it here from qe_day would drop the out-of-cycle
@@ -193,17 +198,23 @@ def _item4_seeded_by_unrecorded(
         # A nil payday is not an eligible contribution whatever dates it
         # carries, so a remittance date on one cannot show the earlier
         # contribution item 4 needs. Testing the dates alone let a 0.00 donor
-        # suppress this caveat outright.
-        return d.sg_amount <= 0 or (d.received is None and d.remitted is None)
+        # suppress this caveat outright. A payment dated after the as-at date
+        # cannot settle it either: this is an as-at report, and future facts
+        # must not settle a historical verdict.
+        return d.sg_amount <= 0 or (
+            (d.received is None or d.received > as_at)
+            and (d.remitted is None or d.remitted > as_at)
+        )
 
     if donors and all(unrecorded(d) for d in donors):
         earlier = ", ".join(sorted({d.qe_day.isoformat() for d in donors}))
         own = dl.own_due
         return (
-            f"this deadline is inherited from the QE day {earlier}, for which no payment "
-            "is recorded. s 18C(2) item 4 needs an earlier eligible contribution, so if "
-            f"none was made the deadline for this line is {own.isoformat()} and any "
-            "shortfall is larger than shown"
+            f"this deadline is inherited from the QE day {earlier}, for which no "
+            f"payment on or before the as-at date {as_at.isoformat()} is recorded. "
+            "s 18C(2) item 4 needs an earlier eligible contribution, so if none was "
+            f"made the deadline for this line is {own.isoformat()} and any shortfall "
+            "is larger than shown"
         )
     return None
 
@@ -254,7 +265,7 @@ def assess(
         result = Result(line, dl, UNKNOWN, notes=list(dl.notes), caveats=list(dl.caveats))
         if line.duplicate_note:
             result.caveats.append(line.duplicate_note)
-        inherited = _item4_seeded_by_unrecorded(line, dl, donors)
+        inherited = _item4_seeded_by_unrecorded(line, dl, donors, as_at)
         if inherited:
             result.caveats.append(inherited)
 
@@ -300,11 +311,20 @@ def assess(
                 f"{as_at.isoformat()}: it is ignored for this as-at report"
             )
         if settled is None and remitted is not None:
-            result.caveats.append(
-                "no fund-receipt date supplied: the statutory test is receipt by the "
-                "fund (SGAA s 18C(1)), so a remittance date alone cannot show the "
-                "contribution was on time"
-            )
+            if line.received is not None:
+                # A receipt date exists but post-dates the as-at date, so
+                # NO_RECEIPT_CAVEAT would be false on this row. The variant
+                # keeps the constant meaning exactly what the console's
+                # at-risk filter assumes it means.
+                result.caveats.append(
+                    "the only fund-receipt date on record "
+                    f"({line.received.isoformat()}) is after the as-at date, so as at "
+                    f"{as_at.isoformat()} the statutory test of receipt by the fund "
+                    "(SGAA s 18C(1)) is not met and a remittance date alone cannot "
+                    "show the contribution was on time"
+                )
+            else:
+                result.caveats.append(NO_RECEIPT_CAVEAT)
 
         # Past the calendar's coverage the holiday table is empty, so every
         # weekday counts as a business day and the deadline computed here can
