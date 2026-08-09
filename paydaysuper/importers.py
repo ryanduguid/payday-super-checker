@@ -28,6 +28,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from .atomic_io import atomic_text_output
 from .csv_io import (
     AMOUNT_TEXT,
     LATEST_SANE_YEAR,
@@ -1077,7 +1078,7 @@ def write_canonical(result: JoinResult, path: str | Path) -> None:
         ) or row.employee_id or row.employee_name or ""
         labels.setdefault(_key(row, result.key_mode), preferred)
 
-    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+    with atomic_text_output(path, encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         writer.writerow(CANONICAL_HEADER)
         for outcome in result.outcomes:
@@ -1208,9 +1209,10 @@ def import_files(
     return value, because it is gone once the rows are built into
     `PayrollRow`/`SuperRow` objects (a `None` field on a row is then
     indistinguishable from "this file never had the column at all")."""
-    out = Path(out_path).resolve()
+    output = Path(out_path)
+    resolved_output = output.resolve()
     for source in (payroll_path, super_path):
-        if Path(source).resolve() == out:
+        if Path(source).resolve() == resolved_output:
             raise CsvError(
                 f"the output would overwrite {source}. Choose a different path with -o."
             )
@@ -1224,7 +1226,7 @@ def import_files(
         super_has_period_start="period_start" in super_resolved,
         super_has_period_end="period_end" in super_resolved,
     )
-    write_canonical(result, out)
+    write_canonical(result, output)
 
     outcome_counts: dict[str, int] = {}
     for outcome in result.outcomes:

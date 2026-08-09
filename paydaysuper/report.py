@@ -8,6 +8,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from . import __version__
+from .atomic_io import atomic_text_output
 from .calendar import BusinessCalendar
 from .deadlines import (
     ITEM4_ALIGNED,
@@ -614,7 +615,7 @@ def write_csv(
     # CSV in the locale code page, so a non-ASCII employee id comes out
     # mojibake and stops joining back to the payroll export. parse_rows
     # already reads with utf-8-sig, so a report fed back in still parses.
-    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+    with atomic_text_output(path, encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         writer.writerow(CSV_HEADER)
         for r in results:
