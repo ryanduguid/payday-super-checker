@@ -29,5 +29,11 @@ owner-only on POSIX, inheriting the destination directory's ACL on Windows —
 and atomically replace the destination entry, so an existing destination
 symlink is replaced rather than followed and a failed write preserves the
 previous complete file. Input and
-override paths are read-only; `Path.resolve()` calls compare caller-selected
-paths to prevent input/output aliasing and do not themselves mutate files.
+override paths are read-only. Before either command does any work it resolves
+its selected output path with `Path.resolve()` and compares it against every
+path it will read — for the check, the contribution CSV, `--mapping-file` and
+`--holidays-override`; for the import, `--payroll` and `--super` — and refuses
+the run if any of them is the same file. Resolving follows a symlink for the
+purpose of that comparison and does not itself mutate anything. The `.csv`
+filename rule is not part of this check: it constrains the output name only,
+and a mapping or override file may carry that suffix.
