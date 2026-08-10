@@ -370,13 +370,24 @@ def assess(
                         "under s 18C(1)(c)(ii)"
                     )
                 else:
-                    result.verdict = LATE
                     stale_prepayment = True
                     result.caveats.append(
                         f"received {settled.isoformat()}, before the 12-month pre-payment "
                         "window in s 18C(1)(c)(ii), so it cannot be applied to this payday. "
                         "The payday is treated as unfunded"
                     )
+                    if dl.due >= as_at:
+                        # Unfunded, but not yet due. Same treatment as a payday
+                        # with nothing recorded against it at all: a deadline
+                        # that has not arrived cannot have been missed, so there
+                        # is no shortfall, no SG charge and nothing to flag.
+                        result.caveats.append(
+                            "the deadline has not passed, so there is nothing to assess "
+                            "on this payday yet"
+                        )
+                        results.append(result)
+                        continue
+                    result.verdict = LATE
             elif past_horizon and settled > dl.due:
                 result.verdict = UNKNOWN
                 result.horizon_verdicts = (LATE, ON_TIME)

@@ -481,6 +481,27 @@ def test_stale_prepayment_keeps_the_full_shortfall():
     assert not any("s 18D" in w for w in r.warnings)
 
 
+def test_stale_prepayment_before_the_deadline_is_not_yet_assessable():
+    """A receipt outside the 12-month window cannot fund the payday, but a
+    deadline that has not arrived cannot have been missed either. The line is
+    unfunded and not yet due, so it must be as quiet as a payday with no dates
+    recorded at all - not LATE with a full shortfall and an SG-charge estimate."""
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2027, 7, 9),
+        sg_amount=Decimal("300.00"),
+        received=date(2026, 7, 1),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), date(2027, 7, 12))[0]
+
+    assert r.deadline.due >= date(2027, 7, 12)
+    assert r.verdict == "UNKNOWN"
+    assert r.sgc_high is None
+    assert any("12-month pre-payment window" in caveat for caveat in r.caveats)
+    assert any("the deadline has not passed" in caveat for caveat in r.caveats)
+
+
 def test_notional_earnings_stop_before_an_assessment():
     """Once assessed, interest on the charge is GIC on the assessment, which
     this tool does not model, so accrual stops the day before."""
