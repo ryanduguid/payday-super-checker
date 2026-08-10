@@ -3,7 +3,6 @@ import csv
 import json
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
 
@@ -109,6 +108,20 @@ def test_same_dates_without_the_extension_are_late():
     r = by_employee(run_fixture(), "EMP001", date(2026, 7, 23))
     assert r.deadline.due == date(2026, 8, 4)
     assert r.verdict == "LATE"
+
+
+@pytest.mark.parametrize("bad_output", ["report.txt", "report", "report.csv.bak"])
+def test_cli_rejects_a_non_csv_output_without_a_traceback(tmp_path, capsys, bad_output):
+    """write_csv raises ValueError for these, and the write handler only ever
+    covered OSError. The contract is 'error: <message>' and exit 1."""
+    out = tmp_path / bad_output
+    code = main([str(FIXTURE), "-o", str(out), "--as-at", "2026-08-10"])
+
+    assert code == EXIT_ERROR
+    captured = capsys.readouterr()
+    assert captured.err.startswith("error: ")
+    assert ".csv" in captured.err
+    assert not out.exists()
 
 
 def test_cli_writes_report_and_flags_late(tmp_path, capsys):

@@ -15,6 +15,18 @@ from pathlib import Path
 from typing import TextIO
 
 
+def csv_destination(path: str | Path) -> Path:
+    """Validate the deliberately user-selected generated-output boundary.
+
+    Public so a caller can reject a bad ``-o`` before doing the work, rather
+    than only discovering it at write time.
+    """
+    destination = Path(path)
+    if destination.suffix.lower() != ".csv":
+        raise ValueError(f"generated output must use a .csv filename: {destination}")
+    return destination
+
+
 @contextmanager
 def atomic_text_output(path: str | Path, *, encoding: str) -> Iterator[TextIO]:
     """Yield a text stream staged beside ``path``, then replace ``path``.
@@ -24,7 +36,7 @@ def atomic_text_output(path: str | Path, *, encoding: str) -> Iterator[TextIO]:
     itself rather than opening its target.  ``mkstemp`` also creates the
     staging file with owner-only permissions on platforms that support them.
     """
-    destination = Path(path)
+    destination = csv_destination(path)
     fd: int | None = None
     temporary_path: str | None = None
     try:
