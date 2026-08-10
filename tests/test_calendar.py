@@ -175,6 +175,19 @@ def test_a_bad_declared_coverage_date_is_named(tmp_path):
         load_calendar(override)
 
 
+@pytest.mark.parametrize("missing", ["date", "name", "jurisdictions"])
+def test_an_override_entry_names_the_key_it_is_missing(tmp_path, missing):
+    """A holiday only stops the clock where it is gazetted, so an entry that
+    omits jurisdictions is incomplete, not a request for a default."""
+    entry = {"date": "2029-03-30", "name": "Good Friday", "jurisdictions": ["ALL"]}
+    del entry[missing]
+    override = tmp_path / "incomplete.json"
+    override.write_text(json.dumps({"add": [entry]}), encoding="utf-8")
+
+    with pytest.raises(CalendarError, match=f"is missing '{missing}'"):
+        load_calendar(override)
+
+
 @pytest.mark.parametrize("bad", [5, "NSW", {"state": "NSW"}, [1, 2]])
 def test_a_non_list_jurisdictions_value_is_named(tmp_path, bad):
     """tuple(5) is a TypeError the CLI does not catch, and a bare "NSW" would
@@ -189,6 +202,39 @@ def test_a_non_list_jurisdictions_value_is_named(tmp_path, bad):
         encoding="utf-8",
     )
     with pytest.raises(CalendarError, match="jurisdiction"):
+        load_calendar(override)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("name", 7, "holiday name"),
+        ("name", " ", "holiday name"),
+        ("provisional", "false", "true or false"),
+        ("jurisdictions", ["NSW", "NSW"], "invalid or duplicate"),
+        ("jurisdictions", ["XYZ"], "invalid or duplicate"),
+    ],
+)
+def test_override_entries_reject_ambiguous_metadata(tmp_path, field, value, message):
+    entry = {
+        "date": "2029-03-30",
+        "name": "Good Friday",
+        "jurisdictions": ["ALL"],
+        field: value,
+    }
+    override = tmp_path / "bad-entry.json"
+    override.write_text(json.dumps({"add": [entry]}), encoding="utf-8")
+
+    with pytest.raises(CalendarError, match=message):
+        load_calendar(override)
+
+
+def test_override_rejects_duplicate_additions(tmp_path):
+    entry = {"date": "2029-03-30", "name": "Good Friday", "jurisdictions": ["ALL"]}
+    override = tmp_path / "duplicates.json"
+    override.write_text(json.dumps({"add": [entry, entry]}), encoding="utf-8")
+
+    with pytest.raises(CalendarError, match="duplicate date"):
         load_calendar(override)
 
 

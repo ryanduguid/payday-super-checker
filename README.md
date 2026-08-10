@@ -137,7 +137,7 @@ Both figures survive in the importer's own warning lines, written as `row N: par
 
 This is a single-user command-line tool. Its positional input, importer input, mapping, calendar override and output arguments designate files the invoking operating-system account has chosen to read or write; they are not a sandbox. Do not expose the command as a web endpoint, multi-user service, or automation that accepts path values from a less-trusted caller without adding an appropriate safe-root boundary.
 
-Generated CSVs are staged in the selected output directory and atomically replace the selected output name. This means an existing output symlink is replaced rather than followed, and a failed write does not leave a partial report at that name. The checker still refuses an output path that resolves to either of its known input files.
+Generated outputs must have an explicit `.csv` filename. They are staged in the selected output directory and atomically replace the selected output name. This means an existing output symlink is replaced rather than followed, and a failed write does not leave a partial report at that name. The checker still refuses an output path that resolves to either of its known input files.
 
 ## The rules it applies
 
