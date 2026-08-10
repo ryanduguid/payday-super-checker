@@ -307,11 +307,30 @@ def main(argv: list[str] | None = None) -> int:
     try:
         as_at = _parse_cli_date(args.as_at, "--as-at") or date.today()
         assessment_date = _parse_cli_date(args.assessment_date, "--assessment-date")
-        if Path(args.output).resolve() == Path(args.csv_path).resolve():
-            raise CsvError(
-                "the report would overwrite the input file. Choose a different "
-                "path with -o."
-            )
+        # Every file this command reads, not only the positional one.
+        # --mapping-file and --holidays-override are input files the operator
+        # wrote by hand, and an -o aimed at either used to destroy it in
+        # silence: the run finished normally and returned its ordinary exit
+        # code (EXIT_LATE_FOUND on anything with an exposed line, which a
+        # scheduled wrapper reads as a finding rather than an error) with
+        # nothing on stderr. The .csv suffix rule below is not a substitute --
+        # it constrains the output NAME only, so an override file that happens
+        # to be named .csv walks straight past it. importers.import_files
+        # guards both of ITS inputs the same way. README.md's "Local file
+        # boundary" section and SECURITY.md's "Local path trust boundary"
+        # section both state the rule for the tool as a whole, so those two
+        # and this loop and that one have to move together.
+        output = Path(args.output).resolve()
+        for value, label in (
+            (args.csv_path, "the input file"),
+            (args.mapping_file, "the --mapping-file input"),
+            (args.holidays_override, "the --holidays-override input"),
+        ):
+            if value is not None and Path(value).resolve() == output:
+                raise CsvError(
+                    f"the report would overwrite {label} {value}. Choose a "
+                    "different path with -o."
+                )
         # Reject a bad -o here rather than at write time, so the operator is
         # told before the whole assessment runs. write_csv enforces the same
         # rule, but the ValueError it raises reaches a handler that only
