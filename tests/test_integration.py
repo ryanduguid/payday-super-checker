@@ -11,7 +11,7 @@ from paydaysuper.cli import EXIT_ERROR, EXIT_LATE_FOUND, main
 from paydaysuper.csv_io import load_mapping, parse_rows
 from paydaysuper.deadlines import ContribLine
 from paydaysuper.rates import load_gic, load_rates
-from paydaysuper.report import assess, console_summary
+from paydaysuper.report import assess, console_summary, financial_year
 from paydaysuper.sgc import notional_earnings
 
 from conftest import SAMPLE as FIXTURE
@@ -618,6 +618,39 @@ def test_mcb_caveat_follows_the_as_at_financial_year():
     assert "$280,000 for 2027-28" in text_2027
 
 
+def test_financial_year_rolls_over_on_1_july():
+    """The 30 June / 1 July boundary itself. Every other test in this area
+    uses July and September paydays, which land in the same financial year
+    whether the rollover is tested at month 6 or month 7, so the boundary
+    that decides which year's figures the console names was unguarded."""
+    assert financial_year(date(2027, 6, 30)) == "2026-27"
+    assert financial_year(date(2027, 7, 1)) == "2027-28"
+    assert financial_year(date(2026, 12, 31)) == "2026-27"
+    assert financial_year(date(2027, 1, 1)) == "2026-27"
+
+
+def test_a_june_payday_names_the_financial_year_it_falls_in():
+    """A June payday belongs to the financial year that started the previous
+    July, so the console must quote that year's maximum contributions base.
+    A rollover one month early sends it looking for a 2027-28 entry that
+    rates.json does not hold, and the figure drops out of the workpaper in
+    favour of the bare words "the annual cap"."""
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2027, 6, 8),
+        sg_amount=Decimal("600.00"),
+        received=date(2027, 6, 15),
+        row=2,
+    )
+    results = assess([line], load_calendar(), load_gic(), date(2027, 7, 15))
+    assert results[0].verdict == "ON_TIME"
+    text = console_summary(
+        results, date(2027, 7, 15), "report.csv", "2026-08-02", load_rates()
+    )
+    assert "$270,830 for 2026-27" in text
+    assert "the annual cap" not in text
+
+
 def test_all_date_problems_are_reported_at_once():
     bad = [
         ContribLine(
@@ -788,6 +821,91 @@ def test_an_unassessable_line_is_not_counted_as_a_plain_data_quality_note():
     text = console_summary(results, date(2029, 4, 1), "report.csv", "2026-08-02", load_rates())
     assert "cannot be assessed" in text
     assert "other line(s) carry data-quality notes" not in text
+
+
+def test_a_deadline_on_the_last_covered_day_is_still_assessed(tmp_path):
+    """The boundary of `dl.due > cal.coverage_until`.
+
+    A deadline landing exactly on the last day the calendar is complete to
+    is covered: every holiday up to and including that day is in the table,
+    so the date is settled and the verdict is owed. Unreachable with the
+    bundled table alone, whose coverage ends on a Sunday, and reachable the
+    moment a user follows the README and declares an override's own
+    `verified_until` on a business day. Treating the boundary as past the
+    horizon would leave this line UNKNOWN with days late blank and the
+    shortfall and SG-charge columns emptied."""
+    override = tmp_path / "override.json"
+    override.write_text(
+        json.dumps(
+            {
+                # A Tuesday, and no national holiday falls on it.
+                "verified_until": "2029-04-24",
+                "add": [
+                    {"date": "2029-03-30", "name": "Good Friday",
+                     "jurisdictions": ["ALL"]},
+                    {"date": "2029-04-02", "name": "Easter Monday",
+                     "jurisdictions": ["ALL"]},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    cal = load_calendar(override)
+    assert cal.coverage_until == date(2029, 4, 24)
+
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2029, 4, 13),
+        sg_amount=Decimal("500.00"),
+        received=date(2029, 4, 30),
+        row=2,
+    )
+    r = assess([line], cal, load_gic(), date(2029, 5, 15))[0]
+    assert r.deadline.due == cal.coverage_until
+    assert r.verdict == "LATE"
+    assert r.horizon_verdicts is None
+    assert r.days_late == 6
+    assert r.final_shortfall is not None
+    assert not any("beyond the calendar's coverage" in c for c in r.caveats)
+    assert not any("runs past the calendar's coverage" in c for c in r.caveats)
+    assert not any("left unassessed" in c for c in r.caveats)
+
+
+def test_a_deadline_one_day_past_the_last_covered_day_is_not_assessed(tmp_path):
+    """The other side of the same comparison, so the pair pins the operator
+    rather than only the direction. One day later the table can be missing a
+    holiday that moves the deadline, and the verdict is no longer owed."""
+    override = tmp_path / "override.json"
+    override.write_text(
+        json.dumps(
+            {
+                "verified_until": "2029-04-23",
+                "add": [
+                    {"date": "2029-03-30", "name": "Good Friday",
+                     "jurisdictions": ["ALL"]},
+                    {"date": "2029-04-02", "name": "Easter Monday",
+                     "jurisdictions": ["ALL"]},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    cal = load_calendar(override)
+    assert cal.coverage_until == date(2029, 4, 23)
+
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2029, 4, 13),
+        sg_amount=Decimal("500.00"),
+        received=date(2029, 4, 30),
+        row=2,
+    )
+    r = assess([line], cal, load_gic(), date(2029, 5, 15))[0]
+    assert r.deadline.due == date(2029, 4, 24)
+    assert r.deadline.due > cal.coverage_until
+    assert r.verdict == "UNKNOWN"
+    assert r.horizon_verdicts == ("LATE", "ON_TIME")
+    assert r.days_late is None
 
 
 def test_a_deadline_inside_the_horizon_is_still_assessed():
