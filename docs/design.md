@@ -38,10 +38,10 @@ The rules below were researched against primary sources and then re-checked by a
 Verdicts:
 
 - `ON_TIME` - received by the due date, or a valid pre-payment inside the 12-month window.
-- `LATE` - received or remitted after the due date, or funded only by a pre-payment too old to apply.
+- `LATE` - received or remitted after the due date, or, once the due date has passed, funded only by a pre-payment too old to apply.
 - `AT_RISK` - remitted by the due date with no fund-receipt date. The statutory test is receipt, so this is not a pass.
 - `UNPAID` - the due date has passed and nothing at all is recorded. Carries the full shortfall plus interest.
-- `UNKNOWN` - three ways in. Two mean nothing to assess: nothing recorded and not yet due, and a row carrying no SG amount, so no dates on it can put anything at risk. The third means the opposite. The deadline runs past the calendar's coverage AND the date on the row is after it, so the line is late on this calendar and could be on time on the real one. That case names both candidate verdicts in its own console block and drives the same non-zero exit code `LATE` does, because a run that cannot tell whether a shortfall exists has not found nothing.
+- `UNKNOWN` - four ways in. Three mean nothing to assess: nothing recorded and not yet due; a row carrying no SG amount, so no dates on it can put anything at risk; and a payday funded only by a pre-payment too old to apply whose due date has not arrived, since a deadline that has not passed cannot have been missed. The fourth means the opposite. The deadline runs past the calendar's coverage AND the date on the row is after it, so the line is late on this calendar and could be on time on the real one. That case names both candidate verdicts in its own console block and drives the same non-zero exit code `LATE` does, because a run that cannot tell whether a shortfall exists has not found nothing.
 - `SKIPPED` - defined-benefit interests, where the contribution is notional (s 18A(3)).
 
 `LATE` and `UNPAID` carry exposure figures. Remittance-based results always carry the assumed-receipt caveat.
