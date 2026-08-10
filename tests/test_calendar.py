@@ -175,6 +175,19 @@ def test_a_bad_declared_coverage_date_is_named(tmp_path):
         load_calendar(override)
 
 
+@pytest.mark.parametrize("missing", ["date", "name", "jurisdictions"])
+def test_an_override_entry_names_the_key_it_is_missing(tmp_path, missing):
+    """A holiday only stops the clock where it is gazetted, so an entry that
+    omits jurisdictions is incomplete, not a request for a default."""
+    entry = {"date": "2029-03-30", "name": "Good Friday", "jurisdictions": ["ALL"]}
+    del entry[missing]
+    override = tmp_path / "incomplete.json"
+    override.write_text(json.dumps({"add": [entry]}), encoding="utf-8")
+
+    with pytest.raises(CalendarError, match=f"is missing '{missing}'"):
+        load_calendar(override)
+
+
 @pytest.mark.parametrize("bad", [5, "NSW", {"state": "NSW"}, [1, 2]])
 def test_a_non_list_jurisdictions_value_is_named(tmp_path, bad):
     """tuple(5) is a TypeError the CLI does not catch, and a bare "NSW" would

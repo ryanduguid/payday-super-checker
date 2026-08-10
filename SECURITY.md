@@ -22,9 +22,12 @@ with elevated privileges or pass path arguments from a less-trusted user, web
 request, queue, or other tenant without first enforcing a caller-specific safe
 root.
 
-Only generated `.csv` filenames are accepted. Writes use an owner-only random
-staging file beside the selected destination and atomically replace the
-destination entry, so an existing destination symlink is replaced rather than
-followed and a failed write preserves the previous complete file. Input and
+A generated report must be given a `.csv` filename. That constrains the name
+only; it is not a path boundary and does not confine the write to any
+directory. Writes use a random staging file beside the selected destination —
+owner-only on POSIX, inheriting the destination directory's ACL on Windows —
+and atomically replace the destination entry, so an existing destination
+symlink is replaced rather than followed and a failed write preserves the
+previous complete file. Input and
 override paths are read-only; `Path.resolve()` calls compare caller-selected
 paths to prevent input/output aliasing and do not themselves mutate files.

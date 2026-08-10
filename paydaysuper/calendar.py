@@ -109,7 +109,11 @@ class BusinessCalendar:
 def _parse_entry(e: dict, where: str) -> Holiday:
     if not isinstance(e, dict):
         raise CalendarError(f"{where} must be an object with 'date' and 'name'")
-    for key in ("date", "name"):
+    # jurisdictions is required, not optional. A holiday only stops the clock
+    # where it is gazetted, so an entry that does not say where it applies has
+    # no defensible default: an empty list would never match and "ALL" would
+    # silently move every deadline in the country.
+    for key in ("date", "name", "jurisdictions"):
         if key not in e:
             raise CalendarError(f"{where} is missing '{key}'")
     raw_date = e["date"]
@@ -125,7 +129,7 @@ def _parse_entry(e: dict, where: str) -> Holiday:
     # plausible typo rather than a corrupt bundle: tuple(5) is a TypeError
     # the CLI's handler does not catch, and a bare string would silently
     # become one jurisdiction per character.
-    juris = e.get("jurisdictions", [])
+    juris = e["jurisdictions"]
     if not isinstance(juris, list):
         raise CalendarError(
             f"{where} has jurisdictions {juris!r}; write it as a list of "
