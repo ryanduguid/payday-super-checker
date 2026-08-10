@@ -823,6 +823,75 @@ def test_an_unassessable_line_is_not_counted_as_a_plain_data_quality_note():
     assert "other line(s) carry data-quality notes" not in text
 
 
+# Every whole-of-jurisdiction public holiday from 2029-01-01, the day after
+# the bundled table's own verified_until, through 2029-04-05. That is exactly
+# what the overrides below claim: load_calendar reads `verified_until` as the
+# user asserting EVERY national holiday through that date has been entered,
+# so an override that declares the span and lists only the holidays its own
+# assertions need commits the under-declaration the horizon design exists to
+# prevent. Same union rule and same source as the bundled table
+# (tools/generate_calendar.py over holidays==0.102), cross-checked against it
+# by test_the_horizon_overrides_declare_every_holiday_in_their_span. Easter
+# Saturday and Easter Sunday fall on a weekend and change nothing; they are
+# here because the claim is completeness, not "the ones that matter".
+HOLIDAYS_TO_2029_04_05 = [
+    {"date": "2029-01-01", "name": "New Year's Day",
+     "jurisdictions": ["ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"]},
+    {"date": "2029-01-26", "name": "Australia Day",
+     "jurisdictions": ["ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"]},
+    {"date": "2029-03-05", "name": "Labour Day", "jurisdictions": ["WA"]},
+    {"date": "2029-03-12", "name": "Adelaide Cup Day; Canberra Day; Eight Hours Day; Labour Day",
+     "jurisdictions": ["ACT", "SA", "TAS", "VIC"]},
+    {"date": "2029-03-30", "name": "Good Friday",
+     "jurisdictions": ["ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"]},
+    {"date": "2029-03-31", "name": "Easter Saturday",
+     "jurisdictions": ["ACT", "NSW", "NT", "QLD", "SA", "VIC"]},
+    {"date": "2029-04-01", "name": "Easter Sunday",
+     "jurisdictions": ["ACT", "NSW", "NT", "QLD", "SA", "VIC", "WA"]},
+    {"date": "2029-04-02", "name": "Easter Monday",
+     "jurisdictions": ["ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"]},
+]
+
+
+def horizon_override(tmp_path, verified_until):
+    """An override declaring coverage to `verified_until` and holding every
+    holiday that claim covers."""
+    path = tmp_path / f"override-{verified_until}.json"
+    path.write_text(
+        json.dumps({"verified_until": verified_until, "add": HOLIDAYS_TO_2029_04_05}),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_the_horizon_overrides_declare_every_holiday_in_their_span():
+    """The two tests below hand the loader a completeness claim, so the claim
+    has to be true or they teach the habit that breaks this tool.
+
+    Checked against python-holidays, the same dev-time source the bundled
+    table is generated from, by the same s 6(1) rule: the union of
+    whole-of-jurisdiction PUBLIC holidays across the eight jurisdictions. The
+    one entry tools/generate_calendar.py filters out as not
+    whole-of-jurisdiction, the Ekka, falls in August, outside this span."""
+    import holidays
+
+    bundled = load_calendar()
+    # The overrides only have to carry 2029; the bundled table owns the rest.
+    assert bundled.verified_until == date(2028, 12, 31)
+
+    span = (date(2029, 1, 1), date(2029, 4, 5))
+    union = {
+        day
+        for jurisdiction in ("ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA")
+        for day in holidays.Australia(
+            subdiv=jurisdiction, years=[2029], categories=("public",)
+        )
+        if span[0] <= day <= span[1]
+    }
+    declared = {date.fromisoformat(e["date"]) for e in HOLIDAYS_TO_2029_04_05}
+    assert declared == union
+
+
 def test_a_deadline_on_the_last_covered_day_is_still_assessed(tmp_path):
     """The boundary of `dl.due > cal.coverage_until`.
 
@@ -833,31 +902,22 @@ def test_a_deadline_on_the_last_covered_day_is_still_assessed(tmp_path):
     moment a user follows the README and declares an override's own
     `verified_until` on a business day. Treating the boundary as past the
     horizon would leave this line UNKNOWN with days late blank and the
-    shortfall and SG-charge columns emptied."""
-    override = tmp_path / "override.json"
-    override.write_text(
-        json.dumps(
-            {
-                # A Tuesday, and no national holiday falls on it.
-                "verified_until": "2029-04-24",
-                "add": [
-                    {"date": "2029-03-30", "name": "Good Friday",
-                     "jurisdictions": ["ALL"]},
-                    {"date": "2029-04-02", "name": "Easter Monday",
-                     "jurisdictions": ["ALL"]},
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    cal = load_calendar(override)
-    assert cal.coverage_until == date(2029, 4, 24)
+    shortfall and SG-charge columns emptied.
+
+    Good Friday and Easter Monday are what put the deadline on the declared
+    date: the seventh business day after Friday 2029-03-23 is 2029-04-03
+    without them and 2029-04-05 with them. Drop either one and this test
+    fails. The other six entries do not touch this deadline and are not
+    decoration either - `verified_until` claims the whole span is entered,
+    and the claim is the thing being modelled."""
+    cal = load_calendar(horizon_override(tmp_path, "2029-04-05"))
+    assert cal.coverage_until == date(2029, 4, 5)
 
     line = ContribLine(
         employee_id="E9",
-        qe_day=date(2029, 4, 13),
+        qe_day=date(2029, 3, 23),
         sg_amount=Decimal("500.00"),
-        received=date(2029, 4, 30),
+        received=date(2029, 4, 11),
         row=2,
     )
     r = assess([line], cal, load_gic(), date(2029, 5, 15))[0]
@@ -873,35 +933,22 @@ def test_a_deadline_on_the_last_covered_day_is_still_assessed(tmp_path):
 
 def test_a_deadline_one_day_past_the_last_covered_day_is_not_assessed(tmp_path):
     """The other side of the same comparison, so the pair pins the operator
-    rather than only the direction. One day later the table can be missing a
-    holiday that moves the deadline, and the verdict is no longer owed."""
-    override = tmp_path / "override.json"
-    override.write_text(
-        json.dumps(
-            {
-                "verified_until": "2029-04-23",
-                "add": [
-                    {"date": "2029-03-30", "name": "Good Friday",
-                     "jurisdictions": ["ALL"]},
-                    {"date": "2029-04-02", "name": "Easter Monday",
-                     "jurisdictions": ["ALL"]},
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    cal = load_calendar(override)
-    assert cal.coverage_until == date(2029, 4, 23)
+    rather than only the direction. The same payday against an override that
+    declares one day less: the deadline has not moved, but it now sits past
+    the coverage end, where the table can be missing a holiday that shifts
+    it, and the verdict is no longer owed."""
+    cal = load_calendar(horizon_override(tmp_path, "2029-04-04"))
+    assert cal.coverage_until == date(2029, 4, 4)
 
     line = ContribLine(
         employee_id="E9",
-        qe_day=date(2029, 4, 13),
+        qe_day=date(2029, 3, 23),
         sg_amount=Decimal("500.00"),
-        received=date(2029, 4, 30),
+        received=date(2029, 4, 11),
         row=2,
     )
     r = assess([line], cal, load_gic(), date(2029, 5, 15))[0]
-    assert r.deadline.due == date(2029, 4, 24)
+    assert r.deadline.due == date(2029, 4, 5)
     assert r.deadline.due > cal.coverage_until
     assert r.verdict == "UNKNOWN"
     assert r.horizon_verdicts == ("LATE", "ON_TIME")

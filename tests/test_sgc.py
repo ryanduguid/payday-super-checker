@@ -12,7 +12,13 @@ def gic():
     return load_gic()
 
 
-def test_daily_rate_is_annual_over_365(gic):
+def test_daily_rate_divides_by_365_in_a_non_leap_year(gic):
+    """365 is a fact about 2026, not the rule. TAA 1953 s 8AAD divides the
+    quarter's annual rate by the number of days in the calendar year of that
+    day, so 2028 divides by 366 - test_daily_rate_uses_366_in_a_leap_year
+    below. This test was named "..._is_annual_over_365", which read as a
+    general licence for /365 in the one file a maintainer checks before
+    changing rates.py, and /365 everywhere is the leap-year defect."""
     assert gic.daily_rate(date(2026, 8, 15)) == Decimal("11.43") / 100 / 365
 
 
