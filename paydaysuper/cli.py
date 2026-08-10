@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 
 from . import LAW_CONTENT_DATE, __version__
+from .atomic_io import csv_destination
 from .calendar import CalendarError, load_calendar
 from .csv_io import (
     LATEST_SANE_YEAR,
@@ -311,6 +312,11 @@ def main(argv: list[str] | None = None) -> int:
                 "the report would overwrite the input file. Choose a different "
                 "path with -o."
             )
+        # Reject a bad -o here rather than at write time, so the operator is
+        # told before the whole assessment runs. write_csv enforces the same
+        # rule, but the ValueError it raises reaches a handler that only
+        # covers OSError.
+        csv_destination(args.output)
         mapping, explicit = load_mapping(args.mapping_file, args.map)
         lines = parse_rows(args.csv_path, mapping, explicit)
         cal = load_calendar(args.holidays_override)
@@ -346,6 +352,11 @@ def main(argv: list[str] | None = None) -> int:
             source=Path(args.csv_path).resolve(),
             gic_provenance=gic.provenance(),
         )
+    except ValueError as exc:
+        # Backstop: the -o rule is already checked above, so anything landing
+        # here is a new write-time rejection. "error: <message>" either way.
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
     except OSError as exc:
         print(f"error: cannot write {args.output}: {exc.strerror or exc}", file=sys.stderr)
         return EXIT_ERROR
