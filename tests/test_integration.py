@@ -124,6 +124,25 @@ def test_cli_rejects_a_non_csv_output_without_a_traceback(tmp_path, capsys, bad_
     assert not out.exists()
 
 
+def test_cli_rejects_a_non_csv_output_before_it_reads_the_input(tmp_path, capsys):
+    """The point of the up-front `csv_destination(args.output)` call is that
+    the operator hears about a bad -o before the whole assessment runs. The
+    write-time backstop in write_csv raises the same message and returns the
+    same exit code, so no run that reaches write_csv can tell the two apart.
+    An input file that does not exist can: only the up-front check can report
+    the -o problem, because parse_rows never gets to open anything."""
+    missing = tmp_path / "no-such-payrun.csv"
+
+    code = main([str(missing), "-o", str(tmp_path / "report.txt"), "--as-at", "2026-08-10"])
+
+    assert code == EXIT_ERROR
+    err = capsys.readouterr().err
+    assert "generated output must use a .csv filename" in err
+    assert "file not found" not in err, (
+        "the run reached parse_rows, so the -o check no longer fires up front"
+    )
+
+
 def test_cli_writes_report_and_flags_late(tmp_path, capsys):
     out = tmp_path / "report.csv"
     code = main([str(FIXTURE), "-o", str(out), "--as-at", "2026-08-10"])
@@ -240,6 +259,44 @@ def test_cli_refuses_to_overwrite_the_input(tmp_path, capsys):
     assert main([str(target), "-o", str(target)]) == EXIT_ERROR
     assert "overwrite the input" in capsys.readouterr().err
     assert target.read_text(encoding="utf-8").startswith("employee_id,payment_date")
+
+
+@pytest.mark.parametrize(
+    "flag,contents",
+    [
+        ("--mapping-file", '{"qe_day": "payment_date"}\n'),
+        (
+            "--holidays-override",
+            '{"verified_until": "2029-12-31", "add": [], "remove": []}\n',
+        ),
+    ],
+)
+def test_cli_refuses_to_overwrite_an_override_input(tmp_path, capsys, flag, contents):
+    """The check command reads three files, not one. A --mapping-file or a
+    --holidays-override aimed at by -o used to be overwritten with the report
+    and the run still finished normally, returning EXIT_LATE_FOUND on this
+    fixture with nothing on stderr, so a scheduled wrapper saw "late
+    contributions found" rather than an error and the hand-written file was
+    gone.
+
+    The victim file is named .csv on purpose. Both flags normally take a JSON
+    filename, and the generated-output suffix rule would then reject -o on its
+    own and hide whether the alias guard fires at all. Renaming these to .json
+    would leave the test green for the wrong reason."""
+    source = tmp_path / "pay.csv"
+    source.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+    victim = tmp_path / "override.csv"
+    victim.write_text(contents, encoding="utf-8")
+
+    code = main(
+        [str(source), flag, str(victim), "-o", str(victim), "--as-at", "2026-08-10"]
+    )
+
+    assert code == EXIT_ERROR
+    err = capsys.readouterr().err
+    assert "would overwrite" in err
+    assert flag in err, "the message has to name which of the three inputs it means"
+    assert victim.read_text(encoding="utf-8") == contents
 
 
 def test_cli_replaces_an_output_symlink_without_touching_its_target(tmp_path):
@@ -500,6 +557,37 @@ def test_stale_prepayment_before_the_deadline_is_not_yet_assessable():
     assert r.sgc_high is None
     assert any("12-month pre-payment window" in caveat for caveat in r.caveats)
     assert any("the deadline has not passed" in caveat for caveat in r.caveats)
+
+
+def test_a_stale_prepayment_is_still_quiet_on_the_deadline_date_itself():
+    """The boundary of that gate, which the test above clears by eight days.
+    `dl.due >= as_at` is the same line assess draws everywhere else: the
+    nil-amount branch and the nothing-recorded branch both treat `dl.due <
+    as_at` as "the deadline has passed", so a deadline falling ON the as-at
+    date has not been missed. Move the boundary by one day and a payday that
+    is still in time reports LATE with the whole contribution as a shortfall
+    and an SG-charge estimate on top."""
+
+    def stale_line():
+        return ContribLine(
+            employee_id="E9",
+            qe_day=date(2027, 7, 9),
+            sg_amount=Decimal("300.00"),
+            received=date(2026, 7, 1),
+            row=2,
+        )
+
+    on_the_day = assess(
+        [stale_line()], load_calendar(), load_gic(), date(2027, 7, 20)
+    )[0]
+    assert on_the_day.deadline.due == date(2027, 7, 20)  # as-at IS the deadline
+    assert on_the_day.verdict == "UNKNOWN"
+    assert on_the_day.sgc_high is None
+    assert any("the deadline has not passed" in c for c in on_the_day.caveats)
+
+    day_after = assess([stale_line()], load_calendar(), load_gic(), date(2027, 7, 21))[0]
+    assert day_after.verdict == "LATE"
+    assert day_after.final_shortfall == Decimal("300.00")
 
 
 def test_notional_earnings_stop_before_an_assessment():
