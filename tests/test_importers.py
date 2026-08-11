@@ -2984,3 +2984,31 @@ def test_a_vendor_that_matches_nothing_is_not_told_to_type_myob(tmp_path, capsys
     # The list of what IS available survives: it is the part that answers
     # the question actually asked.
     assert "xero-payroll" in err
+
+
+def test_import_calls_a_failed_write_a_write_even_with_a_relative_output(tmp_path, monkeypatch, capsys):
+    # ROUND 9. The handler decided read-vs-write by comparing exc.filename
+    # against a RESOLVED --output. The writer is deliberately handed the
+    # originally selected path, so exc.filename comes back unresolved and the
+    # comparison never matched for a relative -o, including the default. A
+    # failed write was then announced as "cannot read <output>" -- a file the
+    # user never supplied as an input at all.
+    monkeypatch.chdir(tmp_path)
+    # a directory in place of the output file makes the write fail, without
+    # needing OS permissions to be misconfigured
+    (tmp_path / "contributions.csv").mkdir()
+
+    code = cli_main(
+        [
+            "import",
+            "--payroll",
+            str(FIXTURES / "myob_payroll.csv"),
+            "--super",
+            str(FIXTURES / "myob_super.csv"),
+        ]
+    )
+
+    assert code != 0
+    err = capsys.readouterr().err
+    assert "cannot write" in err
+    assert "cannot read" not in err
