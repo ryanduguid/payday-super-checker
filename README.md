@@ -1,5 +1,7 @@
 # payday-super-checker
 
+[![tests](https://github.com/ryanduguid/payday-super-checker/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/payday-super-checker/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+
 Check Australian super contributions against the payday-super deadlines and estimate the SG charge on anything late.
 
 Since 1 July 2026, super is due within 7 business days of each payday instead of quarterly. Miss it and the SG charge applies automatically: daily-compounding notional earnings, an administrative uplift of up to 60%, and the shortfall itself until the money reaches the fund. This reads a CSV out of your payroll or clearing-house records and tells you, line by line, which contributions landed in time.
