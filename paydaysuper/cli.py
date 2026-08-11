@@ -201,11 +201,22 @@ def import_main(argv: list[str]) -> int:
         # actually working on, so that is trusted first; the join of both
         # input paths is only a fallback for the rare OSError that leaves
         # it unset (e.g. from Path.resolve() rather than open()).
-        target = exc.filename or f"{args.payroll} or {args.super_path}"
-        try:
-            writing = target == str(Path(args.output).resolve())
-        except OSError:
-            writing = False
+        filename = exc.filename
+        target = filename or f"{args.payroll} or {args.super_path}"
+        # Resolve BOTH sides. The writer is handed the originally selected
+        # output path, so exc.filename comes back unresolved; comparing it
+        # against a resolved --output never matched for a relative path,
+        # including the default, and a failed write was announced as a failed
+        # read of a file the user never supplied. Only compare when the
+        # exception carried a filename: the fallback above is a join of the two
+        # input paths and must never be read as the output.
+        # Compare against the writer's own destination rather than resolving
+        # either side. atomic_text_output re-raises with str(csv_destination(
+        # out_path)), and importers passes the originally selected --output
+        # through unchanged, so this is the exact string the writer used. It
+        # is also the only comparison that does not put a user-supplied path
+        # through resolve(), which reads the filesystem.
+        writing = filename is not None and filename == str(csv_destination(args.output))
         verb = "cannot write" if writing else "cannot read"
         print(f"error: {verb} {target}: {exc.strerror or exc}", file=sys.stderr)
         return EXIT_ERROR

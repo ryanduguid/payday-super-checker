@@ -1,7 +1,7 @@
 import codecs
 import csv
 import json
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -1893,3 +1893,39 @@ def test_the_csv_marks_an_unassessable_row_apart_from_a_nil_one(tmp_path):
     note = rows["NOTE"]
     assert "2026-08-02" in note["notes"]
     assert note["unassessable_between"] == ""
+
+
+def test_an_unpaid_row_does_not_claim_no_date_when_one_was_supplied():
+    # ROUND 9. assess() filters out dates later than the as-at date and says so
+    # in one caveat, then the UNPAID branch asserted flatly that no remittance
+    # or fund-receipt date "is recorded" and told the reader to supply date
+    # columns they had already supplied. The AT_RISK branch above already
+    # varies its wording for exactly this case; these two did not.
+    line = ContribLine(
+        employee_id="E9",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("300.00"),
+        remitted=date(2026, 8, 18),
+        received=date(2026, 8, 20),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+
+    assert r.verdict == "UNPAID"
+    assert any("ignored for this as-at report" in w for w in r.warnings)
+    assert not any("no remittance or fund-receipt date is recorded" in w for w in r.warnings)
+    assert any("is after the as-at date and is ignored here" in w for w in r.warnings)
+
+
+def test_a_not_yet_due_row_does_not_claim_no_date_when_one_was_supplied():
+    line = ContribLine(
+        employee_id="E10",
+        qe_day=AS_AT,
+        sg_amount=Decimal("300.00"),
+        received=AS_AT + timedelta(days=10),
+        row=3,
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+
+    assert not any("no remittance or fund-receipt date supplied" in w for w in r.warnings)
+    assert any("is after the as-at date and is ignored here" in w for w in r.warnings)
