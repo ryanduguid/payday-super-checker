@@ -414,9 +414,24 @@ def assess(
             # the coverage end the real deadline can only be later, and it
             # may not have arrived at all.
             result.verdict = UNPAID
+            # A date may exist and simply post-date the as-at filter, in which
+            # case saying none is recorded contradicts the caveat added above
+            # and sends the reader to fix an export that is already correct.
+            # The AT_RISK branch already varies its wording this way.
+            _ignored = sorted(
+                d for d in (line.remitted, line.received)
+                if d is not None and d > as_at
+            )
+            _none_recorded = (
+                "no remittance or fund-receipt date is recorded"
+                if not _ignored
+                else "the only remittance or fund-receipt date on record ("
+                + ", ".join(d.isoformat() for d in _ignored)
+                + ") is after the as-at date and is ignored here"
+            )
             if past_horizon:
                 result.caveats.append(
-                    f"no remittance or fund-receipt date is recorded, and the deadline "
+                    f"{_none_recorded}, and the deadline "
                     f"shown ({dl.due.isoformat()}) runs past the calendar's coverage, so "
                     "it may fall later than shown and may not have passed yet. Figures "
                     "assume the contribution is still unpaid; if your export has no date "
@@ -424,15 +439,23 @@ def assess(
                 )
             else:
                 result.caveats.append(
-                    f"the deadline passed on {dl.due.isoformat()} and no remittance or "
-                    "fund-receipt date is recorded. Figures assume the contribution is "
+                    f"the deadline passed on {dl.due.isoformat()} and {_none_recorded}. "
+                    "Figures assume the contribution is "
                     "still unpaid; if your export has no date columns, supply them "
                     "before relying on this"
                 )
         else:
+            _ignored = sorted(
+                d for d in (line.remitted, line.received)
+                if d is not None and d > as_at
+            )
             result.caveats.append(
-                "no remittance or fund-receipt date supplied, and the deadline has not "
-                "passed: nothing to assess yet"
+                ("no remittance or fund-receipt date supplied"
+                 if not _ignored
+                 else "the only remittance or fund-receipt date on record ("
+                      + ", ".join(d.isoformat() for d in _ignored)
+                      + ") is after the as-at date and is ignored here")
+                + ", and the deadline has not passed: nothing to assess yet"
             )
             results.append(result)
             continue
