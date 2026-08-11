@@ -210,12 +210,13 @@ def import_main(argv: list[str]) -> int:
         # read of a file the user never supplied. Only compare when the
         # exception carried a filename: the fallback above is a join of the two
         # input paths and must never be read as the output.
-        writing = False
-        if filename is not None:
-            try:
-                writing = Path(filename).resolve() == Path(args.output).resolve()
-            except OSError:
-                writing = False
+        # Compare against the writer's own destination rather than resolving
+        # either side. atomic_text_output re-raises with str(csv_destination(
+        # out_path)), and importers passes the originally selected --output
+        # through unchanged, so this is the exact string the writer used. It
+        # is also the only comparison that does not put a user-supplied path
+        # through resolve(), which reads the filesystem.
+        writing = filename is not None and filename == str(csv_destination(args.output))
         verb = "cannot write" if writing else "cannot read"
         print(f"error: {verb} {target}: {exc.strerror or exc}", file=sys.stderr)
         return EXIT_ERROR
