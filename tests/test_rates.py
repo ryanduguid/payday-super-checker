@@ -25,6 +25,50 @@ def test_a_good_table_still_loads(tmp_path, monkeypatch):
     assert table.daily_rate(date(2026, 8, 1)) == Decimal("11.43") / 100 / 365
 
 
+def test_unsorted_contiguous_quarters_are_sorted_and_accepted(tmp_path, monkeypatch):
+    following = dict(GOOD, **{"from": "2026-10-01", "to": "2026-12-31"})
+    monkeypatch.setattr(
+        rates_module, "DATA_DIR", write_table(tmp_path, [following, GOOD])
+    )
+
+    table = load_gic()
+
+    assert table.last_known == date(2026, 12, 31)
+    assert table.daily_rate(date(2026, 9, 30)) == Decimal("11.43") / 100 / 365
+
+
+def test_a_reversed_interval_is_refused(tmp_path, monkeypatch):
+    reversed_quarter = dict(GOOD, **{"from": "2026-09-30", "to": "2026-07-01"})
+    monkeypatch.setattr(
+        rates_module, "DATA_DIR", write_table(tmp_path, [reversed_quarter])
+    )
+
+    with pytest.raises(RatesError, match="ends before it starts") as exc:
+        load_gic()
+
+    assert "2026-09-30 to 2026-07-01" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("following_start", "relation"),
+    [("2026-09-30", "overlap"), ("2026-10-02", "gap")],
+)
+def test_non_contiguous_intervals_name_both_ranges(
+    tmp_path, monkeypatch, following_start, relation
+):
+    following = dict(GOOD, **{"from": following_start, "to": "2026-12-31"})
+    monkeypatch.setattr(
+        rates_module, "DATA_DIR", write_table(tmp_path, [GOOD, following])
+    )
+
+    with pytest.raises(RatesError, match=relation) as exc:
+        load_gic()
+
+    message = str(exc.value)
+    assert "2026-07-01 to 2026-09-30" in message
+    assert f"{following_start} to 2026-12-31" in message
+
+
 def test_an_unreadable_rate_raises_rates_error_naming_the_entry(tmp_path, monkeypatch):
     """decimal.InvalidOperation is an ArithmeticError, so an unguarded
     Decimal() here escaped the CLI's handler and printed a traceback."""
