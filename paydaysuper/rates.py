@@ -45,6 +45,22 @@ class GicTable:
         self._quarters = sorted(quarters, key=lambda q: q.start)
         if not self._quarters:
             raise RatesError("GIC table is empty")
+        for quarter in self._quarters:
+            if quarter.start > quarter.end:
+                raise RatesError(
+                    f"GIC interval {quarter.start.isoformat()} to {quarter.end.isoformat()} "
+                    "ends before it starts"
+                )
+        for previous, current in zip(self._quarters, self._quarters[1:]):
+            days_after_previous_end = (current.start - previous.end).days
+            if days_after_previous_end == 1:
+                continue
+            relation = "overlap" if days_after_previous_end <= 0 else "gap"
+            raise RatesError(
+                f"GIC intervals {previous.start.isoformat()} to {previous.end.isoformat()} "
+                f"and {current.start.isoformat()} to {current.end.isoformat()} {relation}; "
+                "quarters must be contiguous"
+            )
 
     @property
     def last_known(self) -> date:
