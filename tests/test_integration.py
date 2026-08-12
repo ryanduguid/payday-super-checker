@@ -1652,6 +1652,33 @@ def test_employee_id_that_looks_like_a_formula_is_neutralised(tmp_path):
     assert ",=cmd" not in written
 
 
+def test_a_cell_reference_lead_is_neutralised_and_a_plain_code_is_not():
+    """`-00123` and `@home` pass through so a lookup from this report back to
+    the payroll export keeps working. `-A1` is not that: a spreadsheet
+    resolves it to whatever cell A1 holds, so the reviewer reads a number
+    that came from the sheet rather than the employee id that came from
+    payroll, with nothing on the row to say so.
+
+    The sibling monthly-close-control-plane guard already draws this line and
+    documents the reason; this one is the same guard written twice, and the
+    two disagreed. A leading space is the other half: the trigger character
+    was tested at position 0, so " =cmd" sailed past a guard that catches
+    "=cmd".
+    """
+    from paydaysuper.report import csv_safe
+
+    for value in ("-A1", "+B12", "@AA100", "-a1", "-ZZ1048576"):
+        assert csv_safe(value) == "'" + value, f"{value!r} was left live"
+    for value in (" =cmd|'/c calc'!A1", "\t+cmd|'/c calc'!A1", " -A1"):
+        assert csv_safe(value) == "'" + value, f"{value!r} was left live"
+    # Still inert, and still untouched: these are payroll identifiers. A bare
+    # word remainder such as "+GST" stays live on purpose - a sheet reads it
+    # as a defined name, which costs display fidelity in one cell and calls
+    # nothing, and quoting it would break the lookup back to payroll.
+    for value in ("-00123", "@home", "+GST", "-a_b", "E9", ""):
+        assert csv_safe(value) == value, f"{value!r} was mangled"
+
+
 def test_sentinel_high_date_is_refused_cleanly(tmp_path, capsys):
     path = tmp_path / "pay.csv"
     path.write_text(
