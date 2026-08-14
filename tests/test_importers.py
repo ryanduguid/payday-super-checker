@@ -1604,7 +1604,7 @@ def test_a_formula_in_an_employee_name_is_guarded(tmp_path):
     import_files(src, sup, out)
     text = out.read_text(encoding="utf-8-sig")
     assert "'=cmd()" in text, "formula lead was not neutralised"
-    assert "-00123" in text and "'-00123" not in text, "a plain code was mangled"
+    assert "'-00123" in text, "numeric-looking formula lead was not neutralised"
 
 
 def test_canonical_csv_round_trips_through_parse_rows_and_the_real_cli(tmp_path):

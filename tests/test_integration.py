@@ -1652,30 +1652,24 @@ def test_employee_id_that_looks_like_a_formula_is_neutralised(tmp_path):
     assert ",=cmd" not in written
 
 
-def test_a_cell_reference_lead_is_neutralised_and_a_plain_code_is_not():
-    """`-00123` and `@home` pass through so a lookup from this report back to
-    the payroll export keeps working. `-A1` is not that: a spreadsheet
-    resolves it to whatever cell A1 holds, so the reviewer reads a number
-    that came from the sheet rather than the employee id that came from
-    payroll, with nothing on the row to say so.
+def test_every_formula_lead_is_neutralised_after_whitespace():
+    """Alphanumeric suffixes are not proof that a value is inert.
 
-    The sibling monthly-close-control-plane guard already draws this line and
-    documents the reason; this one is the same guard written twice, and the
-    two disagreed. A leading space is the other half: the trigger character
-    was tested at position 0, so " =cmd" sailed past a guard that catches
-    "=cmd".
+    Spreadsheet engines can reinterpret scientific notation, booleans, R1C1
+    references and workbook-defined names. The output is the safe review
+    artefact; the source payroll export retains the unmodified identifier.
     """
     from paydaysuper.report import csv_safe
 
-    for value in ("-A1", "+B12", "@AA100", "-a1", "-ZZ1048576"):
+    for value in (
+        "-A1", "+B12", "@AA100", "-a1", "-ZZ1048576", "+1E3",
+        "-R1C1", "+TRUE", "-FALSE", "+SUM", "-00123", "@home", "+GST",
+        "-a_b",
+    ):
         assert csv_safe(value) == "'" + value, f"{value!r} was left live"
     for value in (" =cmd|'/c calc'!A1", "\t+cmd|'/c calc'!A1", " -A1"):
         assert csv_safe(value) == "'" + value, f"{value!r} was left live"
-    # Still inert, and still untouched: these are payroll identifiers. A bare
-    # word remainder such as "+GST" stays live on purpose - a sheet reads it
-    # as a defined name, which costs display fidelity in one cell and calls
-    # nothing, and quoting it would break the lookup back to payroll.
-    for value in ("-00123", "@home", "+GST", "-a_b", "E9", ""):
+    for value in ("E9", "00123", "home", "GST", "a_b", ""):
         assert csv_safe(value) == value, f"{value!r} was mangled"
 
 
@@ -1868,8 +1862,8 @@ def test_report_csv_carries_a_bom_and_round_trips_a_non_ascii_id(tmp_path):
     assert lines[0].qe_day == date(2026, 7, 9)
 
 
-def test_ordinary_employee_ids_are_not_rewritten(tmp_path):
-    """A code starting with a hyphen must still join back to payroll."""
+def test_formula_leading_employee_ids_are_quoted_in_the_report(tmp_path):
+    """The source export, rather than the review CSV, retains the raw id."""
     path = tmp_path / "pay.csv"
     path.write_text(
         "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
@@ -1879,7 +1873,7 @@ def test_ordinary_employee_ids_are_not_rewritten(tmp_path):
     )
     out = tmp_path / "r.csv"
     main([str(path), "-o", str(out), "--as-at", "2026-08-10"])
-    assert ",-00123," in out.read_text(encoding="utf-8")
+    assert ",'-00123," in out.read_text(encoding="utf-8")
 
 
 def test_cli_rejects_an_absurd_as_at_date(tmp_path, capsys):

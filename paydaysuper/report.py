@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import csv
-import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -53,19 +52,12 @@ NO_RECEIPT_CAVEAT = (
     "contribution was on time"
 )
 
-# Characters Excel and Sheets evaluate at the start of a cell. A plain code
-# such as -00123 or @home is left alone: rewriting it would break a lookup
-# from this report back to the payroll export.
+# Characters Excel and Sheets can evaluate at the start of a cell. Classifying
+# selected suffixes as safe is not reliable: scientific notation, booleans,
+# R1C1 references and workbook-defined names can all be alphanumeric. The
+# spreadsheet-facing CSV is therefore always quoted after any leading space;
+# the source payroll export remains the record of the unmodified identifier.
 FORMULA_LEAD = ("=", "+", "-", "@")
-
-# ASCII letters then digits is a conservative A1-like shape. A sheet can
-# resolve values in that shape as cell references rather than reading them as
-# text, so "A1" is not the plain identifier the alphanumeric test alone calls
-# it. This deliberately overmatches Excel's exact column and row bounds: the
-# guard is deciding when to quote untrusted text, not validating cell addresses.
-# monthly-close-control-plane draws the same line for the same reason - this
-# is one guard written twice, so the two must not disagree.
-CELL_REFERENCE = re.compile(r"[A-Za-z]{1,3}[0-9]{1,7}")
 
 
 def money(value: Decimal | None) -> str:
@@ -89,20 +81,12 @@ def csv_safe(text: str) -> str:
 
     The trigger is looked for after leading whitespace, not at position 0:
     a sheet ignores the space, so testing position 0 let " =cmd" through a
-    guard that catches "=cmd".
-
-    `-00123` and `@home` still pass through untouched, because rewriting them
-    would break a lookup from this report back to the payroll export. `-A1`
-    does not: a sheet resolves it to whatever cell A1 holds, so the reviewer
-    reads a number off the sheet where the employee id should be, with
-    nothing on the row to say so."""
+    guard that catches "=cmd". Every formula-leading value is quoted. A
+    selective suffix rule leaves data-integrity gaps such as `+1E3`, `-R1C1`,
+    `+TRUE` and workbook-defined names."""
     stripped = text.lstrip()
-    if stripped[:1] == "=":
-        return "'" + text
     if stripped[:1] in FORMULA_LEAD:
-        remainder = stripped[1:].replace("_", "")
-        if not remainder.isalnum() or CELL_REFERENCE.fullmatch(remainder):
-            return "'" + text
+        return "'" + text
     return text
 
 
