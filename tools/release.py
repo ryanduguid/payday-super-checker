@@ -442,7 +442,10 @@ def _extract_source(tar_path: Path, destination: Path, prefix: str) -> Path:
             pure = PurePosixPath(member.name)
             if pure.is_absolute() or ".." in pure.parts:
                 raise ReleaseError(f"unsafe source archive member: {member.name}")
-        archive.extractall(destination)
+        try:
+            archive.extractall(destination, filter="data")
+        except TypeError:  # Python 3.10 and 3.11 do not expose filters.
+            archive.extractall(destination)
     source = destination / prefix
     if not source.is_dir():
         raise ReleaseError("source archive did not contain its expected root")

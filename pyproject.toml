@@ -21,7 +21,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["build==1.5.0", "pytest>=8", "holidays==0.102"]
+dev = ["build==1.5.0", "pytest>=8", "holidays==0.102", "setuptools==84.0.0"]
 
 [project.scripts]
 payday-super-check = "paydaysuper.cli:main"
