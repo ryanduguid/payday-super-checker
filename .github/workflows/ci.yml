@@ -73,7 +73,8 @@ jobs:
           # test a release nobody built in this job.
           /tmp/venv/bin/pip install --no-index --find-links dist payday-super-checker
           /tmp/venv/bin/payday-super-check examples/sample_payrun.csv \
-            -o /tmp/report.csv --as-at 2026-08-10 || [ $? -eq 2 ]
+            -o /tmp/report.csv --as-at 2026-08-10 \
+            --confirm-transition-allocation || [ $? -eq 2 ]
           # The import path reads data/profiles/*.json, package data the
           # check path never touches, so a wheel that ships the law files
           # and drops the profiles passes every step above and still cannot
@@ -84,7 +85,8 @@ jobs:
             --super tests/fixtures/importers/myob_super.csv \
             -o /tmp/contributions.csv || [ $? -eq 2 ]
           /tmp/venv/bin/payday-super-check /tmp/contributions.csv \
-            -o /tmp/report_from_import.csv --as-at 2026-08-10 || [ $? -eq 2 ]
+            -o /tmp/report_from_import.csv --as-at 2026-08-10 \
+            --confirm-transition-allocation || [ $? -eq 2 ]
       - name: the shipped tests must pass from the sdist
         run: |
           mkdir /tmp/sdist && tar -xzf dist/*.tar.gz -C /tmp/sdist --strip-components=1
