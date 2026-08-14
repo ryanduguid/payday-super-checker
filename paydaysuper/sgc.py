@@ -3,8 +3,8 @@
 Components (SGAA s 16B(2)) modelled here:
 - final SG shortfall (input: the unpaid individual SG amount)
 - notional earnings component (s 19A): daily compounding at the GIC rate
-  on the BASE shortfall, starting the day AFTER the last on-time day (LCR
-  2026/D3 worked example) and running while the final shortfall exceeds
+  on the BASE shortfall, starting the day AFTER the last on-time day (final
+  LCR 2026/3 worked example) and running while the final shortfall exceeds
   nil, so it ends on the day the fund receives the late contribution, or
   runs to the as-at date while the money is still outstanding
 - administrative uplift (s 19B(1)): 60% of (shortfalls + notional
@@ -68,8 +68,10 @@ def notional_earnings(
 def uplift_scenarios(final_shortfall: Decimal, nec: Decimal) -> dict[str, dict[str, Decimal]]:
     """Administrative uplift under every reg 13C/13D scenario.
 
-    For QE days 1 Jul 2026 - 30 Jun 2028 the transitional clean-history rule
-    (reg 13C(3)) means nearly all employers sit in the clean_history row."""
+    For QE days 1 Jul 2026 - 30 Jun 2028, reg 13C(3) shortens the historical
+    period tested for the clean-history reduction. It does not establish that
+    a particular employer meets the remaining conditions, so both rows are
+    retained."""
     base = final_shortfall + nec
     return {
         history: {scenario: base * pct / Decimal(100) for scenario, pct in row.items()}

@@ -42,9 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="payday-super-check",
         description=(
-            "Check super contributions against the payday-super deadlines "
+            "Experimental review of super contributions against payday-super deadlines "
             "(SGAA 1992 s 18C, in force for paydays from 1 July 2026) and "
-            "estimate SG-charge exposure on late ones."
+            "experimental SG-charge exposure estimates on established late ones."
         ),
     )
     parser.add_argument("csv_path", help="contribution CSV to check")
@@ -76,6 +76,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--holidays-override",
         help="JSON file adding or removing public holidays from the bundled calendar",
     )
+    parser.add_argument(
+        "--confirm-transition-allocation",
+        action="store_true",
+        help=(
+            "confirm you reconciled every contribution dated no later than 28 Jul "
+            "2026 under LCR 2026/1: pre-1 Jul amounts are unused excess and 1-28 Jul "
+            "amounts remain after any June-quarter employee shortfall"
+        ),
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -98,7 +107,7 @@ def build_import_parser() -> argparse.ArgumentParser:
         prog="payday-super-check import",
         description=(
             "Build the contributions CSV from a payroll export and a super "
-            "payments export, matching each payment to the payday it settles. "
+            "payments export after the statutory allocation is reconciled. "
             "No payroll system or clearing house exports a fund receipt date, "
             "so fund_received_date is always left blank for you to fill in."
         ),
@@ -116,6 +125,15 @@ def build_import_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--vendor",
         help="force a profile instead of detecting one (e.g. xero, myob-ar, employment-hero)",
+    )
+    parser.add_argument(
+        "--confirm-statutory-allocation",
+        action="store_true",
+        help=(
+            "confirm you reconciled LCR 2026/2 allocation using actual fund-receipt "
+            "order, every relevant payday and contribution, and any SG-charge "
+            "assessment; required when one employee has multiple positive paydays"
+        ),
     )
     return parser
 
@@ -180,7 +198,13 @@ def import_main(argv: list[str]) -> int:
 
     args = build_import_parser().parse_args(argv)
     try:
-        report = import_files(args.payroll, args.super_path, args.output, args.vendor)
+        report = import_files(
+            args.payroll,
+            args.super_path,
+            args.output,
+            args.vendor,
+            statutory_allocation_confirmed=args.confirm_statutory_allocation,
+        )
     # decimal.InvalidOperation is an ArithmeticError, not a ValueError, so it
     # is not covered by the CsvError/ValueError branch below. Every amount
     # this module builds is already guarded against it (see importers._amount
@@ -352,7 +376,14 @@ def main(argv: list[str] | None = None) -> int:
         cal = load_calendar(args.holidays_override)
         gic = load_gic()
         rates = load_rates()
-        results = assess(lines, cal, gic, as_at, assessment_date)
+        results = assess(
+            lines,
+            cal,
+            gic,
+            as_at,
+            assessment_date,
+            transition_allocation_confirmed=args.confirm_transition_allocation,
+        )
     except (CsvError, CalendarError, RatesError, PreRegimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR

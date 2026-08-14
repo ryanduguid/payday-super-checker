@@ -34,8 +34,9 @@ class CalendarError(ValueError):
 
 class BusinessCalendar:
     """`verified_until` is the last day the BUNDLED table was checked against
-    the gazettes. `coverage_until` is the last day the table is COMPLETE to,
-    which an override raises only by saying so in its own `verified_until`.
+    official jurisdiction sources. `coverage_until` is the last day the
+    table is COMPLETE to, which an override raises only by saying so in its
+    own `verified_until`.
 
     Completeness is a claim, and holding a holiday is not evidence for it.
     An override that adds Christmas 2029 says nothing about whether the 2029
@@ -62,7 +63,13 @@ class BusinessCalendar:
     def is_business_day(self, d: date) -> bool:
         if d.weekday() >= 5:  # Saturday=5, Sunday=6
             return False
-        return d not in self._holidays
+        holiday = self._holidays.get(d)
+        # A rule-derived or otherwise unconfirmed date must not extend a
+        # statutory deadline. Treat it as a business day until an official
+        # source confirms it; the row-level caveat tells the operator that an
+        # override may move the deadline later. This direction can produce a
+        # conservative false alarm, never a false on-time verdict.
+        return holiday is None or holiday.provisional
 
     def add_business_days(self, d: date, n: int) -> date:
         """The n-th business day after d. d itself is never counted
@@ -79,8 +86,8 @@ class BusinessCalendar:
         return cur
 
     def provisional_hits(self, start: date, end: date) -> list[str]:
-        """Provisional (rule-derived, not yet gazetted) holidays in
-        [start, end]: a deadline depending on one may shift."""
+        """Unconfirmed holidays in [start, end]. They are not applied to the
+        deadline by default, so confirmation may move that deadline later."""
         return [
             f"{h.day.isoformat()} {h.name}"
             for day, h in sorted(self._holidays.items())
@@ -192,10 +199,10 @@ def _checked_document(doc: object, path: Path) -> dict:
 
 def load_calendar(override_path: str | Path | None = None) -> BusinessCalendar:
     """Load the bundled table, optionally patched by a user override file:
-    {"add": [{"date": "...", "name": "...", ...}], "remove": ["2026-11-03"],
+    {"add": [{"date": "...", "name": "...", ...}], "remove": ["2026-09-25"],
      "verified_until": "2029-12-31"}
     Overrides exist for late proclamations (one-off public holidays, days of
-    mourning) and for the documented Melbourne Cup / part-day ambiguities.
+    mourning), corrected official dates and later completed calendars.
 
     `verified_until` is optional and is the user asserting they have entered
     EVERY national holiday through that date. It alone moves the horizon;

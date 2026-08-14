@@ -6,4 +6,4 @@ against the ATO's own materials before acting.
 
 __version__ = "0.1.0"
 
-LAW_CONTENT_DATE = "2026-08-02"
+LAW_CONTENT_DATE = "2026-08-15"
