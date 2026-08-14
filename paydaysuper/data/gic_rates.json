@@ -5,17 +5,17 @@
       "from": "2026-04-01",
       "to": "2026-06-30",
       "annual_pct": "10.96",
-      "source": "Secondary: Orbitax report of the ATO quarterly GIC rates, corroborated by Bloomberg Tax. The ATO rates page blocks automated fetching and was not read directly.",
-      "verify_at": "https://www.ato.gov.au/tax-rates-and-codes/interest-rates-general-interest-charge-and-shortfall-interest-charge",
-      "seen": "2026-08-02"
+      "source": "Australian Taxation Office, General interest charge (GIC) rates; official 2025-26 quarterly table, last updated 5 June 2026.",
+      "verify_at": "https://www.ato.gov.au/tax-rates-and-codes/general-interest-charge-rates",
+      "seen": "2026-08-14"
     },
     {
       "from": "2026-07-01",
       "to": "2026-09-30",
       "annual_pct": "11.43",
-      "source": "Secondary: Orbitax report of the ATO quarterly GIC rates for the first quarter of 2026-27, corroborated by Bloomberg Tax. The ATO rates page blocks automated fetching and was not read directly.",
-      "verify_at": "https://www.ato.gov.au/tax-rates-and-codes/interest-rates-general-interest-charge-and-shortfall-interest-charge",
-      "seen": "2026-08-02"
+      "source": "Australian Taxation Office, General interest charge (GIC) rates; official 2026-27 quarterly table, last updated 5 June 2026.",
+      "verify_at": "https://www.ato.gov.au/tax-rates-and-codes/general-interest-charge-rates",
+      "seen": "2026-08-14"
     }
   ]
 }
