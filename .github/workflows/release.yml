@@ -81,8 +81,18 @@ jobs:
             --workflow-sha "$WORKFLOW_SHA" \
             --immutable-confirmed "$IMMUTABLE_CONFIRMED" \
             --release-notes-confirmed "$NOTES_CONFIRMED"
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          set +e
+          release_lookup=$(gh api --include \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" 2>&1)
+          release_lookup_status=$?
+          set -e
+          if [ "$release_lookup_status" -eq 0 ]; then
             echo "release $TAG already exists; refusing replacement" >&2
+            exit 1
+          fi
+          if ! grep -Eq '^HTTP/[0-9.]+ 404 ' <<<"$release_lookup"; then
+            echo "$release_lookup" >&2
+            echo "could not prove that release $TAG is absent" >&2
             exit 1
           fi
           version=${TAG#v}
@@ -102,7 +112,7 @@ jobs:
           uv run --locked --extra dev --python 3.12
           --with "pip-audit==2.10.1" pip-audit --local --strict
 
-      - name: Build deterministic release artefacts twice
+      - name: Build deterministic artefacts and compare two package builds
         env:
           SOURCE_DATE_EPOCH: ${{ steps.release.outputs.epoch }}
           TZ: UTC
@@ -131,6 +141,20 @@ jobs:
           set -e
           test "$sample_exit" -eq 2
           test -s /tmp/release-report.csv
+          /tmp/payday-release-venv/bin/payday-super-check import \
+            --payroll tests/fixtures/importers/myob_payroll.csv \
+            --super tests/fixtures/importers/myob_super.csv \
+            -o /tmp/release-contributions.csv
+          test -s /tmp/release-contributions.csv
+          set +e
+          /tmp/payday-release-venv/bin/payday-super-check \
+            /tmp/release-contributions.csv \
+            -o /tmp/release-import-report.csv --as-at 2026-08-10 \
+            --confirm-transition-allocation
+          import_report_exit=$?
+          set -e
+          test "$import_report_exit" -eq 2
+          test -s /tmp/release-import-report.csv
 
       - name: Preserve the exact candidate assets before publication
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -184,12 +208,17 @@ jobs:
 
       - name: Verify the published classification and exact asset set
         env:
+          EXPECTED_COMMIT: ${{ steps.release.outputs.commit }}
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > /tmp/release.json
+          published_tag_sha=$(git ls-remote \
+            "https://github.com/$GITHUB_REPOSITORY.git" \
+            "refs/tags/$TAG^{}" | cut -f1)
+          test "$published_tag_sha" = "$EXPECTED_COMMIT"
           jq -e --arg tag "$TAG" --arg title "$TAG - experimental prerelease" \
             '.prerelease == true and .draft == false and .immutable == true
              and .tag_name == $tag and .name == $title' \
@@ -216,3 +245,12 @@ jobs:
           jq -r '.assets[] | [.name, .digest] | @tsv' /tmp/release.json \
             | LC_ALL=C sort > /tmp/published-digests
           diff -u /tmp/expected-digests /tmp/published-digests
+          release_verified=false
+          for attempt in 1 2 3 4 5; do
+            if gh release verify "$TAG" --repo "$GITHUB_REPOSITORY"; then
+              release_verified=true
+              break
+            fi
+            sleep 5
+          done
+          test "$release_verified" = true

@@ -48,14 +48,26 @@ git push origin refs/tags/v0.1.1
 Tag creation and push are deliberate operator actions. Do not reuse or move a
 tag. If anything is wrong, stop and prepare a new patch version.
 
+GitHub does not freeze the tag through release immutability until the release is
+published. The workflow narrows this window by rechecking the remote tag and
+`main` immediately before publication, then verifies the tag and immutable
+release afterwards. Those checks detect but cannot atomically prevent the
+residual race. Preventive control requires a repository tag ruleset that blocks
+updates and deletion for release tags; without one, keep tag changes quiescent
+for the short publication window and treat any post-check mismatch as a failed
+release.
+
 ## Dispatch and verify
 
 Run `Publish experimental prerelease` by `workflow_dispatch` from `main`, with
 tag `v0.1.1` and both confirmations set to true. The workflow independently
 requires its own commit, the current default-branch commit and the tag commit to
-be identical; validates the committed release notes; builds every artefact
-twice; checks `SHA256SUMS`; creates GitHub attestations; and publishes with
-`--prerelease --latest=false`.
+be identical; validates the committed release notes; builds the wheel and sdist
+twice in the same locked release job and byte-compares them; constructs the
+deterministic UTC/LF source archives, SPDX SBOM and checksums; creates GitHub
+attestations; and publishes with `--prerelease --latest=false`. The two-build
+check is a same-job repeatability gate, not a cross-platform or future-toolchain
+byte-identity claim.
 
 The equivalent CLI dispatch is:
 
@@ -66,8 +78,32 @@ gh workflow run release.yml --ref main \
   -f release_notes_confirmed=true
 ```
 
-After the run succeeds, confirm that the GitHub Release is a non-latest
-prerelease, every expected asset is present, `sha256sum --check SHA256SUMS`
-passes and `gh attestation verify` binds the wheel to this repository and the
-tagged commit. Do not describe a successful build, attestation or immutable
-release as proof that any payroll result is correct.
+After the run succeeds, download the release assets and verify the immutable
+release record, checksums, exact source commit, signer workflow, SLSA provenance
+and SPDX predicate:
+
+```bash
+tag_sha=$(git ls-remote \
+  https://github.com/ryanduguid/payday-super-checker.git \
+  'refs/tags/v0.1.1^{}' | cut -f1)
+test "${#tag_sha}" -eq 40
+sha256sum --check SHA256SUMS
+gh release verify v0.1.1 --repo ryanduguid/payday-super-checker
+gh attestation verify payday_super_checker-0.1.1-py3-none-any.whl \
+  --repo ryanduguid/payday-super-checker \
+  --source-digest "$tag_sha" \
+  --source-ref refs/heads/main \
+  --signer-workflow \
+    ryanduguid/payday-super-checker/.github/workflows/release.yml
+gh attestation verify payday_super_checker-0.1.1-py3-none-any.whl \
+  --repo ryanduguid/payday-super-checker \
+  --source-digest "$tag_sha" \
+  --source-ref refs/heads/main \
+  --signer-workflow \
+    ryanduguid/payday-super-checker/.github/workflows/release.yml \
+  --predicate-type https://spdx.dev/Document/v2.3
+```
+
+Also confirm that GitHub shows the release as a non-latest prerelease and that
+every expected asset is present. Do not describe a successful build,
+attestation or immutable release as proof that any payroll result is correct.

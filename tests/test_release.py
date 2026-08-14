@@ -74,6 +74,8 @@ def test_release_metadata_is_exactly_v011_and_explicitly_experimental():
     release.validate_release_notes(notes, metadata)
     assert notes.startswith("# v0.1.1 - experimental prerelease\n")
     assert "not a compliance determination" in notes.lower()
+    assert "same locked release job" in notes
+    assert "not a cross-platform" in notes
 
 
 @pytest.mark.parametrize(
@@ -266,12 +268,16 @@ def test_release_workflow_is_manual_pinned_attested_and_prerelease_only():
     assert "publish" not in workflow.lower() or "prerelease" in workflow.lower()
     assert "pypi" not in workflow.lower()
     assert "GH_TOKEN: ${{ github.token }}" in preflight
+    assert "HTTP/[0-9.]+ 404" in preflight
     assert ".immutable == true" in workflow
     assert ".isLatest == false" in workflow
     assert "/tmp/expected-digests" in workflow
     assert "docs/releases/$TAG.md /tmp/published-notes" in workflow
     assert workflow.count("git ls-remote") >= 3
-    assert '"refs/tags/$TAG^{}"' in workflow
+    assert workflow.count('"refs/tags/$TAG^{}"') >= 2
+    assert 'gh release verify "$TAG"' in workflow
+    assert "payday-super-check import" in workflow
+    assert "myob_payroll.csv" in workflow and "myob_super.csv" in workflow
 
 
 def test_sdist_manifest_carries_every_release_test_dependency():
@@ -291,3 +297,10 @@ def test_operator_process_checks_actual_immutable_setting_before_tagging():
     assert "immutable-releases" in before_tag
     assert "workflow_dispatch" in after_tag
     assert "Do not" in process and "compliance determination" in process
+    assert "same locked release job" in process
+    assert "builds every artefact twice" not in process
+    assert "gh release verify v0.1.1" in process
+    assert "--source-digest" in process and "--source-ref refs/heads/main" in process
+    assert "--signer-workflow" in process
+    assert "--predicate-type https://spdx.dev/Document/v2.3" in process
+    assert "tag ruleset" in process and "residual race" in process
