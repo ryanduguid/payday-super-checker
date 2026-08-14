@@ -58,10 +58,11 @@ NO_RECEIPT_CAVEAT = (
 # from this report back to the payroll export.
 FORMULA_LEAD = ("=", "+", "-", "@")
 
-# ASCII letters then digits is A1 notation, which a sheet resolves to a cell
-# rather than reading as text, so "A1" is not the plain identifier the
-# alphanumeric test alone calls it. The bounds are Excel's own column and row
-# limits; a wider shape names no cell and stays with the identifier test.
+# ASCII letters then digits is a conservative A1-like shape. A sheet can
+# resolve values in that shape as cell references rather than reading them as
+# text, so "A1" is not the plain identifier the alphanumeric test alone calls
+# it. This deliberately overmatches Excel's exact column and row bounds: the
+# guard is deciding when to quote untrusted text, not validating cell addresses.
 # monthly-close-control-plane draws the same line for the same reason - this
 # is one guard written twice, so the two must not disagree.
 CELL_REFERENCE = re.compile(r"[A-Za-z]{1,3}[0-9]{1,7}")
