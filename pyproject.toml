@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "payday-super-checker"
-version = "0.1.0"
+version = "0.1.1"
 description = "Experimental review aid for Australian payday-super deadlines and SG charge estimates"
 readme = "README.md"
 requires-python = ">=3.10"

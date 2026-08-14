@@ -1,0 +1,180 @@
+name: Publish experimental prerelease
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact existing tag to publish (for example v0.1.1)
+        required: true
+        type: string
+      immutable_releases_confirmed:
+        description: An administrator checked that immutable releases are enabled
+        required: true
+        default: false
+        type: boolean
+      release_notes_confirmed:
+        description: A human approved the exact committed experimental release notes
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: experimental-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: validate, attest and publish prerelease
+    runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Check out the workflow commit without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up the pinned release Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the locked release environment
+        run: |
+          python -m pip install "uv==0.12.0"
+          uv sync --locked --extra dev --python 3.12
+
+      - name: Resolve and verify the exact tag, main and operator gates
+        id: release
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          IMMUTABLE_CONFIRMED: ${{ inputs.immutable_releases_confirmed }}
+          NOTES_CONFIRMED: ${{ inputs.release_notes_confirmed }}
+          TAG: ${{ inputs.tag }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_tag=$(uv run --locked --extra dev --python 3.12 \
+            python tools/release.py metadata --field tag)
+          test "$TAG" = "$expected_tag"
+          test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
+          git fetch --force --tags \
+            "https://github.com/$GITHUB_REPOSITORY.git" \
+            "refs/tags/$TAG:refs/tags/$TAG"
+          tag_sha=$(git rev-list -n 1 "$TAG^{commit}")
+          main_sha=$(git ls-remote \
+            "https://github.com/$GITHUB_REPOSITORY.git" \
+            "refs/heads/$DEFAULT_BRANCH" | cut -f1)
+          epoch=$(git show -s --format=%ct "$tag_sha")
+          uv run --locked --extra dev --python 3.12 python tools/release.py verify \
+            --tag "$TAG" \
+            --tag-sha "$tag_sha" \
+            --main-sha "$main_sha" \
+            --workflow-sha "$WORKFLOW_SHA" \
+            --immutable-confirmed "$IMMUTABLE_CONFIRMED" \
+            --release-notes-confirmed "$NOTES_CONFIRMED"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists; refusing replacement" >&2
+            exit 1
+          fi
+          version=${TAG#v}
+          {
+            echo "tag=$TAG"
+            echo "version=$version"
+            echo "commit=$tag_sha"
+            echo "epoch=$epoch"
+            echo "notes=docs/releases/$TAG.md"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Test the exact tagged source
+        run: uv run --locked --extra dev --python 3.12 pytest -q
+
+      - name: Audit the locked release environment
+        run: >-
+          uv run --locked --extra dev --python 3.12
+          --with "pip-audit==2.10.1" pip-audit --local --strict
+
+      - name: Build deterministic release artefacts twice
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.release.outputs.epoch }}
+          TZ: UTC
+        run: |
+          uv run --locked --extra dev --python 3.12 python tools/release.py build \
+            --tag "${{ steps.release.outputs.tag }}" \
+            --commit "${{ steps.release.outputs.commit }}" \
+            --epoch "$SOURCE_DATE_EPOCH" \
+            --out-dir release
+          (cd release && sha256sum --check SHA256SUMS)
+
+      - name: Install and exercise only the built wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/payday-release-venv
+          /tmp/payday-release-venv/bin/pip install --no-index \
+            "release/payday_super_checker-${{ steps.release.outputs.version }}-py3-none-any.whl"
+          test "$(/tmp/payday-release-venv/bin/payday-super-check --version)" = \
+            "payday-super-check ${{ steps.release.outputs.version }}"
+          set +e
+          /tmp/payday-release-venv/bin/payday-super-check examples/sample_payrun.csv \
+            -o /tmp/release-report.csv --as-at 2026-08-10 \
+            --confirm-transition-allocation
+          sample_exit=$?
+          set -e
+          test "$sample_exit" -eq 2
+          test -s /tmp/release-report.csv
+
+      - name: Preserve the exact candidate assets before publication
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.release.outputs.tag }}-candidate-assets
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attest every release artefact's build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release/*
+
+      - name: Attach the SPDX runtime SBOM attestation to the wheel
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release/payday_super_checker-${{ steps.release.outputs.version }}-py3-none-any.whl
+          sbom-path: release/payday-super-checker-${{ steps.release.outputs.tag }}.spdx.json
+
+      - name: Publish the non-latest experimental prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.release.outputs.tag }}" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "${{ steps.release.outputs.tag }} - experimental prerelease" \
+            --notes-file "${{ steps.release.outputs.notes }}" \
+            --prerelease \
+            --latest=false \
+            --verify-tag
+
+      - name: Verify the published classification and exact asset set
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > /tmp/release.json
+          jq -e --arg title "$TAG - experimental prerelease" \
+            '.prerelease == true and .draft == false and .name == $title' \
+            /tmp/release.json >/dev/null
+          find release -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort \
+            > /tmp/expected-assets
+          jq -r '.assets[].name' /tmp/release.json | LC_ALL=C sort \
+            > /tmp/published-assets
+          diff -u /tmp/expected-assets /tmp/published-assets
