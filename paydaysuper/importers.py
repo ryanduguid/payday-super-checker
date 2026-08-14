@@ -446,17 +446,14 @@ def _covers(s: SuperRow, target: date) -> bool:
     """Whether a super row's period includes a target date, inclusive of
     both ends.
 
-    An exclusive start was tried (round 3) to stop one period's end being
-    repeated as the next period's start from re-claiming the earlier
-    payday. It broke the opposite, equally normal convention -- a period
-    that starts ON the payday it settles, or a payday that lands on a
-    period's own start date -- turning a clean match into a false orphan.
-    Fixing the boundary belongs to the two-pass allocation in `join`, not
-    to a stricter date comparison here: pass 1 lets an unambiguous single-
-    coverage payment settle its payday before any period-overlap payment
-    is even considered, so a shared boundary date that pass 1 already
-    resolved has zero balance left to be fought over in pass 2. See
-    `join`'s docstring.
+    An exclusive start was tried to stop one period's end being repeated as
+    the next period's start from re-claiming the earlier payday. It broke the
+    opposite, equally normal convention -- a period that starts ON the
+    payday it covers, or a payday that lands on a period's own start date --
+    turning a clean match into a false orphan. Inclusive coverage preserves
+    the export facts; contribution ordering and oldest-shortfall allocation
+    in `join`, behind import_files' explicit reconciliation gate, decide what
+    receives the money.
 
     The sole real call site (`_coverage`) never reaches this with both
     period fields `None` -- a period-less row's ambiguity is resolved
@@ -578,35 +575,23 @@ def _allocate(
     received. A row already settled by something else takes nothing here,
     however wide this payment's own period reaches.
 
-    Order: a covered payroll row whose effective period end falls exactly
-    on this payment's own period end is settled FIRST; every other covered
-    row follows oldest payday first. A super payment's period end normally
-    lands on the payday it covers (owner ruling), so when the money is
-    short, the payday the period actually names is the one that reads as
-    settled and an earlier payday carries the shortfall -- not the reverse,
-    which reported the paid payday as unpaid and the unpaid one as
-    part-paid, moving the exposure by a full pay cycle. The priority fires
-    only for a covered payday sitting exactly on the period end, so a
-    monthly or quarterly payment apportioned across paydays that never
-    touch its period end is unaffected and stays oldest-first.
+    Order: oldest QE day with an unmet balance first. LCR 2026/2 paragraphs
+    31-33 say an eligible contribution is applied by law to the earliest QE
+    day with a base or final shortfall, in fund-receipt order. A vendor pay-
+    period end is not a statutory allocation instruction and cannot move a
+    contribution past an earlier shortfall.
 
     Both sort keys are total orders over distinct payroll rows -- row
     numbers are unique within one file, so the sort never has to fall back
     on how `payroll_rows` happened to be ordered when it was passed to
     `join`. The same input, in any order, apportions the same way.
 
-    Any amount left over once every covered row's balance is satisfied
-    lands on the chronologically last row that received an allocation.
-    That was `allocations[-1]` while the sort was purely oldest-first;
-    naming it explicitly keeps the leftover on the newest payday now that
-    the period-end priority can put a different row last in sort order.
-    The priority decides who goes short when money runs out, and changes
-    nothing about where an unattributable excess is reported."""
-    period_end = s.period_end
+    Any amount left over once every covered row's balance is satisfied lands
+    on the chronologically last row that received an allocation, where the
+    importer can surface it as an unattributable excess."""
     ordered = sorted(
         covered,
         key=lambda r: (
-            0 if period_end is not None and r.effective_period_end == period_end else 1,
             r.payday,
             r.effective_period_end,
             r.row,
@@ -698,30 +683,12 @@ def join(
 ) -> JoinResult:
     """Match payroll rows to the super payments that settled them.
 
-    Two passes decide what each super row contributes, run in this order
-    for every employee together (not employee by employee, since the
-    passes and the sort inside each are already scoped by coverage):
-
-    Pass 1 -- every super row whose period covers exactly one payroll row
-    settles that row first, for its full amount (an overpayment here still
-    shows up as `over:` later; nothing here is capped). This is what
-    resolves a shared period boundary cleanly: if one super row's period
-    covers a payday on its own, it settles that payday before any wider,
-    multi-payday super row is even considered, so by the time pass 2 looks
-    at a payment whose period happens to also reach that same payday, the
-    payday's balance is already at zero and there is nothing left to
-    apportion to it.
-
-    Pass 2 -- every super row whose period covers more than one payroll
-    row apportions its amount across them, each capped at its UNMET
-    balance (`sg_amount` minus everything already allocated to it, from any
-    super row, in either pass -- not its full `sg_amount` regardless of
-    what it already has). A covered payday sitting exactly on the
-    payment's own period end is settled first; the rest follow oldest
-    payday first (see `_allocate`). Pass-2 super rows are processed in a
-    fixed order, sorted by paid date then row number, so which row's
-    balance is already reduced by the time a later pass-2 payment is
-    considered never depends on the order `super_rows` was passed in.
+    Contributions are processed in a fixed date/row order and allocated to
+    the oldest covered QE day with an unmet balance. This mirrors the legal
+    sequence in LCR 2026/2, subject to the importer's explicit reconciliation
+    gate: vendor exports contain employer payment dates and period labels,
+    not the fund-receipt order or assessment facts that establish the
+    canonical statutory allocation.
 
     A super row that contributed to nobody is an orphan. `orphan_reasons`
     says why, one entry per orphan in the same order: a payment that
@@ -798,13 +765,9 @@ def join(
         coverage[id(s)] = _coverage(s, candidates)
 
     # contributions[id(payroll_row)] collects every (super_row, amount,
-    # note) a payroll row received, whether from a plain pass-1 match or as
-    # its share of a pass-2 apportioned payment, so the totalling below
-    # (partial/over/remitted) never has to care which kind it was looking
-    # at. allocated_total[id(payroll_row)] is the running sum backing
-    # `_unmet`, updated as each pass completes so pass 2 always sees the
-    # true balance left over from pass 1 and from every pass-2 super row
-    # already processed before it.
+    # note) a payroll row receives. allocated_total[id(payroll_row)] is the
+    # running sum backing `_unmet`, updated after each contribution so the
+    # next one sees the true balance left by every earlier fund-order entry.
     contributions: dict[int, list[tuple[SuperRow, Decimal, str]]] = {}
     allocated_total: dict[int, Decimal] = {}
     used_super_ids: set[int] = set()
@@ -813,31 +776,13 @@ def join(
         contributions.setdefault(id(row), []).append((s, share, note))
         allocated_total[id(row)] = allocated_total.get(id(row), Decimal("0")) + share
 
-    pass1 = [s for s in super_rows if len(coverage[id(s)]) == 1]
-    for s in pass1:
-        row = coverage[id(s)][0]
-        if row.sg_amount == 0:
-            # A super row whose period matches only a payroll row that
-            # owes nothing has no defensible recipient at all; leaving it
-            # unclaimed (an orphan) is more honest than crediting a row
-            # that is about to be reported as owing zero regardless.
-            continue
-        _credit(row, s, s.amount, "")
-        used_super_ids.add(id(s))
-
-    pass2 = [s for s in super_rows if len(coverage[id(s)]) > 1]
-    for s in sorted(pass2, key=lambda s: (s.paid_date or date.max, *_super_order(s))):
+    for s in sorted(super_rows, key=lambda s: (s.paid_date or date.max, *_super_order(s))):
         covered = coverage[id(s)]
         competing = [r for r in covered if _unmet(r, allocated_total) > 0]
         _check_defensible(s, competing)
         allocations = _allocate(s, covered, allocated_total)
-        # A super row only reads as a SHARED payment if more than one
-        # payroll row was actually still contesting its money at the
-        # moment it was processed. A row whose balance pass 1 (or an
-        # earlier pass-2 super row) already zeroed out is not competing
-        # for anything here, even if this payment's own period still
-        # structurally reaches its payday -- see `join`'s docstring on the
-        # shared-boundary case this resolves.
+        # A super row reads as shared only if more than one payroll row still
+        # had an unmet balance when it was processed.
         shared = len(competing) > 1
         paid_str = s.paid_date.isoformat() if s.paid_date is not None else "no date on record"
         # Whether a note is attached is decided by `competing` -- only a
@@ -1197,6 +1142,8 @@ def import_files(
     super_path: str | Path,
     out_path: str | Path,
     vendor: str | None = None,
+    *,
+    statutory_allocation_confirmed: bool = False,
 ) -> ImportReport:
     """Read a payroll export and a super payments export, join them, write
     the canonical contributions CSV to `out_path`, and return a summary of
@@ -1208,7 +1155,14 @@ def import_files(
     file-level fact `read_payroll`/`read_super` surface via their third
     return value, because it is gone once the rows are built into
     `PayrollRow`/`SuperRow` objects (a `None` field on a row is then
-    indistinguishable from "this file never had the column at all")."""
+    indistinguishable from "this file never had the column at all").
+
+    ``statutory_allocation_confirmed`` is false by default. Where an
+    employee has more than one positive payday and at least one contribution,
+    the exports cannot prove LCR 2026/2's fund-receipt ordering, earliest-
+    shortfall allocation or whether an assessment changed the ordering. The
+    caller must reconcile those facts before this function writes a canonical
+    file."""
     out = Path(out_path).resolve()
     for source in (payroll_path, super_path):
         if Path(source).resolve() == out:
@@ -1218,6 +1172,42 @@ def import_files(
 
     payroll_rows, payroll_profile, payroll_resolved = read_payroll(payroll_path, vendor)
     super_rows, super_profile, super_resolved = read_super(super_path, vendor)
+
+    both_have_ids = (
+        bool(payroll_rows)
+        and bool(super_rows)
+        and all(r.employee_id for r in payroll_rows)
+        and all(r.employee_id for r in super_rows)
+    )
+    key_mode = "id" if both_have_ids else "name"
+    super_keys = {_key(row, key_mode) for row in super_rows if row.amount > 0}
+    grouped_paydays: dict[str, list[PayrollRow]] = {}
+    for row in payroll_rows:
+        if (
+            row.sg_amount > 0
+            and row.payday >= REGIME_START
+            and _key(row, key_mode) in super_keys
+        ):
+            grouped_paydays.setdefault(_key(row, key_mode), []).append(row)
+    allocation_groups = [
+        rows
+        for rows in grouped_paydays.values()
+        if len({row.payday for row in rows}) > 1
+    ]
+    if allocation_groups and not statutory_allocation_confirmed:
+        affected_rows = sorted(row.row for rows in allocation_groups for row in rows)
+        shown = ", ".join(str(row) for row in affected_rows[:20])
+        more = f" and {len(affected_rows) - 20} more" if len(affected_rows) > 20 else ""
+        raise CsvError(
+            f"{len(allocation_groups)} employee allocation group(s) contain more than "
+            f"one positive payday (payroll rows {shown}{more}). LCR 2026/2 "
+            "paragraphs 31-33 apply contributions in fund-receipt order to the "
+            "earliest QE day with a base or final shortfall. These exports contain "
+            "employer payment dates and vendor periods, not fund-receipt order or "
+            "assessment facts, so they cannot establish the canonical allocation. "
+            "Reconcile every relevant payday, contribution receipt and assessment, "
+            "then rerun with --confirm-statutory-allocation; no output was written"
+        )
     result = join(
         payroll_rows,
         super_rows,
@@ -1236,6 +1226,14 @@ def import_files(
         outcome_counts[bucket] = outcome_counts.get(bucket, 0) + 1
 
     warnings = _pre_regime_warnings(payroll_rows) + list(result.warnings)
+    if allocation_groups:
+        warnings.insert(
+            0,
+            "operator confirmed the LCR 2026/2 statutory allocation: all relevant "
+            "paydays, fund receipts and assessments were reconciled, and the export "
+            "periods plus payment-date/row order reproduce the fund-receipt order and "
+            "earliest-shortfall application",
+        )
     warnings.extend(f"row {o.payroll.row}: {o.flag}" for o in result.outcomes if o.flag)
     warnings.extend(
         f"super row {r.super_row.row}: {r.message}" for r in result.orphan_reasons

@@ -11,14 +11,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_generator_keeps_victorian_afl_final_day_provisional():
-    """A source-label update must not remove the existing provisional flag.
-
-    The generator is development-time only: runtime uses the reviewed JSON
-    table.  Victoria's official 2026 calendar calls 25 September the Friday
-    before the AFL Grand Final; it remains fixture-dependent for generation
-    purposes and must therefore retain the pre-existing provisional marking.
-    """
+def test_raw_generator_is_provisional_until_the_reviewed_table_confirms_dates():
+    """Generation is not primary-source review. The shipped table confirms
+    Business Victoria's 25 September 2026 date, while raw output keeps it and
+    the fixture-dependent 2027 candidate provisional."""
 
     completed = subprocess.run(
         [sys.executable, str(ROOT / "tools" / "generate_calendar.py")],
@@ -28,15 +24,57 @@ def test_generator_keeps_victorian_afl_final_day_provisional():
         text=True,
     )
     generated = json.loads(completed.stdout)
-    entry = next(
+    raw_2026 = next(
         holiday
         for holiday in generated["non_business_days"]
         if holiday["date"] == "2026-09-25"
     )
+    future = next(
+        holiday
+        for holiday in generated["non_business_days"]
+        if holiday["jurisdictions"] == ["VIC"]
+        and "Grand Final" in holiday["name"]
+        and holiday["date"].startswith("2027-")
+    )
 
-    assert entry["name"] == "Friday before the AFL Grand Final"
-    assert entry["jurisdictions"] == ["VIC"]
-    assert entry["provisional"] is True
+    reviewed = json.loads(
+        (ROOT / "paydaysuper" / "data" / "business_days.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    reviewed_2026 = next(
+        holiday
+        for holiday in reviewed["non_business_days"]
+        if holiday["date"] == "2026-09-25"
+    )
+
+    assert raw_2026["name"] == "Friday before the AFL Grand Final"
+    assert raw_2026["jurisdictions"] == ["VIC"]
+    assert raw_2026["provisional"] is True
+    assert reviewed_2026["provisional"] is False
+    assert future["provisional"] is True
+
+
+def test_generator_excludes_locally_substitutable_dates():
+    """WA King's Birthday and Melbourne Cup Day do not apply throughout
+    their respective State according to the official jurisdiction pages."""
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "generate_calendar.py")],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    generated = json.loads(completed.stdout)
+    names = [entry["name"] for entry in generated["non_business_days"]]
+
+    assert "Melbourne Cup Day" not in names
+    assert not any(
+        entry["jurisdictions"] == ["WA"] and entry["name"] == "King's Birthday"
+        for entry in generated["non_business_days"]
+    )
+    assert generated["verified_until"] == "2026-07-01"
+    assert generated["official_sources"]["checked"] is None
 
 
 def test_generator_provenance_reflects_the_environment_that_ran():

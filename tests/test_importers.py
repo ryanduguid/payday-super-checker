@@ -33,7 +33,7 @@ from paydaysuper.importers import (
     PayrollRow,
     SuperRow,
     _amount,
-    import_files,
+    import_files as _import_files,
     join,
     read_payroll,
     read_super,
@@ -41,6 +41,14 @@ from paydaysuper.importers import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "importers"
+
+
+def import_files(*args, **kwargs):
+    """Most importer unit cases isolate another rule using synthetic exports
+    whose statutory allocation is assumed reconciled. Production remains
+    fail-closed; the dedicated CLI regression exercises the default."""
+    kwargs.setdefault("statutory_allocation_confirmed", True)
+    return _import_files(*args, **kwargs)
 
 
 def test_read_super_keeps_only_super_guarantee():
@@ -489,11 +497,10 @@ def test_touching_period_boundaries_pair_cleanly_one_to_one():
     # next period's start date (a fortnight ending 3 July, immediately
     # followed by one starting 3 July). Under inclusive-both-ends coverage,
     # the second super row's period structurally reaches 3 July too, but
-    # pass 1 already settles 3 July from the first (single-coverage) super
-    # row before pass 2 ever looks at the second one, so 3 July has zero
-    # balance left to be fought over and the second payment flows entirely
-    # to 10 July. Both rows end up plainly matched, no shared-payment note
-    # on either -- only one row was ever actually competing for the second
+    # the earlier-dated first contribution settles 3 July before the second
+    # is processed, so 3 July has zero balance left and the second payment
+    # flows entirely to 10 July. Both rows end up plainly matched, with no
+    # shared-payment note -- only one row was still competing for the second
     # payment's money.
     result = join(
         [payroll("A", "2026-07-03", "612.00", row=2),
@@ -896,9 +903,7 @@ def test_an_overpayment_cannot_be_carried_onto_a_later_payday(tmp_path):
         [
             # Covers payday 1 alone, and overpays it.
             super_row("A", "2026-07-01", "2026-07-09", "2026-07-10", "800.00", row=2),
-            # Spans both paydays. Its period end is neither payday, so the
-            # period-end priority stays out of it and allocation runs
-            # oldest first, which is what reaches payday 1's balance.
+            # Spans both paydays and allocates oldest outstanding first.
             super_row("A", "2026-07-01", "2026-07-31", "2026-07-24", "400.00", row=3),
         ],
     )
@@ -1110,14 +1115,9 @@ def test_pass2_allocation_is_independent_of_input_order_exhaustive():
     assert len(results) == 1, f"allocation depended on input order: {results}"
 
 
-def test_a_payday_on_the_period_end_is_settled_before_an_earlier_payday():
-    # Reproduction A. One payment, period 2026-07-03 to 2026-07-10, paid
-    # 2026-07-15, 540.00 -- exactly the 10 July payday's obligation, and its
-    # period ends on that payday. Plain oldest-first apportionment handed
-    # the money to the 3 July row instead, reporting the payday that was
-    # actually paid as unpaid and the unpaid one as part-paid. A super
-    # payment's period end normally lands on the payday it covers, so that
-    # payday is settled first.
+def test_a_payday_on_the_period_end_does_not_jump_an_earlier_shortfall():
+    # A vendor period ending on 10 July does not override LCR 2026/2's
+    # earliest-shortfall ordering.
     for payroll_rows in (
         [payroll("A", "2026-07-03", "612.00", row=2), payroll("A", "2026-07-10", "540.00", row=3)],
         [payroll("A", "2026-07-10", "540.00", row=3), payroll("A", "2026-07-03", "612.00", row=2)],
@@ -1130,22 +1130,94 @@ def test_a_payday_on_the_period_end_is_settled_before_an_earlier_payday():
         # The specific date, not just "some date": an order-independence
         # check alone cannot catch a sort applied backwards, since a
         # reversed sort is still deterministic.
-        assert outcomes[3].remitted == date(2026, 7, 15)
-        assert outcomes[3].flag == (
-            "540.00 of 540.00 allocated from super row 2 (paid 2026-07-15), "
+        assert outcomes[2].remitted == date(2026, 7, 15)
+        assert outcomes[2].flag == (
+            "partial: 540.00 of 612.00 matched; 540.00 of 540.00 allocated "
+            "from super row 2 (paid 2026-07-15), "
             "one of 2 paydays that payment covered"
         )
-        assert outcomes[2].remitted is None
-        assert outcomes[2].flag == "no super payment found"
+        assert outcomes[3].remitted is None
+        assert outcomes[3].flag == "no super payment found"
         assert result.orphans == []
 
 
-def test_period_end_priority_leaves_the_earlier_payday_short_not_the_later():
-    # Reproduction B: the same shape with the 3 July payday's own earlier
-    # payment present too. 212.00 of the second payment used to be pulled
-    # back to 3 July, leaving 10 July short. The period-end payday takes
-    # its money first, so the shortfall stays on the payday whose own
-    # payment was genuinely short.
+def test_lcr_2026_2_applies_a_short_payment_to_the_earliest_shortfall():
+    """A vendor period ending on the later payday is not a statutory
+    allocation instruction. LCR 2026/2 applies the contribution to the
+    earliest QE day with a shortfall."""
+    result = join(
+        [
+            payroll("A", "2026-07-03", "100.00", row=2),
+            payroll("A", "2026-07-10", "100.00", row=3),
+        ],
+        [
+            super_row(
+                "A", "2026-07-03", "2026-07-10", "2026-07-15", "100.00", row=2
+            )
+        ],
+    )
+    outcomes = _by_row(result)
+
+    assert outcomes[2].remitted == date(2026, 7, 15)
+    assert outcomes[3].remitted is None
+
+
+def test_import_refuses_unreconciled_statutory_allocation_then_accepts_confirmation(
+    tmp_path, capsys
+):
+    """The export has employer payment dates, not fund-receipt order or ATO
+    assessment facts. Multiple paydays for one employee therefore require
+    an explicit LCR 2026/2 reconciliation before a canonical file is written."""
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "A,03/07/2026,03/07/2026,100.00\n"
+        "A,10/07/2026,10/07/2026,100.00\n",
+        encoding="utf-8",
+    )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "A,Superannuation Guarantee,03/07/2026,10/07/2026,15/07/2026,100.00\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    common = [
+        "import",
+        "--payroll",
+        str(payroll_path),
+        "--super",
+        str(super_path),
+        "--vendor",
+        "myob-ar",
+        "-o",
+        str(out),
+    ]
+
+    code = cli_main(common)
+
+    assert code == EXIT_ERROR
+    assert not out.exists()
+    error = capsys.readouterr().err
+    assert "LCR 2026/2" in error
+    assert "fund-receipt order" in error
+    assert "--confirm-statutory-allocation" in error
+
+    code = cli_main(common + ["--confirm-statutory-allocation"])
+
+    assert code == EXIT_LATE_FOUND
+    assert out.exists()
+    printed = capsys.readouterr().out
+    assert "operator confirmed" in printed
+    with open(out, newline="", encoding="utf-8-sig") as handle:
+        rows = list(_csv.DictReader(handle))
+    assert rows[0]["remitted_date"] == "2026-07-15"
+    assert rows[1]["remitted_date"] == ""
+
+
+def test_fund_order_fills_the_earlier_shortfall_before_the_later_payday():
+    # The 8 July contribution first leaves 212 owing on 3 July. The next
+    # contribution clears that earliest shortfall before reaching 10 July.
     for super_rows in (
         [super_row("A", "2026-07-03", "2026-07-10", "2026-07-15", "540.00", row=2),
          super_row("A", "2026-06-27", "2026-07-03", "2026-07-08", "400.00", row=3)],
@@ -1158,23 +1230,16 @@ def test_period_end_priority_leaves_the_earlier_payday_short_not_the_later():
             super_rows,
         )
         outcomes = _by_row(result)
+        assert outcomes[2].remitted == date(2026, 7, 15)
+        assert "partial" not in outcomes[2].flag
         assert outcomes[3].remitted == date(2026, 7, 15)
-        assert "partial" not in outcomes[3].flag
-        assert outcomes[2].remitted == date(2026, 7, 8)
-        assert outcomes[2].flag == "partial: 400.00 of 612.00 matched"
+        assert outcomes[3].flag.startswith("partial: 328.00 of 540.00 matched")
 
 
 def test_monthly_payment_whose_last_payday_is_the_period_end_exact_short_and_over():
-    # One monthly payment across three fortnightly paydays, where the last
-    # payday (31 July) happens to sit exactly on the period end. Exact: all
-    # three settle. Short: the period-end payday is settled first, so the
-    # shortfall falls on 17 July -- the last row in the remaining
-    # oldest-first order -- rather than on 31 July. That moves the flagged
-    # exposure to an earlier deadline, which is the conservative direction
-    # for a checker, and it is what the ruling asks for: the payday the
-    # period names is the one the payment settles. Over: the unattributable
-    # excess still lands on the chronologically last payday, unchanged by
-    # the priority.
+    # Exact: all three settle. Short: LCR 2026/2 leaves the newest payday
+    # short after the two earliest shortfalls are cleared. Over: the excess
+    # remains surfaced on the newest payday.
     def run(amount):
         return _by_row(join(
             [payroll("A", "2026-07-03", "600.00", row=2),
@@ -1190,9 +1255,9 @@ def test_monthly_payment_whose_last_payday_is_the_period_end_exact_short_and_ove
         assert "over:" not in exact[row_number].flag
 
     short = run("1500.00")
-    assert "partial" not in short[4].flag, "the payday on the period end must be settled first"
+    assert short[4].flag.startswith("partial: 300.00 of 600.00 matched")
     assert "partial" not in short[2].flag
-    assert short[3].flag.startswith("partial: 300.00 of 600.00 matched")
+    assert "partial" not in short[3].flag
     assert short[4].remitted == date(2026, 8, 15)
 
     over = run("2100.00")
@@ -1508,7 +1573,16 @@ def test_a_partial_payment_is_not_written_as_fully_remitted(tmp_path):
     # the blank cell actually changes the checker's verdict, not just that
     # the cell itself looks right.
     report_out = tmp_path / "report.csv"
-    code = cli_main([str(out), "-o", str(report_out), "--as-at", "2026-08-10"])
+    code = cli_main(
+        [
+            str(out),
+            "-o",
+            str(report_out),
+            "--as-at",
+            "2026-08-10",
+            "--confirm-transition-allocation",
+        ]
+    )
     assert code == EXIT_LATE_FOUND
     with open(report_out, newline="", encoding="utf-8") as f:
         checker_rows = list(_csv.DictReader(f))
@@ -1624,7 +1698,16 @@ def test_canonical_csv_round_trips_through_parse_rows_and_the_real_cli(tmp_path)
     assert all(l.received is None for l in lines)  # never invented
 
     report_out = tmp_path / "report.csv"
-    code = cli_main([str(out), "-o", str(report_out), "--as-at", "2026-08-10"])
+    code = cli_main(
+        [
+            str(out),
+            "-o",
+            str(report_out),
+            "--as-at",
+            "2026-08-10",
+            "--confirm-transition-allocation",
+        ]
+    )
     assert code in (EXIT_OK, EXIT_LATE_FOUND), "the real CLI choked on our own output"
     with open(report_out, newline="", encoding="utf-8") as f:
         report_rows = [r for r in _csv.DictReader(f) if r["employee_id"] != "NOTE"]
@@ -1999,10 +2082,11 @@ def test_import_clean_file_returns_zero(tmp_path):
     assert code == EXIT_OK
 
 
-def test_existing_invocation_still_works(tmp_path):
+def test_plain_check_dispatch_still_works_with_transition_confirmation(tmp_path):
     # The exact exit code and real report contents, not just "did not
-    # crash" -- values confirmed by running this exact invocation directly
-    # against the unmodified check path. test_integration.py's own
+    # crash". The sample crosses the LCR 2026/1 transition, so its explicit
+    # synthetic-balance confirmation is part of the safe invocation.
+    # test_integration.py's own
     # test_cli_writes_report_and_flags_late pins the same fixture at a
     # different --as-at date far more thoroughly; this test's job is
     # narrower: prove the `import` subcommand's dispatch in main() did not
@@ -2010,7 +2094,16 @@ def test_existing_invocation_still_works(tmp_path):
     from conftest import SAMPLE
 
     out = tmp_path / "report.csv"
-    code = cli_main([str(SAMPLE), "-o", str(out), "--as-at", "2026-09-01"])
+    code = cli_main(
+        [
+            str(SAMPLE),
+            "-o",
+            str(out),
+            "--as-at",
+            "2026-09-01",
+            "--confirm-transition-allocation",
+        ]
+    )
     assert code == EXIT_LATE_FOUND
     assert out.exists()
 
@@ -2473,6 +2566,7 @@ def test_import_distinguishes_orphan_codes_in_the_console_output(tmp_path, capsy
             str(super_path),
             "-o",
             str(out),
+            "--confirm-statutory-allocation",
         ]
     )
     assert code == EXIT_LATE_FOUND
@@ -2664,7 +2758,16 @@ def test_both_cli_paths_call_the_shared_stdout_reconfigure(tmp_path, monkeypatch
     from conftest import SAMPLE
 
     report_out = tmp_path / "report.csv"
-    code = cli_main([str(SAMPLE), "-o", str(report_out), "--as-at", "2026-09-01"])
+    code = cli_main(
+        [
+            str(SAMPLE),
+            "-o",
+            str(report_out),
+            "--as-at",
+            "2026-09-01",
+            "--confirm-transition-allocation",
+        ]
+    )
     assert code == EXIT_LATE_FOUND
     assert len(calls) == 2
 
@@ -2792,12 +2895,21 @@ def test_the_blocker_reproduction_checks_clean_end_to_end(tmp_path, capsys):
     assert (
         cli_main(
             ["import", "--payroll", str(payroll_path), "--super", str(super_path),
-             "-o", str(out)]
+             "-o", str(out), "--confirm-statutory-allocation"]
         )
         == EXIT_OK
     )
     capsys.readouterr()
-    code = cli_main([str(out), "-o", str(tmp_path / "report.csv"), "--as-at", "2026-08-03"])
+    code = cli_main(
+        [
+            str(out),
+            "-o",
+            str(tmp_path / "report.csv"),
+            "--as-at",
+            "2026-08-03",
+            "--confirm-transition-allocation",
+        ]
+    )
     printed = capsys.readouterr().out
     assert code == EXIT_OK
     assert "LATE: 0" in printed and "UNPAID: 0" in printed
@@ -2938,7 +3050,7 @@ def test_unmet_never_holds_a_sub_cent_residue_and_money_is_conserved(monkeypatch
         rng.shuffle(shuffled_super)
         assert _render(join(shuffled_payroll, shuffled_super)) == _render(result), trial
     # Guard the guard. A run where nearly everything was refused, or where
-    # every super row happened to land in pass 1 and `_unmet` was never
+    # every super row happened to cover one payday and `_unmet` was never
     # reached, would sail through the loop above having tested almost
     # nothing. `_unmet` is only consulted for a payment more than one payday
     # could claim, which is exactly the shape the blocker needed.
