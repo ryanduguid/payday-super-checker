@@ -165,11 +165,11 @@ NEC accrues over the 'late period': START = the day AFTER the last day an on-tim
 
 Citation: ATO, The new super guarantee charge (URL above, seen 2026-08-02: 'Notional earnings start to accrue on ... the day after the last day to make an on-time eligible contribution'); draft LCR 2026/D3, https://www.ato.gov.au/law/view/document?docid=COD%2FLCR2026D3%2FNAT%2FATO%2F00001 (seen 2026-08-02)
 
-### GIC rate value (parameter, changes quarterly) [confidence: medium]
+### GIC rate value (parameter, changes quarterly) [confidence: high]
 
 GIC annual rate for 1 Jul–30 Sep 2026 is 11.43% (daily rate 0.03131507%, which is annual/365 because 2026 is not a leap year; TAA 1953 s 8AAD divides by the number of days in the calendar year, so a day in 2028 divides by 366). Prior quarter (Apr–Jun 2026) was 10.96%. The rate resets every quarter (90-day bank accepted bill rate + 7 percentage points uplift under TAA 1953 Pt IIA), so the tool must treat it as a dated parameter table, never a constant.
 
-Citation: https://orbitax.com/news/country/article/ATO-Publishes-Quarterly-Genera-62408 (seen 2026-08-02), corroborated by Bloomberg Tax headline for Q3 2026; ATO GIC rates page itself blocked our fetcher (403)
+Citation: ATO, General interest charge (GIC) rates, https://www.ato.gov.au/tax-rates-and-codes/general-interest-charge-rates (official tables last updated 2026-06-05; read directly 2026-08-14). The 2026-27 table gives 11.43% annual and 0.03131507% daily for July-September 2026; the 2025-26 table gives 10.96% annual and 0.03002740% daily for April-June 2026.
 
 ### Administrative uplift: base [confidence: high]
 
@@ -557,9 +557,9 @@ IFPA 3 July 2026 update (fetched in full): the Determination 'has been made' as 
 
 Confirmed still draft as of early July 2026: IFPA 3 Jul 2026 update lists withdrawn/updated guidance (SGD 2003/2W, SGR 2009/2W, PS LA 2007/1(GA), PS LA 2021/3) but 'contains no mention of finalised LCR 2026/D1-D4'; no final LCR 2026/1-4 appears in any search result. However the PwC August 2026 Monthly Tax Update (the one source that would cover late-July finalisation) returned 403, so status in the last ~4 weeks is unverified. Tool docs must label LCR-derived details as draft guidance and this needs a manual browser check of the ATO legal database immediately before publication.
 
-### [CONFIRMED] GIC rate 11.43% p.a. (daily 0.03131507%) for 1 Jul–30 Sep 2026; resets quarterly; must be a dated parameter table
+### [CONFIRMED FROM PRIMARY SOURCE] GIC rate 11.43% p.a. (daily 0.03131507%) for 1 Jul–30 Sep 2026; resets quarterly; must be a dated parameter table
 
-Orbitax 'ATO Publishes Quarterly General Interest Charge Rates... First Quarter of 2026-27' + ATO GIC rates page content via search: Jul–Sep 2026 annual 11.43%, daily 0.03131507%, prior quarter 10.96%. ADVERSARIAL FINDING: a cached/summarised version of the ATO new-SGC explainer still quotes 'currently 10.61%' (an old rate). ATO explainer pages lag the quarterly table, so the tool must source GIC from the rates table only, never from explainer-page prose. Oct 2026+ rates do not exist yet; the tool needs a horizon warning.
+ATO, General interest charge (GIC) rates, read directly on 14 Aug 2026: Jul–Sep 2026 annual 11.43%, daily 0.03131507%; Apr–Jun 2026 annual 10.96%, daily 0.03002740%. The official page says it was last updated 5 Jun 2026 and that rates are updated quarterly. ADVERSARIAL FINDING: a cached/summarised version of the ATO new-SGC explainer still quotes 'currently 10.61%' (an old rate). ATO explainer pages can lag the quarterly table, so the tool must source GIC from the rates table only, never from explainer-page prose. Oct 2026+ rates do not exist yet; the tool needs a horizon warning. Source: https://www.ato.gov.au/tax-rates-and-codes/general-interest-charge-rates
 
 ### [CONFIRMED] SBSCH retired: no new registrations from 1 Oct 2025, last use 30 Jun 2026, gone as a channel from 1 Jul 2026
 
