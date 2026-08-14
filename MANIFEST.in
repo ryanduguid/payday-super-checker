@@ -1,5 +1,7 @@
 include LICENSE
 include README.md
+include uv.lock
+include .github/workflows/release.yml
 recursive-include paydaysuper/data *.json
 recursive-include tests *.py
 # The importer fixtures are test data, not sample data: without them the

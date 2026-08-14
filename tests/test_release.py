@@ -264,6 +264,13 @@ def test_release_workflow_is_manual_pinned_attested_and_prerelease_only():
     assert "pypi" not in workflow.lower()
 
 
+def test_sdist_manifest_carries_every_release_test_dependency():
+    manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8").splitlines()
+
+    assert "include uv.lock" in manifest
+    assert "include .github/workflows/release.yml" in manifest
+
+
 def test_operator_process_checks_actual_immutable_setting_before_tagging():
     process = (ROOT / "docs" / "releases" / "PROCESS.md").read_text(encoding="utf-8")
 
