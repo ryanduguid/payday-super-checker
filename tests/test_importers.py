@@ -1508,7 +1508,16 @@ def test_a_partial_payment_is_not_written_as_fully_remitted(tmp_path):
     # the blank cell actually changes the checker's verdict, not just that
     # the cell itself looks right.
     report_out = tmp_path / "report.csv"
-    code = cli_main([str(out), "-o", str(report_out), "--as-at", "2026-08-10"])
+    code = cli_main(
+        [
+            str(out),
+            "-o",
+            str(report_out),
+            "--as-at",
+            "2026-08-10",
+            "--confirm-transition-allocation",
+        ]
+    )
     assert code == EXIT_LATE_FOUND
     with open(report_out, newline="", encoding="utf-8") as f:
         checker_rows = list(_csv.DictReader(f))
@@ -1624,7 +1633,16 @@ def test_canonical_csv_round_trips_through_parse_rows_and_the_real_cli(tmp_path)
     assert all(l.received is None for l in lines)  # never invented
 
     report_out = tmp_path / "report.csv"
-    code = cli_main([str(out), "-o", str(report_out), "--as-at", "2026-08-10"])
+    code = cli_main(
+        [
+            str(out),
+            "-o",
+            str(report_out),
+            "--as-at",
+            "2026-08-10",
+            "--confirm-transition-allocation",
+        ]
+    )
     assert code in (EXIT_OK, EXIT_LATE_FOUND), "the real CLI choked on our own output"
     with open(report_out, newline="", encoding="utf-8") as f:
         report_rows = [r for r in _csv.DictReader(f) if r["employee_id"] != "NOTE"]
@@ -1999,10 +2017,11 @@ def test_import_clean_file_returns_zero(tmp_path):
     assert code == EXIT_OK
 
 
-def test_existing_invocation_still_works(tmp_path):
+def test_plain_check_dispatch_still_works_with_transition_confirmation(tmp_path):
     # The exact exit code and real report contents, not just "did not
-    # crash" -- values confirmed by running this exact invocation directly
-    # against the unmodified check path. test_integration.py's own
+    # crash". The sample crosses the LCR 2026/1 transition, so its explicit
+    # synthetic-balance confirmation is part of the safe invocation.
+    # test_integration.py's own
     # test_cli_writes_report_and_flags_late pins the same fixture at a
     # different --as-at date far more thoroughly; this test's job is
     # narrower: prove the `import` subcommand's dispatch in main() did not
@@ -2010,7 +2029,16 @@ def test_existing_invocation_still_works(tmp_path):
     from conftest import SAMPLE
 
     out = tmp_path / "report.csv"
-    code = cli_main([str(SAMPLE), "-o", str(out), "--as-at", "2026-09-01"])
+    code = cli_main(
+        [
+            str(SAMPLE),
+            "-o",
+            str(out),
+            "--as-at",
+            "2026-09-01",
+            "--confirm-transition-allocation",
+        ]
+    )
     assert code == EXIT_LATE_FOUND
     assert out.exists()
 
@@ -2664,7 +2692,16 @@ def test_both_cli_paths_call_the_shared_stdout_reconfigure(tmp_path, monkeypatch
     from conftest import SAMPLE
 
     report_out = tmp_path / "report.csv"
-    code = cli_main([str(SAMPLE), "-o", str(report_out), "--as-at", "2026-09-01"])
+    code = cli_main(
+        [
+            str(SAMPLE),
+            "-o",
+            str(report_out),
+            "--as-at",
+            "2026-09-01",
+            "--confirm-transition-allocation",
+        ]
+    )
     assert code == EXIT_LATE_FOUND
     assert len(calls) == 2
 
@@ -2797,7 +2834,16 @@ def test_the_blocker_reproduction_checks_clean_end_to_end(tmp_path, capsys):
         == EXIT_OK
     )
     capsys.readouterr()
-    code = cli_main([str(out), "-o", str(tmp_path / "report.csv"), "--as-at", "2026-08-03"])
+    code = cli_main(
+        [
+            str(out),
+            "-o",
+            str(tmp_path / "report.csv"),
+            "--as-at",
+            "2026-08-03",
+            "--confirm-transition-allocation",
+        ]
+    )
     printed = capsys.readouterr().out
     assert code == EXIT_OK
     assert "LATE: 0" in printed and "UNPAID: 0" in printed

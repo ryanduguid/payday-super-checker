@@ -69,11 +69,16 @@ def test_out_of_cycle_rides_the_next_standard_payday(cal):
     assert dl.due == cal.add_business_days(date(2026, 7, 23), 7)
 
 
-def test_out_of_cycle_without_next_payday_falls_back(cal):
-    dl = compute_due(line(out_of_cycle=True), cal)
-    assert dl.pathway == OUT_OF_CYCLE
-    assert dl.due == date(2026, 7, 20)
-    assert any("cannot be calculated" in n for n in dl.caveats)
+def test_out_of_cycle_without_next_payday_is_rejected(cal):
+    """F2026L00784 s 5 requires the subsequent standard QE payment; there
+    is no lawful fallback item 2 period when it does not exist."""
+    with pytest.raises(ValueError) as exc:
+        compute_due(line(out_of_cycle=True), cal)
+
+    message = str(exc.value)
+    assert "F2026L00784 s 5" in message
+    assert "subsequent non-out-of-cycle QE payment" in message
+    assert "termination payment" in message
 
 
 def test_next_payday_without_the_flag_names_the_item_2_deadline(cal):
@@ -228,11 +233,13 @@ def test_item4_is_per_employee(cal):
     assert pairs[1][1].due == date(2026, 8, 4)  # unaffected by A's window
 
 
-def test_provisional_dates_are_flagged(cal):
-    l = line(qe_day=date(2026, 9, 21))
+def test_unconfirmed_dates_are_flagged_but_do_not_extend_the_deadline(cal):
+    l = line(qe_day=date(2027, 9, 21))
     pairs = [(l, compute_due(l, cal))]
     annotate_calendar_risk(pairs, cal)
-    assert any("provisional" in n for n in pairs[0][1].caveats)
+    assert pairs[0][1].due == date(2027, 9, 30)
+    assert any("unconfirmed holiday" in n for n in pairs[0][1].caveats)
+    assert any("not used to extend" in n for n in pairs[0][1].caveats)
 
 
 def test_item4_does_not_align_contributions_sharing_a_qe_day(cal):
@@ -381,11 +388,8 @@ def test_a_real_payday_still_seeds_an_item_4_alignment(cal):
     assert pairs[1][1].pathway == ITEM4_ALIGNED
 
 
-def test_out_of_cycle_without_next_payday_keeps_its_warning_when_item_1_wins(cal):
-    """The missing-data warning must survive even when the 20-business-day
-    period is the later deadline, because the real item 2 deadline could be
-    later still."""
-    dl = compute_due(line(first_to_fund=True, out_of_cycle=True), cal)
-    assert dl.due == date(2026, 8, 7)
-    assert any("cannot be calculated" in n for n in dl.caveats)
-    assert not any("both the out-of-cycle" in n for n in dl.notes)
+def test_item_1_does_not_hide_an_invalid_out_of_cycle_claim(cal):
+    """A later item 1 deadline cannot manufacture the missing statutory
+    fact needed to say item 2 applies."""
+    with pytest.raises(ValueError, match="next_standard_qe_day"):
+        compute_due(line(first_to_fund=True, out_of_cycle=True), cal)

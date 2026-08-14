@@ -76,6 +76,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--holidays-override",
         help="JSON file adding or removing public holidays from the bundled calendar",
     )
+    parser.add_argument(
+        "--confirm-transition-allocation",
+        action="store_true",
+        help=(
+            "confirm you reconciled every contribution dated no later than 28 Jul "
+            "2026 under LCR 2026/1: pre-1 Jul amounts are unused excess and 1-28 Jul "
+            "amounts remain after any June-quarter employee shortfall"
+        ),
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -352,7 +361,14 @@ def main(argv: list[str] | None = None) -> int:
         cal = load_calendar(args.holidays_override)
         gic = load_gic()
         rates = load_rates()
-        results = assess(lines, cal, gic, as_at, assessment_date)
+        results = assess(
+            lines,
+            cal,
+            gic,
+            as_at,
+            assessment_date,
+            transition_allocation_confirmed=args.confirm_transition_allocation,
+        )
     except (CsvError, CalendarError, RatesError, PreRegimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR

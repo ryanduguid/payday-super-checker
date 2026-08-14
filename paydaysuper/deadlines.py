@@ -4,10 +4,10 @@ Pathways implemented:
 - USUAL_7BD      s 6(1) "usual period": ends 7th business day after QE day
 - EXTENDED_20BD  s 18C(2) item 1: first eligible contribution to a
                  particular fund (new/recommenced employee or fund switch)
-- OUT_OF_CYCLE   s 18C(2) item 2 + LI 2026/20: deadline is the end of the
-                 usual period for the first LATER standard QE day; falls
-                 back to the line's own 7-business-day period when no later
-                 standard QE day exists
+- OUT_OF_CYCLE   s 18C(2) item 2 + F2026L00784: deadline is
+                 the end of the usual period for the first LATER standard QE
+                 day. The final determination requires that subsequent
+                 standard payment, so a row without it is rejected
 - ITEM4_ALIGNED  s 18C(2) item 4: a later QE day whose period would end
                  before an earlier contribution's latest due day inherits
                  that later end
@@ -108,32 +108,32 @@ def compute_due(line: ContribLine, cal: BusinessCalendar) -> Deadline:
     item2: date | None = None
 
     if line.out_of_cycle:
-        if line.next_standard_qe_day is not None:
-            if line.next_standard_qe_day <= line.qe_day:
-                raise ValueError(
-                    f"row {line.row}: next_standard_qe_day must be after qe_day"
-                )
-            candidates.append(
-                (
-                    cal.add_business_days(line.next_standard_qe_day, 7),
-                    OUT_OF_CYCLE,
-                    "out-of-cycle earnings: deadline is the usual period of the next "
-                    f"standard QE day {line.next_standard_qe_day.isoformat()} "
-                    "(s 18C(2) item 2, LI 2026/20)",
-                )
+        if line.next_standard_qe_day is None:
+            # F2026L00784 s 5(3) makes a subsequent, non-out-of-cycle QE
+            # payment on the next scheduled day part of the definition. A
+            # termination/final payment therefore cannot be rescued by
+            # silently falling back to its own usual period, and no item 2
+            # deadline exists until this fact is supplied.
+            raise ValueError(
+                f"row {line.row}: out_of_cycle=yes requires next_standard_qe_day. "
+                "F2026L00784 s 5 requires a subsequent non-out-of-cycle QE payment "
+                "on the next day consistent with the established schedule; a final "
+                "or termination payment does not qualify without that subsequent "
+                "payment. Supply the next standard payday or set out_of_cycle=no"
             )
-        else:
-            # A data-quality problem, not a pathway note: it must survive even
-            # when another candidate wins, because the real item 2 deadline
-            # could be later than anything computed here.
-            caveats.append(
-                "out-of-cycle flag set but no next standard QE day supplied, so the "
-                "item 2 deadline cannot be calculated. Supply the next regular payday: "
-                "the real deadline may be later than the one shown"
+        if line.next_standard_qe_day <= line.qe_day:
+            raise ValueError(
+                f"row {line.row}: next_standard_qe_day must be after qe_day"
             )
-            candidates.append(
-                (cal.add_business_days(line.qe_day, 7), OUT_OF_CYCLE, "")
+        candidates.append(
+            (
+                cal.add_business_days(line.next_standard_qe_day, 7),
+                OUT_OF_CYCLE,
+                "out-of-cycle earnings: deadline is the usual period of the next "
+                f"standard QE day {line.next_standard_qe_day.isoformat()} "
+                "(s 18C(2) item 2; F2026L00784 s 5)",
             )
+        )
     elif line.next_standard_qe_day is not None:
         # The next payday is only ever read inside the branch above, so a row
         # that supplies it but leaves the flag blank is silently given the
@@ -203,7 +203,7 @@ def annotate_missing_flag(pairs: list[tuple[ContribLine, Deadline]]) -> None:
                 "supplied but the out-of-cycle flag is not set, so the "
                 f"{pathway_words} deadline {dl.due.isoformat()} was used. If this payday "
                 "is out of cycle, set out_of_cycle=yes and the deadline becomes "
-                f"{dl.item2_due.isoformat()} (s 18C(2) item 2, LI 2026/20)"
+                f"{dl.item2_due.isoformat()} (s 18C(2) item 2; F2026L00784)"
             )
         else:
             dl.caveats.append(
@@ -311,6 +311,8 @@ def annotate_calendar_risk(
         provisional = cal.provisional_hits(line.qe_day, dl.due)
         if provisional:
             dl.caveats.append(
-                "deadline window contains provisional (not yet gazetted) holiday dates: "
-                + "; ".join(provisional)
+                "deadline window contains unconfirmed holiday dates that were not "
+                "used to extend the deadline: " + "; ".join(provisional) + ". Confirm "
+                "the date against an official whole-of-jurisdiction source and add it "
+                "with --holidays-override if it applies"
             )

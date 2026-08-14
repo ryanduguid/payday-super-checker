@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "payday-super-checker"
 version = "0.1.0"
-description = "Check Australian super contributions against the payday-super deadlines and estimate SG charge exposure"
+description = "Check Australian super contributions against payday-super deadlines and produce experimental SG charge estimates"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

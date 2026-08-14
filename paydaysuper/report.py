@@ -26,6 +26,8 @@ from .deadlines import (
 from .rates import GicTable
 from .sgc import exposure_range, notional_earnings, uplift_scenarios
 
+TRANSITION_END = date(2026, 7, 28)
+
 ON_TIME = "ON_TIME"
 LATE = "LATE"
 AT_RISK = "AT_RISK"
@@ -233,6 +235,8 @@ def assess(
     gic: GicTable,
     as_at: date,
     assessment_date: date | None = None,
+    *,
+    transition_allocation_confirmed: bool = False,
 ) -> list[Result]:
     """Assess each contribution line.
 
@@ -240,7 +244,15 @@ def assess(
     charge assessment for these QE days. Late contributions received before
     then reduce the final shortfall to nil (s 18D). Left as None, the tool
     assumes no assessment has issued, which is the usual case for an
-    employer checking their own records."""
+    employer checking their own records.
+
+    `transition_allocation_confirmed` is deliberately false by default.
+    LCR 2026/1 requires contributions made from 1 to 28 July 2026 to be
+    applied first to any June-quarter shortfall, and permits a pre-1 July
+    amount to carry forward only to the extent it was unused excess. This
+    file format has neither balance, so a contribution dated no later than
+    28 July cannot safely be assigned to a new-regime payday without an
+    operator reconciling it first."""
     # Collect every date problem before stopping, so the operator can fix
     # the whole file in one pass rather than one row per run.
     problems = [p for p in (_date_problem(line) for line in lines) if p]
@@ -261,6 +273,35 @@ def assess(
             "Remove them and run again."
         )
 
+    # Prefer the fund-receipt date because that is the contribution fact the
+    # checker ultimately tests. Where it is absent, a remittance on or before
+    # 28 July could still have reached the fund in the overlap period, so it
+    # is included rather than guessed away. Rows with no payment fact, nil SG
+    # and defined-benefit interests do not allocate a contribution here.
+    transition_rows: list[ContribLine] = []
+    for line in lines:
+        contribution_date = line.received if line.received is not None else line.remitted
+        if (
+            not line.db_interest
+            and line.sg_amount > 0
+            and contribution_date is not None
+            and contribution_date <= TRANSITION_END
+        ):
+            transition_rows.append(line)
+    if transition_rows and not transition_allocation_confirmed:
+        rows = ", ".join(str(line.row) for line in transition_rows[:10])
+        more = f" and {len(transition_rows) - 10} more" if len(transition_rows) > 10 else ""
+        raise ValueError(
+            f"{len(transition_rows)} row(s) use a contribution dated no later than "
+            f"28 Jul 2026 (rows {rows}{more}). LCR 2026/1 requires pre-1 July "
+            "amounts to be unused excess and 1-28 July amounts to reduce any "
+            "employee June-quarter shortfall first. This file cannot calculate "
+            "those old-regime balances. Reconcile them for every affected employee, "
+            "then rerun with --confirm-transition-allocation; no payroll payment, "
+            "lodgment or accounting decision is made by this tool"
+        )
+    transition_row_ids = {id(line) for line in transition_rows}
+
     pairs = [(line, compute_due(line, cal)) for line in lines]
     apply_item4(pairs)
     annotate_missing_flag(pairs)
@@ -271,6 +312,12 @@ def assess(
     results: list[Result] = []
     for line, dl in pairs:
         result = Result(line, dl, UNKNOWN, notes=list(dl.notes), caveats=list(dl.caveats))
+        if id(line) in transition_row_ids:
+            result.notes.append(
+                "operator confirmed the LCR 2026/1 transition allocation: any "
+                "pre-1 July amount is unused excess and any 1-28 July amount remains "
+                "after the employee's June-quarter shortfall"
+            )
         if line.duplicate_note:
             result.caveats.append(line.duplicate_note)
         inherited = _item4_seeded_by_unrecorded(line, dl, donors, as_at)
@@ -701,7 +748,10 @@ def write_csv(
             + (f", source {source}" if source else "")
             + f", as at {as_at.isoformat()}. {assessment_text}"
             + (f"{gic_provenance}. " if gic_provenance else "")
-            + f"Legal content current at {law_date}. The low estimate assumes a "
+            + f"Legal content current at {law_date}. EXPERIMENTAL ESTIMATES: monetary "
+            "components are displayed to cents with ROUND_HALF_UP, while TAA 1953 "
+            "s 16B only rounds the Commissioner's final assessed SG charge down to "
+            "the nearest 5 cents. The low estimate assumes a "
             "voluntary disclosure lodged within 30 days of the payday and a clean "
             "24-month history; the high estimate assumes neither. Estimates exclude "
             "choice loading, the maximum contributions base and post-assessment "
@@ -732,7 +782,7 @@ def console_summary(
     exposed = [r for r in results if r.verdict in EXPOSED]
     if exposed:
         exposed.sort(key=lambda r: r.sgc_high or Decimal(0), reverse=True)
-        lines.append("Lines with exposure (largest first):")
+        lines.append("Lines with exposure (experimental estimates, largest first):")
         for r in exposed[:10]:
             figures = _rounded_figures(r)
             # Standard output is commonly retained by task runners and CI logs.
@@ -758,7 +808,7 @@ def console_summary(
             at_most = "" if r.days_late is not None else "at most "
             lines.append(
                 f"      {shortfall_text}  notional earnings {at_most}"
-                f"${money(figures['nec'])}  SG charge estimate {at_most}"
+                f"${money(figures['nec'])}  experimental SG charge estimate {at_most}"
                 f"${money(figures['low'])} - ${money(figures['high'])}"
             )
             for caveat in r.caveats:
@@ -774,7 +824,8 @@ def console_summary(
             "",
             f"  Total across {len(exposed)} line(s): shortfall ${money(total_shortfall)}, "
             f"notional earnings ${money(total_nec)},",
-            f"  estimated SG charge ${money(total_low)} - ${money(total_high)}.",
+            f"  experimental estimated SG charge ${money(total_low)} - "
+            f"${money(total_high)}.",
             "",
         ]
 
@@ -879,10 +930,15 @@ def console_summary(
 
     lines += [
         "Assumptions and limits:",
-        f"  - Legal content current at {law_date}; ATO law companion rulings "
-        "LCR 2026/D1-D4 were still drafts at that date.",
+        f"  - Legal content current at {law_date}. LCR 2026/1, LCR 2026/2 and "
+        "LCR 2026/3 were issued on 5 Aug 2026. LCR 2026/D1 remains a draft "
+        "pending the appeal from Department of Education v Commissioner of "
+        "Taxation [2026] FCA 898.",
         "  - The amount column must be super guarantee only. Salary sacrifice and "
-        "additional contributions have a different base and must be filtered out first.",
+        "additional contributions have a different base and must be filtered out first. "
+        "This tool does not decide whether termination or other payments are qualifying "
+        "earnings; that classification remains an operator decision while LCR 2026/D1 "
+        "is draft.",
         "  - Deadlines use the national business-day calendar in SGAA s 6(1): "
         "weekends plus holidays applying to the whole of any State, the ACT or the NT.",
         assessment_line,
@@ -893,6 +949,11 @@ def console_summary(
         "the payday and a clean 24-month history; the high estimate assumes neither. "
         "Choice loading, the late payment penalty and interest on an unpaid assessment "
         "are not included. The ATO assesses the charge.",
+        "  - Exposure figures are EXPERIMENTAL ESTIMATES. This tool displays each "
+        "component to cents with ROUND_HALF_UP so report columns add up. LCR 2026/3 "
+        "confirms only that TAA 1953 s 16B reduces the Commissioner's final assessed "
+        "SG charge to the nearest 5 cents; it does not authorise per-line cents "
+        "rounding here.",
         f"  - Maximum contributions base ({mcb_text}, annual per employer) is "
         "not applied: it needs each employee's cumulative earnings for the year. "
         "High earners may show a larger shortfall here than the law requires.",

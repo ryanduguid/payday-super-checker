@@ -41,7 +41,7 @@ def test_no_accrual_before_the_deadline_passes(gic):
 
 
 def test_accrual_starts_the_day_after_the_deadline(gic):
-    """LCR 2026/D3 example: usual period ends 18 Jun 2027, notional earnings
+    """LCR 2026/3 example: usual period ends 18 Jun 2027, notional earnings
     begin to accrue from 19 Jun 2027."""
     due = date(2026, 7, 20)
     one_day = notional_earnings(Decimal("600"), due, date(2026, 7, 21), gic)
@@ -107,7 +107,7 @@ def test_exposure_range_spans_best_and_worst_uplift():
 
 
 def test_lcr_2026_d3_accrual_boundary(gic):
-    """LCR 2026/D3 worked example: usual period ends 18 Jun 2027, so
+    """LCR 2026/3 worked example: usual period ends 18 Jun 2027, so
     notional earnings begin accruing on 19 Jun 2027, not before."""
     due = date(2027, 6, 18)
     assert notional_earnings(Decimal("1000"), due, due, gic) == Decimal("0")

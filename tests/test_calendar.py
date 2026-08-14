@@ -27,7 +27,15 @@ def test_ekka_is_a_business_day(cal):
 def test_state_wide_holiday_anywhere_stops_the_clock(cal):
     assert not cal.is_business_day(date(2027, 6, 7))   # WA Day
     assert not cal.is_business_day(date(2026, 8, 3))   # NT Picnic Day
-    assert not cal.is_business_day(date(2026, 11, 3))  # Melbourne Cup Day (VIC)
+    assert not cal.is_business_day(date(2026, 9, 25))  # confirmed VIC Grand Final day
+
+
+def test_locally_substitutable_dates_do_not_stop_the_national_clock(cal):
+    """The official WA and Victorian pages say these dates are replaced in
+    parts of their State, so neither is a holiday for the whole State under
+    SGAA s 6(1)."""
+    assert cal.is_business_day(date(2026, 9, 28))  # WA King's Birthday
+    assert cal.is_business_day(date(2026, 11, 3))  # Melbourne Cup Day
 
 
 def test_nsw_act_bank_holiday_is_a_business_day(cal):
@@ -64,6 +72,8 @@ def test_negative_business_days_rejected(cal):
 
 def test_horizon_warning(cal):
     assert cal.check_horizon(date(2027, 1, 1)) is None
+    assert cal.check_horizon(date(2027, 8, 31)) is None
+    assert "beyond the calendar's coverage" in cal.check_horizon(date(2027, 9, 1))
     assert "beyond the calendar's coverage" in cal.check_horizon(date(2029, 1, 1))
 
 
@@ -108,9 +118,9 @@ def test_a_declared_override_raises_the_coverage_end_past_verified_until(tmp_pat
     covers them, and the coverage end has to say so or every horizon test
     reads a stale date."""
     patched = load_calendar(_easter_2029_override(tmp_path))
-    assert patched.verified_until == date(2028, 12, 31)
+    assert patched.verified_until == date(2027, 8, 31)
     assert patched.coverage_until == date(2029, 4, 25)
-    assert cal.coverage_until == date(2028, 12, 31)
+    assert cal.coverage_until == date(2027, 8, 31)
 
 
 def test_an_undeclared_override_does_not_raise_the_coverage_end(tmp_path):
@@ -121,7 +131,7 @@ def test_an_undeclared_override_does_not_raise_the_coverage_end(tmp_path):
     holidays it was missing would have moved a real deadline, turning an
     on-time contribution into a reported LATE with an SG charge attached."""
     partial = load_calendar(_easter_2029_override(tmp_path, declare_until=None))
-    assert partial.coverage_until == date(2028, 12, 31)
+    assert partial.coverage_until == date(2027, 8, 31)
     # The holidays are still USED; only the completeness claim is withheld.
     assert not partial.is_business_day(date(2029, 3, 30))
     assert partial.add_business_days(date(2029, 3, 27), 7) == date(2029, 4, 9)
@@ -140,7 +150,7 @@ def test_one_far_future_holiday_does_not_cover_the_gap_before_it(tmp_path):
         encoding="utf-8",
     )
     sparse = load_calendar(override)
-    assert sparse.coverage_until == date(2028, 12, 31)
+    assert sparse.coverage_until == date(2027, 8, 31)
     assert sparse.check_horizon(date(2029, 4, 5)) is not None
 
 
@@ -151,7 +161,7 @@ def test_an_override_declaring_an_earlier_date_cannot_shrink_coverage(tmp_path):
     override.write_text(
         json.dumps({"verified_until": "2027-01-01", "add": []}), encoding="utf-8"
     )
-    assert load_calendar(override).coverage_until == date(2028, 12, 31)
+    assert load_calendar(override).coverage_until == date(2027, 8, 31)
 
 
 def test_check_horizon_reads_the_declared_coverage_not_the_verified_date(tmp_path):
@@ -338,7 +348,7 @@ def test_the_cli_prints_a_calendar_error_without_a_traceback(tmp_path, monkeypat
 
 
 def test_provisional_hits_flags_grand_final_day(cal):
-    hits = cal.provisional_hits(date(2026, 9, 1), date(2026, 10, 1))
+    hits = cal.provisional_hits(date(2027, 9, 1), date(2027, 10, 1))
     assert any("Grand Final" in h for h in hits)
     assert cal.provisional_hits(date(2026, 7, 1), date(2026, 7, 31)) == []
 
@@ -355,14 +365,14 @@ def test_override_add_and_remove(tmp_path, cal):
                         "jurisdictions": ["QLD"],
                     }
                 ],
-                "remove": ["2026-11-03"],
+                "remove": ["2026-09-25"],
             }
         ),
         encoding="utf-8",
     )
     patched = load_calendar(override)
     assert not patched.is_business_day(date(2026, 8, 12))
-    assert patched.is_business_day(date(2026, 11, 3))
+    assert patched.is_business_day(date(2026, 9, 25))
     # bundled calendar untouched
     assert cal.is_business_day(date(2026, 8, 12))
 
