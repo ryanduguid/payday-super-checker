@@ -98,7 +98,7 @@ Required: `employee_id`, `payment_date`, `sg_amount`. Everything else is optiona
 | `remitted` | `remitted_date` | Day you sent the money |
 | `received` | `fund_received_date` | Day the fund received it: the only date that settles compliance |
 | `first_to_fund` | `first_contribution_to_fund` | Yes for the first contribution to that fund (new starter, or a fund switch) |
-| `out_of_cycle` | `out_of_cycle` | Yes for bonuses, back pay and other payments outside your normal cycle |
+| `out_of_cycle` | `out_of_cycle` | Yes only for an allowance, bonus, commission, loading, payment in advance or back payment made outside an established payment timing, pattern or schedule, where the statutory next-standard-payment conditions are met |
 | `next_standard_qe_day` | `next_standard_payday` | The next regular payday, needed to date an out-of-cycle deadline |
 | `db_interest` | `defined_benefit` | Yes for defined-benefit interests, which are skipped |
 
@@ -143,7 +143,7 @@ Generated outputs must have an explicit `.csv` filename. They are staged in the 
 
 ## The rules it applies
 
-All of this is enacted law: the Treasury Laws Amendment (Payday Superannuation) Act 2025 (No. 57 of 2025, assent 6 November 2025), the Superannuation Guarantee Charge Amendment Act 2025 (No. 58 of 2025), and the regulations registered as F2026L00133, which amend the Superannuation Guarantee (Administration) Regulations 2018. It applies to paydays from 1 July 2026. Legal content here was verified on **2 August 2026**; `docs/research-notes-2026-08-02.md` records every source and, just as usefully, the points that rest on secondary commentary because the primary source blocks automated access.
+All of this is enacted law: the Treasury Laws Amendment (Payday Superannuation) Act 2025 (No. 57 of 2025, assent 6 November 2025), the Superannuation Guarantee Charge Amendment Act 2025 (No. 58 of 2025), and the regulations registered as F2026L00133, which amend the Superannuation Guarantee (Administration) Regulations 2018. It applies to paydays from 1 July 2026. The broad legal review was completed on **2 August 2026** and the final out-of-cycle determination was checked directly on the Federal Register on **14 August 2026**. `docs/research-notes-2026-08-02.md` records every source and the points that still rest on secondary commentary or unresolved primary-source evidence.
 
 **The deadline.** A contribution is on time only if the fund *receives* it, with enough information to allocate it, by the end of the seventh business day after the payday (SGAA 1992 s 6(1) "usual period", s 18C(1)(c)). Paying a clearing house by the deadline does not count, and the ATO's small business clearing house closed on 30 June 2026, so transit time is now the employer's risk. That is why a line with a remittance date but no fund receipt date comes back `AT_RISK` rather than `ON_TIME`.
 
@@ -151,7 +151,7 @@ All of this is enacted law: the Treasury Laws Amendment (Payday Superannuation) 
 
 **20 business days instead of 7** for the first contribution to a particular fund, whether that is a new starter or an existing employee switching funds (s 18C(2) item 1). Later paydays that fall inside that window inherit its end date (item 4), applied per employee. That alignment is tested only against rows present in the file, so a single pay run checked on its own cannot see an earlier payday's longer window: include each employee's paydays back through any 20-business-day window, or the tool will report lateness the law does not impose.
 
-**Out-of-cycle payments** (bonuses, commissions, back pay) ride the next regular payday's window rather than their own (s 18C(2) item 2, and the Commissioner's determination LI 2026/20). Give the tool `next_standard_payday` or it falls back to the stricter 7-day test. Where both this rule and the new-fund rule apply to the same payment, the later deadline governs.
+**Out-of-cycle payments** ride the next regular payday's window rather than their own (SGAA s 18C(2) item 2 and s 18C(3); determination F2026L00784). The final determination covers six kinds of qualifying earnings: allowances, bonuses, commissions, loadings, payments in advance and back payments. The employer must have an established timing, pattern or schedule for qualifying-earnings payments, and the payment must fall outside it. The determination also requires a subsequent qualifying-earnings payment on the next day consistent with that schedule; a termination or final payment is not out of cycle merely because it belongs to one of the six kinds. Give the tool `next_standard_payday` only after those conditions are established, or leave it unflagged and the ordinary 7-business-day test applies. Where both this rule and the new-fund rule apply, the later deadline governs.
 
 **When it is late,** notional earnings compound daily at the general interest charge rate from the day after the deadline until the fund receives the money (s 19A), and an administrative uplift of up to 60% applies on top. A late contribution that reaches the fund before the ATO assesses the charge clears the shortfall itself (s 18D), which is why a paid-but-late line shows a small estimate rather than the whole contribution. Pass `--assessment-date` if an assessment has already issued, and the shortfall stays in the figure.
 
