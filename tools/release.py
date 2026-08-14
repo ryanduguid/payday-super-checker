@@ -371,6 +371,65 @@ def write_spdx_sbom(
     return target
 
 
+def normalise_sdist(path: str | Path, epoch: int) -> Path:
+    """Repack setuptools' otherwise wall-clock-dated sdist deterministically."""
+    target = Path(path).resolve()
+    epoch = _checked_epoch(epoch)
+    entries: list[tuple[str, bool, int, bytes]] = []
+    names: set[str] = set()
+    try:
+        with tarfile.open(target, mode="r:gz") as source:
+            for member in source.getmembers():
+                pure = PurePosixPath(member.name)
+                if pure.is_absolute() or ".." in pure.parts or "\\" in member.name:
+                    raise ReleaseError(f"unsafe sdist member: {member.name}")
+                if member.name in names:
+                    raise ReleaseError(f"duplicate sdist member: {member.name}")
+                names.add(member.name)
+                if member.isdir():
+                    entries.append((member.name, True, 0o755, b""))
+                    continue
+                if not member.isfile():
+                    raise ReleaseError(
+                        f"unsupported non-file sdist member: {member.name}"
+                    )
+                extracted = source.extractfile(member)
+                if extracted is None:
+                    raise ReleaseError(f"cannot read sdist member: {member.name}")
+                data = extracted.read()
+                if b"\0" not in data and b"\r" in data:
+                    raise ReleaseError(f"sdist text must be LF-only: {member.name}")
+                mode = 0o755 if member.mode & 0o111 else 0o644
+                entries.append((member.name, False, mode, data))
+    except (OSError, tarfile.TarError) as exc:
+        raise ReleaseError(f"cannot normalise sdist {target}: {exc}") from exc
+
+    tar_buffer = io.BytesIO()
+    with tarfile.open(fileobj=tar_buffer, mode="w", format=tarfile.GNU_FORMAT) as output:
+        for name, is_directory, mode, data in sorted(
+            entries, key=lambda entry: entry[0].encode("utf-8")
+        ):
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.DIRTYPE if is_directory else tarfile.REGTYPE
+            info.size = 0 if is_directory else len(data)
+            info.mtime = epoch
+            info.mode = mode
+            info.uid = 0
+            info.gid = 0
+            info.uname = ""
+            info.gname = ""
+            output.addfile(info, None if is_directory else io.BytesIO(data))
+
+    temporary = target.with_name(target.name + ".tmp")
+    with temporary.open("wb") as raw:
+        with gzip.GzipFile(
+            filename="", mode="wb", fileobj=raw, compresslevel=9, mtime=epoch
+        ) as compressed:
+            compressed.write(tar_buffer.getvalue())
+    os.replace(temporary, target)
+    return target
+
+
 def write_checksums(path: str | Path, assets: Iterable[str | Path]) -> Path:
     target = Path(path).resolve()
     resolved = [Path(asset).resolve() for asset in assets]
@@ -432,7 +491,11 @@ def _run_build(source: Path, output: Path, epoch: int) -> list[Path]:
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise ReleaseError("locked wheel/sdist build failed") from exc
-    return sorted(output.iterdir(), key=lambda path: path.name)
+    built = sorted(output.iterdir(), key=lambda path: path.name)
+    for path in built:
+        if path.name.endswith(".tar.gz"):
+            normalise_sdist(path, epoch)
+    return built
 
 
 def _extract_source(tar_path: Path, destination: Path, prefix: str) -> Path:
@@ -484,7 +547,11 @@ def build_release_assets(
             built_runs.append({path.name: path.read_bytes() for path in built})
             run_paths.append(built)
         if built_runs[0] != built_runs[1]:
-            changed = sorted(set(built_runs[0]) | set(built_runs[1]))
+            changed = sorted(
+                name
+                for name in set(built_runs[0]) | set(built_runs[1])
+                if built_runs[0].get(name) != built_runs[1].get(name)
+            )
             raise ReleaseError(
                 "wheel/sdist build is not byte-reproducible: " + ", ".join(changed)
             )

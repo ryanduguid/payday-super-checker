@@ -4,6 +4,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -194,6 +195,37 @@ def test_spdx_sbom_is_deterministic_runtime_scope_and_binds_the_commit(tmp_path)
     assert package["filesAnalyzed"] is False
     assert SHA in document["documentNamespace"]
     assert "runtime" in document["creationInfo"]["comment"].lower()
+
+
+def test_setuptools_sdist_is_repacked_to_deterministic_utc_lf(tmp_path):
+    archives = []
+    for number in (1, 2):
+        path = tmp_path / f"raw-{number}.tar.gz"
+        with tarfile.open(path, mode="w:gz") as archive:
+            directory = tarfile.TarInfo("package-0.1.1")
+            directory.type = tarfile.DIRTYPE
+            directory.mode = 0o777
+            directory.mtime = EPOCH + number
+            archive.addfile(directory)
+            data = b"metadata\n"
+            info = tarfile.TarInfo("package-0.1.1/PKG-INFO")
+            info.size = len(data)
+            info.mode = 0o666
+            info.mtime = EPOCH + number
+            archive.addfile(info, io.BytesIO(data))
+        release.normalise_sdist(path, EPOCH)
+        archives.append(path)
+
+    assert archives[0].read_bytes() == archives[1].read_bytes()
+    assert int.from_bytes(archives[0].read_bytes()[4:8], "little") == EPOCH
+    with tarfile.open(archives[0], mode="r:gz") as archive:
+        for member in archive.getmembers():
+            assert member.mtime == EPOCH
+            assert member.uid == member.gid == 0
+            assert member.uname == member.gname == ""
+        assert archive.getmember("package-0.1.1").mode == 0o755
+        assert archive.getmember("package-0.1.1/PKG-INFO").mode == 0o644
+        assert b"\r" not in archive.extractfile("package-0.1.1/PKG-INFO").read()
 
 
 def test_checksum_manifest_is_sorted_complete_and_does_not_hash_itself(tmp_path):
