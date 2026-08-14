@@ -11,6 +11,7 @@ suite to notice.
 from pathlib import Path
 
 DOCS = Path(__file__).resolve().parents[1] / "docs"
+README = Path(__file__).resolve().parents[1] / "README.md"
 
 # The open item, quoted from docs/research-notes-2026-08-02.md.
 OPEN_ROUNDING_ITEM = "Do not hard-code rounding; compute in cents and flag."
@@ -36,3 +37,26 @@ def test_design_flags_the_rounding_rule_while_the_research_item_is_open():
     # That it is a choice, and what would settle it.
     assert "not a verified one" in design
     assert "LCR 2026/D3 worked examples" in design
+
+
+def test_final_out_of_cycle_determination_is_pinned_in_user_guidance():
+    """The final instrument, its closed list and conditions must stay visible."""
+    research = (DOCS / "research-notes-2026-08-02.md").read_text(encoding="utf-8")
+    readme = README.read_text(encoding="utf-8")
+
+    for document in (research, readme):
+        assert "F2026L00784" in document
+        for kind in (
+            "allowances",
+            "bonuses",
+            "commissions",
+            "loadings",
+            "payments in advance",
+            "back payments",
+        ):
+            assert kind in document
+        assert "established timing, pattern or schedule" in document
+        assert "subsequent" in document
+
+    assert "final instrument read 2026-08-14" in research
+    assert "final verbatim kinds/circumstances were NOT read" not in research
