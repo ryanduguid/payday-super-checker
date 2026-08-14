@@ -259,6 +259,7 @@ def test_release_workflow_is_manual_pinned_attested_and_prerelease_only():
     assert "immutable_releases_confirmed" in workflow
     assert "release_notes_confirmed" in workflow
     assert "attestations: write" in workflow and "id-token: write" in workflow
+    assert "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in workflow
     assert "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6" in workflow
     assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in workflow
     assert "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97" in workflow
