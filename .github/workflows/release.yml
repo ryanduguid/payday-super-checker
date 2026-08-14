@@ -54,6 +54,7 @@ jobs:
         id: release
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
           IMMUTABLE_CONFIRMED: ${{ inputs.immutable_releases_confirmed }}
           NOTES_CONFIRMED: ${{ inputs.release_notes_confirmed }}
           TAG: ${{ inputs.tag }}
@@ -170,11 +171,29 @@ jobs:
         run: |
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > /tmp/release.json
-          jq -e --arg title "$TAG - experimental prerelease" \
-            '.prerelease == true and .draft == false and .name == $title' \
+          jq -e --arg tag "$TAG" --arg title "$TAG - experimental prerelease" \
+            '.prerelease == true and .draft == false and .immutable == true
+             and .tag_name == $tag and .name == $title' \
             /tmp/release.json >/dev/null
+          jq -j '.body' /tmp/release.json > /tmp/published-notes
+          diff -u docs/releases/$TAG.md /tmp/published-notes
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+            --json tagName,isLatest > /tmp/release-list.json
+          jq -e --arg tag "$TAG" \
+            'any(.[]; .tagName == $tag and .isLatest == false)' \
+            /tmp/release-list.json >/dev/null
           find release -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort \
             > /tmp/expected-assets
           jq -r '.assets[].name' /tmp/release.json | LC_ALL=C sort \
             > /tmp/published-assets
           diff -u /tmp/expected-assets /tmp/published-assets
+          (
+            cd release
+            for file in *; do
+              printf '%s\tsha256:%s\n' "$file" \
+                "$(sha256sum "$file" | cut -d' ' -f1)"
+            done
+          ) | LC_ALL=C sort > /tmp/expected-digests
+          jq -r '.assets[] | [.name, .digest] | @tsv' /tmp/release.json \
+            | LC_ALL=C sort > /tmp/published-digests
+          diff -u /tmp/expected-digests /tmp/published-digests

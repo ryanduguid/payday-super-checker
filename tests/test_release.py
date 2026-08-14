@@ -249,6 +249,9 @@ def test_release_workflow_is_manual_pinned_attested_and_prerelease_only():
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"
     )
+    preflight = workflow.partition(
+        "- name: Resolve and verify the exact tag, main and operator gates"
+    )[2].partition("- name: Test the exact tagged source")[0]
 
     assert "workflow_dispatch:" in workflow
     assert "immutable_releases_confirmed" in workflow
@@ -262,6 +265,11 @@ def test_release_workflow_is_manual_pinned_attested_and_prerelease_only():
     assert "generate-notes" not in workflow
     assert "publish" not in workflow.lower() or "prerelease" in workflow.lower()
     assert "pypi" not in workflow.lower()
+    assert "GH_TOKEN: ${{ github.token }}" in preflight
+    assert ".immutable == true" in workflow
+    assert ".isLatest == false" in workflow
+    assert "/tmp/expected-digests" in workflow
+    assert "docs/releases/$TAG.md /tmp/published-notes" in workflow
 
 
 def test_sdist_manifest_carries_every_release_test_dependency():
