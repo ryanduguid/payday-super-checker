@@ -151,6 +151,25 @@ jobs:
           subject-path: release/payday_super_checker-${{ steps.release.outputs.version }}-py3-none-any.whl
           sbom-path: release/payday-super-checker-${{ steps.release.outputs.tag }}.spdx.json
 
+      - name: Re-check the remote tag and main immediately before publication
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXPECTED_COMMIT: ${{ steps.release.outputs.commit }}
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_tag_sha=$(git ls-remote \
+            "https://github.com/$GITHUB_REPOSITORY.git" \
+            "refs/tags/$TAG^{}" | cut -f1)
+          remote_main_sha=$(git ls-remote \
+            "https://github.com/$GITHUB_REPOSITORY.git" \
+            "refs/heads/$DEFAULT_BRANCH" | cut -f1)
+          test -n "$remote_tag_sha"
+          test "$remote_tag_sha" = "$EXPECTED_COMMIT"
+          test "$remote_main_sha" = "$EXPECTED_COMMIT"
+          test "$GITHUB_SHA" = "$EXPECTED_COMMIT"
+
       - name: Publish the non-latest experimental prerelease
         env:
           GH_TOKEN: ${{ github.token }}
