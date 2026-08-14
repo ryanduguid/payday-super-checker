@@ -207,7 +207,7 @@ def test_setuptools_sdist_is_repacked_to_deterministic_utc_lf(tmp_path):
             directory.mode = 0o777
             directory.mtime = EPOCH + number
             archive.addfile(directory)
-            data = b"metadata\n"
+            data = b"metadata\r\n" if number == 1 else b"metadata\n"
             info = tarfile.TarInfo("package-0.1.1/PKG-INFO")
             info.size = len(data)
             info.mode = 0o666

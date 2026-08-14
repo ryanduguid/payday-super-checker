@@ -397,8 +397,12 @@ def normalise_sdist(path: str | Path, epoch: int) -> Path:
                 if extracted is None:
                     raise ReleaseError(f"cannot read sdist member: {member.name}")
                 data = extracted.read()
-                if b"\0" not in data and b"\r" in data:
-                    raise ReleaseError(f"sdist text must be LF-only: {member.name}")
+                # Email-style package metadata is emitted with CRLF on
+                # Windows even when every tracked source blob is LF. The
+                # sdist is generated output, so normalise its text payloads
+                # rather than preserving a runner-specific representation.
+                if b"\0" not in data:
+                    data = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
                 mode = 0o755 if member.mode & 0o111 else 0o644
                 entries.append((member.name, False, mode, data))
     except (OSError, tarfile.TarError) as exc:
