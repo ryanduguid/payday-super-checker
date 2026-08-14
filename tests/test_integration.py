@@ -12,7 +12,7 @@ from paydaysuper.csv_io import load_mapping, parse_rows
 from paydaysuper.deadlines import ContribLine
 from paydaysuper.rates import load_gic, load_rates
 from paydaysuper.report import assess as report_assess
-from paydaysuper.report import console_summary, financial_year
+from paydaysuper.report import console_summary, financial_year, needs_attention
 from paydaysuper.sgc import notional_earnings
 
 from conftest import SAMPLE as FIXTURE
@@ -137,6 +137,136 @@ def test_item4_extends_the_second_payday_for_a_new_starter():
     assert first.deadline.due == date(2026, 8, 7)
     assert second.deadline.due == date(2026, 8, 7)  # inherited, not 4 Aug
     assert second.verdict == "ON_TIME"
+
+
+def test_item4_without_an_evidenced_earlier_contribution_fails_closed():
+    """Item 4 requires an earlier eligible contribution that was made and
+    applied to the earlier QE day. A positive amount on an unfunded row is
+    not that evidence and must not turn a later receipt from late to on time."""
+    earlier = ContribLine(
+        employee_id="ITEM4-EVIDENCE",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("100.00"),
+        first_to_fund=True,
+        row=2,
+    )
+    later = ContribLine(
+        employee_id="ITEM4-EVIDENCE",
+        qe_day=date(2026, 7, 23),
+        sg_amount=Decimal("100.00"),
+        received=date(2026, 8, 6),
+        row=3,
+    )
+
+    result = assess(
+        [earlier, later], load_calendar(), load_gic(), date(2026, 8, 6)
+    )[1]
+
+    assert result.deadline.due == date(2026, 8, 4)
+    assert result.verdict == "UNKNOWN"
+    assert result.horizon_verdicts == ("LATE", "ON_TIME")
+    assert result.sgc_high is None
+    assert needs_attention([result])
+    assert any("item 4" in caveat.lower() for caveat in result.caveats)
+
+
+@pytest.mark.parametrize(
+    "donor_fields, expected_verdict, candidate_verdicts",
+    [
+        ({"remitted": date(2026, 7, 15)}, "UNKNOWN", ("LATE", "ON_TIME")),
+        ({"received": date(2026, 8, 10)}, "LATE", None),
+        ({"received": date(2026, 8, 8)}, "LATE", None),
+    ],
+)
+def test_item4_remittance_or_late_receipt_is_not_eligible_evidence(
+    donor_fields, expected_verdict, candidate_verdicts
+):
+    """Remittance is not fund receipt, and a receipt after the earlier
+    contribution's own latest day cannot seed item 4."""
+    earlier = ContribLine(
+        employee_id="ITEM4-INELIGIBLE",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("100.00"),
+        first_to_fund=True,
+        row=2,
+        **donor_fields,
+    )
+    later = ContribLine(
+        employee_id="ITEM4-INELIGIBLE",
+        qe_day=date(2026, 7, 23),
+        sg_amount=Decimal("100.00"),
+        received=date(2026, 8, 6),
+        row=3,
+    )
+
+    result = assess(
+        [earlier, later],
+        load_calendar(),
+        load_gic(),
+        date(2026, 8, 10),
+        transition_allocation_confirmed=True,
+    )[1]
+
+    assert result.deadline.due == date(2026, 8, 4)
+    assert result.verdict == expected_verdict
+    assert result.horizon_verdicts == candidate_verdicts
+    assert needs_attention([result])
+
+
+def test_item4_on_time_received_and_applied_contribution_is_evidence():
+    earlier = ContribLine(
+        employee_id="ITEM4-CONFIRMED",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("100.00"),
+        first_to_fund=True,
+        received=date(2026, 8, 7),
+        row=2,
+    )
+    later = ContribLine(
+        employee_id="ITEM4-CONFIRMED",
+        qe_day=date(2026, 7, 23),
+        sg_amount=Decimal("100.00"),
+        received=date(2026, 8, 6),
+        row=3,
+    )
+
+    result = assess(
+        [earlier, later], load_calendar(), load_gic(), date(2026, 8, 7)
+    )[1]
+
+    assert result.deadline.due == date(2026, 8, 7)
+    assert result.deadline.pathway == "ITEM4_ALIGNED"
+    assert result.verdict == "ON_TIME"
+    assert result.horizon_verdicts is None
+
+
+def test_item4_indeterminate_result_is_explicit_in_console_and_csv(tmp_path, capsys):
+    path = tmp_path / "item4.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        "ITEM4-REPORT,2026-07-09,100.00,,,yes,no,,no\n"
+        "ITEM4-REPORT,2026-07-23,100.00,,2026-08-06,no,no,,no\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "report.csv"
+
+    code = main([str(path), "-o", str(out), "--as-at", "2026-08-06"])
+
+    assert code == EXIT_LATE_FOUND
+    printed = capsys.readouterr().out
+    assert "cannot be assessed from the supplied deadline facts" in printed
+    assert "LATE or ON_TIME" in printed
+    assert "Lines with exposure" not in printed
+    with open(out, newline="", encoding="utf-8-sig") as handle:
+        rows = list(csv.DictReader(handle))
+    later = rows[1]
+    assert later["due_date"] == "2026-08-04"
+    assert later["verdict"] == "UNKNOWN"
+    assert later["unassessable_between"] == "LATE or ON_TIME"
+    assert later["final_shortfall"] == ""
+    assert later["sgc_estimate_low"] == ""
+    assert later["sgc_estimate_high"] == ""
 
 
 def test_same_dates_without_the_extension_are_late():
@@ -918,6 +1048,7 @@ def test_calendar_caveats_describe_the_aligned_deadline():
         qe_day=date(2028, 12, 8),
         sg_amount=Decimal("100.00"),
         first_to_fund=True,
+        received=date(2028, 12, 10),
         row=2,
     )
     later = ContribLine(
@@ -1099,6 +1230,50 @@ def test_prepayment_past_the_horizon_keeps_its_verdict():
     assert r.verdict == "ON_TIME"
 
 
+def test_unfunded_payday_past_the_horizon_is_attention_driving_unknown():
+    """Without the missing holiday facts, the real deadline may not have
+    passed. An unfunded row therefore cannot carry an UNPAID exposure."""
+    cal = load_calendar()
+    line = ContribLine(
+        employee_id="HORIZON-UNFUNDED",
+        qe_day=date(2027, 9, 16),
+        sg_amount=Decimal("1000.00"),
+        row=2,
+    )
+
+    r = assess([line], cal, load_gic(), date(2027, 9, 28))[0]
+
+    assert r.deadline.due > cal.coverage_until
+    assert r.verdict == "UNKNOWN"
+    assert r.horizon_verdicts == ("UNPAID", "NOT_YET_DUE")
+    assert r.final_shortfall is None
+    assert r.nec is None
+    assert r.sgc_low is None and r.sgc_high is None
+    assert needs_attention([r])
+
+
+def test_stale_prepayment_past_the_horizon_has_no_exposure():
+    """A stale pre-payment leaves the payday unfunded, but it still cannot
+    prove a post-horizon deadline has passed."""
+    cal = load_calendar()
+    line = ContribLine(
+        employee_id="HORIZON-STALE",
+        qe_day=date(2027, 9, 16),
+        sg_amount=Decimal("1000.00"),
+        received=date(2026, 9, 1),
+        row=2,
+    )
+
+    r = assess([line], cal, load_gic(), date(2027, 9, 28))[0]
+
+    assert r.verdict == "UNKNOWN"
+    assert r.horizon_verdicts == ("LATE", "NOT_YET_DUE")
+    assert r.final_shortfall is None
+    assert r.nec is None
+    assert r.sgc_low is None and r.sgc_high is None
+    assert needs_attention([r])
+
+
 def test_horizon_caveat_says_the_table_may_be_missing_holidays():
     """The caveat used to claim the table "holds no holidays at all" past the
     horizon, which stopped being true once coverage became a declared span:
@@ -1172,9 +1347,8 @@ def test_an_unrelated_added_holiday_does_not_silence_the_horizon(tmp_path, capsy
 
 
 def test_an_unpaid_row_past_the_horizon_does_not_claim_the_deadline_passed(tmp_path, capsys):
-    """The UNPAID verdict stays - an unrecorded contribution is money owed
-    whatever the calendar knows - but past the coverage end the sentence
-    "the deadline passed on X" contradicted the row's own horizon caveat.
+    """An unfunded row stays attention-driving, but the tool cannot assert
+    UNPAID until it knows the deadline has passed.
 
     Canberra Day 2029 falls on 12 Mar and is an ACT-wide public holiday, so
     the deadline this row is told passed on 12 Mar is really 13 Mar."""
@@ -1188,9 +1362,11 @@ def test_an_unpaid_row_past_the_horizon_does_not_claim_the_deadline_passed(tmp_p
     code = main([str(src), "-o", str(tmp_path / "out.csv"), "--as-at", "2029-03-13"])
     printed = capsys.readouterr().out
     assert code == EXIT_LATE_FOUND
-    assert "UNPAID: 1" in printed          # exposure stays visible
+    assert "UNPAID: 0" in printed
+    assert "UNKNOWN: 1" in printed
+    assert "UNPAID or NOT_YET_DUE" in printed
     assert "the deadline passed on" not in printed
-    assert "may not have passed yet" in printed
+    assert "may not have passed" in printed
 
 
 def test_a_rates_file_whose_years_are_not_a_map_is_an_error_not_a_traceback(
@@ -1256,25 +1432,25 @@ def test_item4_inherited_from_an_unrecorded_payday_is_flagged():
         ),
     ]
     results = assess(rows, cal, load_gic(), AS_AT)
-    assert results[1].verdict == "ON_TIME"
-    assert any(
-        "no payment on or before the as-at date 2026-08-10 is recorded" in c
-        for c in results[1].caveats
-    )
+    later = results[1]
+    assert later.deadline.due == date(2026, 8, 4)
+    assert later.deadline.possible_item4_due == date(2026, 8, 7)
+    assert later.verdict == "UNKNOWN"
+    assert later.horizon_verdicts == ("LATE", "ON_TIME")
+    assert needs_attention([later])
+    assert any("does not evidence an eligible contribution" in c for c in later.caveats)
 
 
 def test_item4_inherited_caveat_survives_a_post_as_at_donor_payment():
-    """A donor payment dated after the as-at date must not settle this
-    caveat: the as-at rule says future facts cannot settle a historical
-    report, and at the as-at date no payment seeding the inherited window
-    was on record."""
+    """A known receipt after the earlier row's latest day cannot seed item
+    4. An on-time fund receipt can."""
     cal = load_calendar()
     rows = [
         ContribLine(
             employee_id="E9",
             qe_day=date(2026, 7, 9),
             sg_amount=Decimal("100.00"),
-            received=date(2026, 9, 1),  # after AS_AT
+            received=date(2026, 9, 1),
             first_to_fund=True,
             row=2,
         ),
@@ -1287,15 +1463,15 @@ def test_item4_inherited_caveat_survives_a_post_as_at_donor_payment():
         ),
     ]
     results = assess(rows, cal, load_gic(), AS_AT)
-    assert results[1].deadline.due == date(2026, 8, 7)  # inherited
-    assert any(
-        "no payment on or before the as-at date 2026-08-10 is recorded" in c
-        for c in results[1].caveats
-    )
-    # And a donor payment on or before the as-at date still settles it.
+    assert results[1].deadline.due == date(2026, 8, 4)
+    assert results[1].deadline.possible_item4_due is None
+    assert results[1].verdict == "LATE"
+    # An eligible receipt associated with the earlier QE day settles it.
     rows[0].received = date(2026, 8, 6)
     results = assess(rows, cal, load_gic(), AS_AT)
-    assert not any("inherited from the QE day" in c for c in results[1].caveats)
+    assert results[1].deadline.due == date(2026, 8, 7)
+    assert results[1].deadline.pathway == "ITEM4_ALIGNED"
+    assert results[1].verdict == "ON_TIME"
 
 
 def test_a_nil_payday_does_not_extend_a_later_real_paydays_verdict():
@@ -1355,12 +1531,12 @@ def test_a_nil_donor_does_not_suppress_the_unrecorded_item_4_caveat():
         ),
     ]
     results = assess(rows, load_calendar(), load_gic(), AS_AT)
-    aligned = results[2]
-    assert aligned.deadline.pathway == "ITEM4_ALIGNED"
-    assert any(
-        "no payment on or before the as-at date 2026-08-10 is recorded" in c
-        for c in aligned.caveats
-    )
+    later = results[2]
+    assert later.deadline.pathway == "USUAL_7BD"
+    assert later.deadline.due == date(2026, 8, 4)
+    assert later.deadline.possible_item4_due == date(2026, 8, 7)
+    assert later.verdict == "UNKNOWN"
+    assert later.horizon_verdicts == ("LATE", "ON_TIME")
 
 
 def test_a_supplied_2029_calendar_produces_a_real_verdict(tmp_path):
@@ -1415,9 +1591,8 @@ def test_a_supplied_2029_calendar_produces_a_real_verdict(tmp_path):
 
 
 def test_exposure_past_the_horizon_leaves_days_late_blank_and_labels_a_maximum():
-    """An unpaid payday past the calendar's coverage is still exposure, but
-    the deadline it is measured from can only move later, so a definite whole
-    number of days late and a settled dollar figure claim too much."""
+    """An unfunded payday past the calendar's coverage needs attention, but
+    carries no exposure until the deadline can be established."""
     line = ContribLine(
         employee_id="E9",
         qe_day=date(2029, 3, 1),
@@ -1425,17 +1600,18 @@ def test_exposure_past_the_horizon_leaves_days_late_blank_and_labels_a_maximum()
         row=2,
     )
     r = assess([line], load_calendar(), load_gic(), date(2029, 6, 1))[0]
-    assert r.verdict == "UNPAID"
+    assert r.verdict == "UNKNOWN"
+    assert r.horizon_verdicts == ("UNPAID", "NOT_YET_DUE")
     assert r.days_late is None
-    assert r.nec > Decimal("0")
-    assert any("are a maximum" in c for c in r.caveats)
+    assert r.nec is None
+    assert r.sgc_low is None and r.sgc_high is None
 
     text = console_summary(
         [r], date(2029, 6, 1), "report.csv", "2026-08-02", load_rates()
     )
-    assert "days late not pinned down" in text
-    assert "notional earnings at most $" in text
-    assert "SG charge estimate at most $" in text
+    assert "cannot be assessed" in text
+    assert "UNPAID or NOT_YET_DUE" in text
+    assert "Lines with exposure" not in text
     assert "None days late" not in text
 
 
@@ -1469,9 +1645,10 @@ def test_days_late_blank_reaches_the_report_csv(tmp_path):
     assert main([str(path), "-o", str(out), "--as-at", "2029-06-01"]) == 2
     with open(out, newline="", encoding="utf-8-sig") as f:
         row = next(csv.DictReader(f))
-    assert row["verdict"] == "UNPAID"
+    assert row["verdict"] == "UNKNOWN"
     assert row["days_late"] == ""
-    assert Decimal(row["final_shortfall"]) == Decimal("500.00")
+    assert row["final_shortfall"] == ""
+    assert row["unassessable_between"] == "UNPAID or NOT_YET_DUE"
 
 
 def test_missed_new_starter_flag_is_suggested_on_late_lines():
@@ -1743,7 +1920,8 @@ def test_stale_prepayment_gets_no_new_starter_hint():
         row=2,
     )
     r = assess([line], load_calendar(), load_gic(), date(2027, 10, 30))[0]
-    assert r.verdict == "LATE"
+    assert r.verdict == "UNKNOWN"
+    assert r.horizon_verdicts == ("LATE", "NOT_YET_DUE")
     assert not any("first_contribution_to_fund" in c for c in r.caveats)
 
 
@@ -1820,13 +1998,16 @@ def test_item4_caveat_names_the_deadline_without_the_alignment():
         ),
     ]
     results = assess(rows, load_calendar(), load_gic(), AS_AT)
-    caveat = [c for c in results[1].caveats if "inherited" in c]
-    assert caveat and "2026-08-04" in caveat[0]  # its own period end
+    later = results[1]
+    caveat = [c for c in later.caveats if "item 4" in c]
+    assert later.deadline.due == date(2026, 8, 4)
+    assert later.deadline.possible_item4_due == date(2026, 8, 7)
+    assert caveat and "2026-08-07" in caveat[0]
 
 
 def test_item4_caveat_keeps_an_out_of_cycle_lines_own_deadline():
-    """The aligned line rides its next standard payday, so its own deadline
-    is 6 Aug, not the 4 Aug that qe_day plus 7 business days would give."""
+    """The unresolved line keeps its evidenced item 2 deadline, rather than
+    replacing it with an unevidenced item 4 extension."""
     rows = [
         ContribLine(
             employee_id="E9",
@@ -1846,13 +2027,13 @@ def test_item4_caveat_keeps_an_out_of_cycle_lines_own_deadline():
         ),
     ]
     results = assess(rows, load_calendar(), load_gic(), AS_AT)
-    aligned = results[1]
-    assert aligned.deadline.pathway == "ITEM4_ALIGNED"
-    assert aligned.deadline.due == date(2026, 8, 7)
-    caveat = [c for c in aligned.caveats if "inherited" in c]
-    assert caveat, aligned.caveats
-    assert "2026-08-06" in caveat[0]
-    assert "2026-08-04" not in caveat[0]
+    later = results[1]
+    assert later.deadline.pathway == "OUT_OF_CYCLE"
+    assert later.deadline.due == date(2026, 8, 6)
+    assert later.deadline.possible_item4_due == date(2026, 8, 7)
+    assert later.verdict == "UNKNOWN"
+    caveat = [c for c in later.caveats if "item 4" in c]
+    assert caveat and "2026-08-07" in caveat[0]
 
 
 def test_report_csv_carries_a_bom_and_round_trips_a_non_ascii_id(tmp_path):

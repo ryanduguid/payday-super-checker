@@ -74,6 +74,32 @@ def test_final_ruling_status_and_transition_gate_are_current():
     assert "Department of Education v Commissioner of Taxation" in review
 
 
+def test_item4_and_import_allocation_boundaries_stay_visible():
+    review = REVIEW.read_text(encoding="utf-8")
+    readme = README.read_text(encoding="utf-8")
+    design = (DOCS / "design.md").read_text(encoding="utf-8")
+
+    for document in (review, readme, design):
+        assert "LCR 2026/2" in document
+        assert "fund-receipt order" in document
+        assert "earliest" in document and "shortfall" in document
+        assert "--confirm-statutory-allocation" in document
+        assert "item 4" in document.lower()
+        assert "on-time fund receipt" in document
+        assert "UNKNOWN" in document
+
+
+def test_regulations_11_and_12_are_an_operator_input_boundary():
+    review = REVIEW.read_text(encoding="utf-8")
+    readme = README.read_text(encoding="utf-8")
+    design = (DOCS / "design.md").read_text(encoding="utf-8")
+
+    for document in (review, readme, design):
+        assert "regulations 11 and 12" in document.lower()
+        assert "operator" in document.lower()
+        assert "sg_amount" in document
+
+
 def test_primary_review_pins_regulations_and_direct_mcb_provenance():
     review = REVIEW.read_text(encoding="utf-8")
     rates = RATES.read_text(encoding="utf-8")

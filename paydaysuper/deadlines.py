@@ -5,12 +5,12 @@ Pathways implemented:
 - EXTENDED_20BD  s 18C(2) item 1: first eligible contribution to a
                  particular fund (new/recommenced employee or fund switch)
 - OUT_OF_CYCLE   s 18C(2) item 2 + F2026L00784: deadline is
-                 the end of the usual period for the first LATER standard QE
-                 day. The final determination requires that subsequent
-                 standard payment, so a row without it is rejected
+                 the end of the usual period for the actual subsequent
+                 non-out-of-cycle QE payment on the next schedule-consistent
+                 day. A row without that payment is rejected
 - ITEM4_ALIGNED  s 18C(2) item 4: a later QE day whose period would end
-                 before an earlier contribution's latest due day inherits
-                 that later end
+                 before an evidenced earlier eligible contribution's latest
+                 due day inherits that later end
 - SKIP_DB        defined-benefit interests: notional contribution treated
                  as received on the QE day (s 18A(3)); lateness testing
                  does not apply
@@ -21,7 +21,7 @@ modelled; if one covers the employer, results here are conservative.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from .calendar import BusinessCalendar
@@ -80,6 +80,14 @@ class Deadline:
     # to write about once apply_item4 has settled `due`. Set only where the row
     # supplies a usable next standard QE day without the out-of-cycle flag.
     item2_due: date | None = None
+    # The latest deadline this row could inherit under item 4 when an
+    # earlier positive row might, but does not yet prove, an eligible
+    # contribution was received and applied on time. ``due`` remains the
+    # latest deadline supported by the evidence supplied. Report assessment
+    # uses this upper bound only to return an attention-driving UNKNOWN where
+    # the two dates would change the verdict; it never presents the later
+    # date as the deadline.
+    possible_item4_due: date | None = None
 
 
 def compute_due(line: ContribLine, cal: BusinessCalendar) -> Deadline:
@@ -130,7 +138,9 @@ def compute_due(line: ContribLine, cal: BusinessCalendar) -> Deadline:
                 cal.add_business_days(line.next_standard_qe_day, 7),
                 OUT_OF_CYCLE,
                 "out-of-cycle earnings: deadline is the usual period of the next "
-                f"standard QE day {line.next_standard_qe_day.isoformat()} "
+                "schedule-consistent day on which the employer actually made a "
+                "subsequent non-out-of-cycle QE payment, "
+                f"{line.next_standard_qe_day.isoformat()} "
                 "(s 18C(2) item 2; F2026L00784 s 5)",
             )
         )
@@ -216,10 +226,72 @@ def annotate_missing_flag(pairs: list[tuple[ContribLine, Deadline]]) -> None:
             )
 
 
-def apply_item4(pairs: list[tuple[ContribLine, Deadline]]) -> None:
-    """s 18C(2) item 4: for each employee, a later QE day's deadline is the
-    max of its own period end and any earlier contribution's latest due day.
-    Mutates deadlines in place. Call after compute_due over all lines."""
+def _twelve_months_before(d: date) -> date:
+    """The same calendar date a year earlier, with 29 February falling back
+    to 28 February."""
+    try:
+        return d.replace(year=d.year - 1)
+    except ValueError:
+        return d.replace(year=d.year - 1, month=2, day=28)
+
+
+def _item4_evidence(
+    line: ContribLine,
+    confirmed_due: date,
+    possible_due: date,
+    as_at: date | None,
+) -> str:
+    """Classify whether a row proves, might contain, or cannot contain the
+    earlier eligible contribution item 4 requires.
+
+    A canonical row associates its fund receipt with this QE day; that is the
+    operator's allocation assertion. Only a receipt within the statutory
+    pre-payment/on-time window proves the contribution. A remittance never
+    does. Missing or future receipt facts remain possible unless a known
+    receipt/remittance makes an eligible receipt impossible."""
+    if line.sg_amount <= 0 or line.db_interest:
+        return "impossible"
+
+    receipt = line.received
+    earliest_prepayment = _twelve_months_before(
+        line.qe_day - timedelta(days=1)
+    ) + timedelta(days=1)
+    if receipt is not None:
+        if receipt < earliest_prepayment:
+            return "impossible"
+        if as_at is None or receipt <= as_at:
+            if receipt < line.qe_day or receipt <= confirmed_due:
+                return "confirmed"
+            if receipt > possible_due:
+                return "impossible"
+            return "possible"
+        # A future receipt is not evidence in an as-at report. It can still
+        # establish the item later if it falls within the widest supported
+        # period, so retain only that possibility.
+        return "possible" if receipt <= possible_due else "impossible"
+
+    # Fund receipt cannot precede remittance. A remittance after even the
+    # widest possible deadline therefore disproves an on-time contribution;
+    # an earlier remittance remains merely possible, never confirmed.
+    if line.remitted is not None and line.remitted > possible_due:
+        return "impossible"
+    return "possible"
+
+
+def apply_item4(
+    pairs: list[tuple[ContribLine, Deadline]], as_at: date | None = None
+) -> None:
+    """Apply SGAA s 18C(2) item 4 without manufacturing its missing facts.
+
+    Item 4 applies only where an earlier eligible contribution *was made*
+    and *was applied* to the earlier QE day. A positive payroll amount or an
+    employer remittance does not prove either fact. ``due`` is extended only
+    by an on-time fund receipt associated with the earlier canonical row.
+    Unevidenced rows propagate a separate possible upper bound so assessment
+    can fail closed when that uncertainty would change the verdict.
+
+    Mutates deadlines in place. Call after ``compute_due`` over all lines.
+    ``as_at`` excludes future receipt facts from confirmed evidence."""
     by_employee: dict[str, list[tuple[ContribLine, Deadline]]] = {}
     for line, dl in pairs:
         if dl.due is None:
@@ -255,7 +327,8 @@ def apply_item4(pairs: list[tuple[ContribLine, Deadline]]) -> None:
 
     for items in by_employee.values():
         items.sort(key=lambda p: (p[0].qe_day, p[0].row))
-        running_latest: date | None = None
+        confirmed_latest: date | None = None
+        possible_latest: date | None = None
         # Item 4 keys on a LATER QE day, so contributions sharing a QE day
         # are resolved as one group: none of them aligns to a sibling, and
         # the group's latest due day is what later QE days inherit. Without
@@ -267,30 +340,51 @@ def apply_item4(pairs: list[tuple[ContribLine, Deadline]]) -> None:
                 end += 1
             group = items[index:end]
 
-            group_latest = running_latest
+            group_confirmed = confirmed_latest
+            group_possible = possible_latest
             for line, dl in group:
                 if (
-                    running_latest is not None
+                    confirmed_latest is not None
                     and dl.due is not None
-                    and dl.due < running_latest
+                    and dl.due < confirmed_latest
                 ):
                     dl.notes.append(
-                        "deadline aligned to an earlier contribution's latest due day "
-                        f"{running_latest.isoformat()} (s 18C(2) item 4)"
+                        "deadline aligned to an evidenced earlier eligible "
+                        "contribution's latest due day "
+                        f"{confirmed_latest.isoformat()} (s 18C(2) item 4)"
                     )
                     dl.own_due = dl.due
-                    dl.due = running_latest
+                    dl.due = confirmed_latest
                     dl.pathway = ITEM4_ALIGNED
-                # Item 4 aligns to an earlier ELIGIBLE CONTRIBUTION. A payday
-                # carrying no SG is not one, so it cannot seed the window a
-                # later real payday inherits: letting it through extended a
-                # genuine deadline and turned a late line on time. A nil line
-                # can still receive an alignment; it has nothing to assess
-                # either way.
-                if dl.due is not None and line.sg_amount > 0:
-                    group_latest = dl.due if group_latest is None else max(group_latest, dl.due)
 
-            running_latest = group_latest
+                if dl.due is None:
+                    continue
+                widest_due = dl.due
+                if possible_latest is not None and possible_latest > widest_due:
+                    widest_due = possible_latest
+                    dl.possible_item4_due = possible_latest
+
+                evidence = _item4_evidence(line, dl.due, widest_due, as_at)
+                if evidence == "confirmed":
+                    group_confirmed = (
+                        dl.due
+                        if group_confirmed is None
+                        else max(group_confirmed, dl.due)
+                    )
+                    group_possible = (
+                        widest_due
+                        if group_possible is None
+                        else max(group_possible, widest_due)
+                    )
+                elif evidence == "possible":
+                    group_possible = (
+                        widest_due
+                        if group_possible is None
+                        else max(group_possible, widest_due)
+                    )
+
+            confirmed_latest = group_confirmed
+            possible_latest = group_possible
             index = end
 
 

@@ -41,6 +41,10 @@ def line(**kwargs) -> ContribLine:
         employee_id="E1",
         qe_day=date(2026, 7, 9),
         sg_amount=Decimal("600.00"),
+        # Deadline-only tests that expect item 4 alignment supply the legal
+        # fact the rule needs: an eligible fund receipt associated with the
+        # earlier QE day. Tests for missing evidence override this to None.
+        received=date(2026, 7, 15),
         row=2,
     )
     base.update(kwargs)

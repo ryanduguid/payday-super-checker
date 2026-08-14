@@ -2,9 +2,16 @@
 
 [![tests](https://github.com/ryanduguid/payday-super-checker/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/payday-super-checker/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
-Check Australian super contributions against the payday-super deadlines and produce an experimental SG-charge estimate for anything late.
+**Experimental review aid — not a compliance determination.** Check Australian
+super contributions against the payday-super deadlines and produce an
+experimental SG-charge estimate for lines that the supplied facts establish as
+late.
 
-Since 1 July 2026, super is due within 7 business days of each payday instead of quarterly. Miss it and the SG charge applies automatically: daily-compounding notional earnings, an administrative uplift of up to 60%, and the shortfall itself until the money reaches the fund. This reads a CSV out of your payroll or clearing-house records and tells you, line by line, which contributions landed in time.
+Since 1 July 2026, super is generally due within 7 business days of each payday
+instead of quarterly. A missed deadline can create an SG shortfall, notional
+earnings and administrative uplift; the ATO makes the assessment. This tool
+reviews a CSV from payroll, clearing-house and fund records. It refuses or marks
+`UNKNOWN` where those records do not establish the statutory facts.
 
 Built by Ryan Duguid, a provisional member of Chartered Accountants ANZ. Written independently, in his own time and on his own equipment.
 
@@ -40,7 +47,7 @@ Lines with exposure (experimental estimates, largest first):
       shortfall $780.00  notional earnings $5.15  experimental SG charge estimate $785.15 - $1256.24
       note: the deadline passed on 2026-07-20 and no remittance or fund-receipt date is recorded...
   row 3  QE day 2026-07-09  due 2026-07-20  LATE, 15 days late to fund receipt
-      super $540.00 (received, so the shortfall is nil)  notional earnings $2.54  SG charge estimate $2.54 - $4.07
+      super $540.00 (received, so the shortfall is nil)  notional earnings $2.54  experimental SG charge estimate $2.54 - $4.07
 
   Total across 3 line(s): shortfall $780.00, notional earnings $8.07,
   experimental estimated SG charge $788.07 - $1260.92.
@@ -61,9 +68,19 @@ employee shortfall for the quarter ended 30 June 2026. Use the flag only after
 you have reconciled every affected employee; the confirmation is recorded in
 the report. Without it the checker stops before writing a verdict.
 
-Verdicts are `ON_TIME`, `AT_RISK` (remitted in time but no fund receipt recorded), `LATE`, `UNPAID` (the deadline has passed and nothing is recorded against it), `UNKNOWN` (the verdict is not available) and `SKIPPED` (defined-benefit interests). `LATE` and `UNPAID` both carry exposure figures.
+Verdicts are `ON_TIME`, `AT_RISK` (remitted in time but no fund receipt recorded), `LATE`, `UNPAID` (a supported deadline has passed and nothing is recorded against it), `UNKNOWN` (the verdict is not available) and `SKIPPED` (defined-benefit interests). `LATE` and `UNPAID` both carry experimental exposure figures.
 
-`UNKNOWN` covers four cases. Three are quiet: nothing recorded and not yet due; a row carrying no SG amount; and a payday whose only recorded receipt falls outside the 12-month pre-payment window of s 18C(1)(c)(ii) while its deadline has not yet arrived, which is unfunded but not yet assessable. The fourth is not. Where the deadline runs past the last date the calendar's holiday table is complete to, and the date on the row is AFTER that deadline, the line could be late or could be on time, because a holiday the calendar does not hold would move the deadline later. Those lines get their own console block naming the row, the amount and both candidate verdicts (employee ids stay in `report.csv`), and the report CSV carries them in `unassessable_between` as `LATE or ON_TIME`. Read that column if you parse the file: the verdict alone says `UNKNOWN` for a nine-thousand-dollar contribution nobody can assess and `UNKNOWN` for a nil row with nothing to assess, with the same blank shortfall on both.
+Some `UNKNOWN` rows are quiet because there is nothing to assess yet: a
+supported deadline has not passed, the row carries no SG amount, or a stale
+pre-payment is recorded before a supported deadline. Other `UNKNOWN` rows need
+attention and drive exit code 2. This happens when a deadline extends past the
+holiday table's complete horizon, including an unfunded row whose deadline may
+not have passed, or when an earlier positive row could trigger item 4 but does
+not evidence an eligible contribution that was received, legally allocated to
+that earlier QE day and on time. These rows get their own console block and the
+CSV records both candidates in `unassessable_between`, such as `LATE or
+ON_TIME`, `UNPAID or NOT_YET_DUE`, or `LATE or AT_RISK`. Read that column when
+parsing the file: `UNKNOWN` alone also covers nil rows with nothing at risk.
 
 To get a real verdict, enter the missing holidays in a `--holidays-override` file and add `"verified_until": "YYYY-MM-DD"` naming the last date you entered them for. The holidays alone are not enough, and that is deliberate: a file holding one 2029 holiday is not a file that has 2029 covered, and treating it as one would silence the warning across every gap it left. Only you know how far you went.
 
@@ -104,15 +121,21 @@ Required: `employee_id`, `payment_date`, `sg_amount`. Everything else is optiona
 | `qe_day` | `payment_date` | The day you actually paid the wages, not the period end or payslip date |
 | `sg_amount` | `sg_amount` | Super guarantee for that payment |
 | `remitted` | `remitted_date` | Day you sent the money |
-| `received` | `fund_received_date` | Day the fund received it: the only date that settles compliance |
+| `received` | `fund_received_date` | Day the fund received the eligible contribution associated with this QE day. Receipt is necessary for an on-time result; the row association also asserts the contribution was allocable and applied to this QE day under the statutory ordering |
 | `first_to_fund` | `first_contribution_to_fund` | Yes for the first contribution to that fund (new starter, or a fund switch) |
 | `out_of_cycle` | `out_of_cycle` | Yes only for an allowance, bonus, commission, loading, payment in advance or back payment made outside an established payment timing, pattern or schedule, where the statutory next-standard-payment conditions are met |
-| `next_standard_qe_day` | `next_standard_payday` | The next regular payday, needed to date an out-of-cycle deadline |
+| `next_standard_qe_day` | `next_standard_payday` | The next schedule-consistent day on which the employer actually made a subsequent non-out-of-cycle QE payment. A planned payday or a date after employment ended is not enough |
 | `db_interest` | `defined_benefit` | Yes for defined-benefit interests, which are skipped |
 
-Dates read as `YYYY-MM-DD`, day-first `DD/MM/YYYY`, or `9 Jul 2026`, and a time component is ignored. Amounts accept `$` and thousands separators. Anything unreadable stops the run and names up to twenty bad cells at once, and so does a truncated row, a duplicated column heading, or a mapping that points at a column your file does not have. A compliance tool that guesses is worse than one that refuses.
+Dates read as `YYYY-MM-DD`, day-first `DD/MM/YYYY`, or `9 Jul 2026`, and a time component is ignored. Amounts accept `$` and thousands separators. Anything unreadable stops the run and names up to twenty bad cells at once, and so does a truncated row, a duplicated column heading, or a mapping that points at a column your file does not have. This experimental review tool refuses facts it cannot safely infer.
 
-**The amount column must hold super guarantee only.** Salary sacrifice and additional contributions have a different base and a different deadline, so filter them out of the export first or the shortfall will be overstated. The tool does not classify raw pay or decide whether a termination payment is qualifying earnings. LCR 2026/D1 remains draft, so that stays an operator decision.
+**The amount column must hold the operator-determined SG amount only.** Apply
+the employee and payment boundaries in regulations 11 and 12, the
+qualifying-earnings rules, the maximum contribution base and any other relevant
+facts before supplying it. Salary sacrifice and additional contributions have a
+different base and deadline, so filter them out. The tool does not classify raw
+pay, apply regulations 11 or 12, or decide whether a termination payment is
+qualifying earnings. LCR 2026/D1 remains draft, so those decisions stay human.
 
 **Where the fund receipt date comes from.** Payroll exports (Xero, MYOB, KeyPay, Employment Hero) give you the payday and the batch remittance date, which is what `remitted` is for and why those lines come back `AT_RISK`. A fund receipt date lives somewhere else: your clearing house's per-contribution settlement or status report, or the fund's own contribution history. Without it the tool tells you what you sent and when, not what the law tests.
 
@@ -121,11 +144,23 @@ Dates read as `YYYY-MM-DD`, day-first `DD/MM/YYYY`, or `9 Jul 2026`, and a time 
 Two commands turn a payroll export and a super payments export into a checked report, with no column mapping to write by hand:
 
 ```bash
-payday-super-check import --payroll "Payroll Activity Details.csv" --super "Superannuation Payments.csv" -o contributions.csv
-payday-super-check contributions.csv
+payday-super-check import --payroll "Payroll Activity Details.csv" --super "Superannuation Payments.csv" -o contributions.csv --confirm-statutory-allocation
+payday-super-check contributions.csv --confirm-transition-allocation
 ```
 
-The first command reads both exports, matches each super payment to the payday it settles, and writes the canonical CSV the second command already knows how to check.
+The first command reads both exports and writes the canonical CSV the second
+command checks. Where an employee has more than one in-scope positive payday,
+it stops without output unless you pass `--confirm-statutory-allocation`. Do not
+copy that flag mechanically. LCR 2026/2 paragraphs 31–33 apply contributions in
+fund-receipt order to the earliest QE day with a base or final shortfall. Vendor
+exports provide employer payment dates and pay-period labels, not that receipt
+order or the assessment facts that can change it. Use the flag only after you
+have reconciled every relevant payday, contribution receipt and assessment and
+confirmed that the export's periods plus payment-date/row order reproduce the
+statutory allocation. The importer allocates a short shared payment to the
+earliest covered shortfall; it no longer treats the vendor period end as an
+instruction to pay a later QE day first. The confirmation is printed in the
+import record.
 
 Profiles ship for Xero Payroll, MYOB AccountRight, MYOB Business and Employment Hero / KeyPay, one profile each for the payroll-activity report and the super-payments report. The importer picks a profile per file by scoring column headings against what it knows. Force one with `--vendor xero`, `--vendor myob-ar`, `--vendor myob-business` or `--vendor employment-hero` when detection cannot pick, or to skip detection outright.
 
@@ -151,7 +186,7 @@ Generated outputs must have an explicit `.csv` filename. They are staged in the 
 
 ## The rules it applies
 
-The enacted framework is the Treasury Laws Amendment (Payday Superannuation) Act 2025 (No. 57 of 2025, assent 6 November 2025), the Superannuation Guarantee Charge Amendment Act 2025 (No. 58 of 2025), and the regulations registered as F2026L00133, which amend the Superannuation Guarantee (Administration) Regulations 2018. It applies to paydays from 1 July 2026. A primary-source release review was completed on **15 August 2026**. [The review](docs/primary-source-review-2026-08-15.md) records the exact legislation, final ruling status, holiday authorities, runtime comparison and residual limits. The original 2 August research notes remain as a historical audit trail.
+The enacted framework is the Treasury Laws Amendment (Payday Superannuation) Act 2025 (No. 57 of 2025, assent 6 November 2025), the Superannuation Guarantee Charge Amendment Act 2025 (No. 58 of 2025), and the regulations registered as F2026L00133, which amend the Superannuation Guarantee (Administration) Regulations 2018; the current 1 July 2026 compilation is F2026C00535. It applies to paydays from 1 July 2026. A primary-source implementation review was completed on **15 August 2026**. [The review](docs/primary-source-review-2026-08-15.md) records the exact legislation, final ruling status, holiday authorities, runtime comparison and residual limits. It does not turn this experimental tool into an ATO compliance determination or authorise a release. The original 2 August research notes remain as a historical audit trail.
 
 ATO LCR 2026/1, LCR 2026/2 and LCR 2026/3 were issued on 5 August 2026. LCR 2026/D1 remains draft pending the appeal from *Department of Education v Commissioner of Taxation* [2026] FCA 898. The tool therefore accepts an operator-provided SG amount and does not decide qualifying-earnings or termination classifications.
 
@@ -159,9 +194,9 @@ ATO LCR 2026/1, LCR 2026/2 and LCR 2026/3 were issued on 5 August 2026. LCR 2026
 
 **Business days.** SGAA s 6(1) defines a business day as any day that is not a Saturday, a Sunday, or a public holiday for the whole of any State, the ACT or the NT. One national calendar applies to every employer: WA Day stops the clock for a Sydney employer. Regional and locally substitutable holidays do not. The Brisbane Ekka, WA's default King's Birthday date and Melbourne Cup Day are therefore business days for this definition. The bundled calendar is complete from July 2026 through **31 August 2027**. Business Victoria still lists the exact 2027 grand-final holiday as subject to the AFL schedule, so later deadlines fail closed until that date is officially published or supplied through a reviewed override. Unconfirmed dates do not extend a deadline.
 
-**20 business days instead of 7** for the first contribution to a particular fund, whether that is a new starter or an existing employee switching funds (s 18C(2) item 1). Later paydays that fall inside that window inherit its end date (item 4), applied per employee. That alignment is tested only against rows present in the file, so a single pay run checked on its own cannot see an earlier payday's longer window: include each employee's paydays back through any 20-business-day window, or the tool will report lateness the law does not impose.
+**20 business days instead of 7** for the first contribution to a particular fund, whether that is a new starter or an existing employee switching funds (s 18C(2) item 1). Under item 4, a later QE day's deadline can align to an earlier contribution's later end only if that earlier eligible contribution was made and applied under s 18C(1). The checker applies the extension only where the earlier canonical row evidences an on-time fund receipt and thereby asserts the statutory allocation. A positive amount or remittance alone is not enough. If the missing fact could change the verdict, the later row is attention-driving `UNKNOWN`, not treated as extended. Include each employee's earlier paydays and reconcile their LCR 2026/2 allocation; a single pay run cannot establish the rule.
 
-**Out-of-cycle payments** ride the next regular payday's window rather than their own (SGAA s 18C(2) item 2 and s 18C(3); final determination F2026L00784). The earlier review called this “LI 2026/20”, but that shorthand is not shown on the Federal Register's as-made page; this project uses the controlling registered identifier and text instead. The final determination covers six kinds of qualifying earnings: allowances, bonuses, commissions, loadings, payments in advance and back payments. The employer must have an established timing, pattern or schedule for qualifying-earnings payments, and the payment must fall outside it. It also requires a subsequent, non-out-of-cycle qualifying-earnings payment on the next day consistent with that schedule. A termination or final payment is not out of cycle merely because it belongs to one of the six kinds. `out_of_cycle=yes` without `next_standard_payday` is now a hard error; otherwise the tool would be inventing a condition the final instrument requires. Where both this rule and the new-fund rule apply, the later deadline governs.
+**Out-of-cycle payments** can ride a subsequent standard QE payment's window rather than their own (SGAA s 18C(2) item 2 and s 18C(3); final determination F2026L00784). The earlier review called this “LI 2026/20”, but that shorthand is not shown on the Federal Register's as-made page; this project uses the controlling registered identifier and text instead. The final determination covers six kinds of qualifying earnings: allowances, bonuses, commissions, loadings, payments in advance and back payments. The employer must have an established timing, pattern or schedule for qualifying-earnings payments, and the payment must fall outside it. It also requires the employer to actually make a subsequent non-out-of-cycle qualifying-earnings payment on the next day consistent with that schedule. A planned next payday, or a termination/final payment with no later payment, does not establish item 2. `out_of_cycle=yes` without the date of that actual subsequent payment is a hard error. Where both this rule and the new-fund rule apply, the later deadline governs.
 
 **When it is late,** notional earnings compound daily at the general interest charge rate from the day after the deadline until the fund receives the money (s 19A), and an administrative uplift of up to 60% applies on top. A late contribution that reaches the fund before the ATO assesses the charge clears the shortfall itself (s 18D), which is why a paid-but-late line shows a small experimental estimate rather than the whole contribution. Pass `--assessment-date` if an assessment has already issued, and the shortfall stays in the figure.
 

@@ -123,9 +123,11 @@ class Result:
     uplift: dict[str, dict[str, Decimal]] | None = None
     notes: list[str] = field(default_factory=list)
     caveats: list[str] = field(default_factory=list)
-    # Set only where a date landed AFTER a deadline that runs past the
-    # calendar's coverage, so the verdict genuinely cannot be pinned down.
-    # Holds the two verdicts the row is between, worst case first.
+    # Set where a material deadline fact cannot be pinned down: either the
+    # holiday calendar ends before the deadline or an unevidenced earlier
+    # contribution could trigger item 4. Holds the two candidate verdicts,
+    # attention-driving outcome first. The historical attribute name is
+    # retained for report-CSV and API compatibility.
     horizon_verdicts: tuple[str, str] | None = None
 
     @property
@@ -169,64 +171,6 @@ def _flag_duplicates(lines: list[ContribLine]) -> None:
             )
             for line in group:
                 line.duplicate_note = note
-
-
-def _donor_index(
-    pairs: list[tuple[ContribLine, Deadline]]
-) -> dict[tuple[str, date], list[ContribLine]]:
-    index: dict[tuple[str, date], list[ContribLine]] = {}
-    for line, dl in pairs:
-        if dl.due is not None:
-            index.setdefault((line.employee_id, dl.due), []).append(line)
-    return index
-
-
-def _item4_seeded_by_unrecorded(
-    line: ContribLine,
-    dl: Deadline,
-    index: dict[tuple[str, date], list[ContribLine]],
-    as_at: date,
-) -> str | None:
-    """Item 4 needs an EARLIER ELIGIBLE CONTRIBUTION. The tool cannot see
-    whether one was made, so where every earlier line it could have inherited
-    from records no payment on or before the as-at date, name both deadlines
-    rather than quietly presenting the longer one as settled.
-
-    The line's own deadline is the one apply_item4 recorded before it moved
-    `due`. Recomputing it here from qe_day would drop the out-of-cycle
-    pathway and the items 1 + 2 max(), naming a date up to a fortnight
-    earlier than the one the row actually had."""
-    if dl.pathway != ITEM4_ALIGNED or dl.due is None or dl.own_due is None:
-        return None
-    donors = [
-        other
-        for other in index.get((line.employee_id, dl.due), [])
-        if other.qe_day < line.qe_day
-    ]
-
-    def unrecorded(d: ContribLine) -> bool:
-        # A nil payday is not an eligible contribution whatever dates it
-        # carries, so a remittance date on one cannot show the earlier
-        # contribution item 4 needs. Testing the dates alone let a 0.00 donor
-        # suppress this caveat outright. A payment dated after the as-at date
-        # cannot settle it either: this is an as-at report, and future facts
-        # must not settle a historical verdict.
-        return d.sg_amount <= 0 or (
-            (d.received is None or d.received > as_at)
-            and (d.remitted is None or d.remitted > as_at)
-        )
-
-    if donors and all(unrecorded(d) for d in donors):
-        earlier = ", ".join(sorted({d.qe_day.isoformat() for d in donors}))
-        own = dl.own_due
-        return (
-            f"this deadline is inherited from the QE day {earlier}, for which no "
-            f"payment on or before the as-at date {as_at.isoformat()} is recorded. "
-            "s 18C(2) item 4 needs an earlier eligible contribution, so if none was "
-            f"made the deadline for this line is {own.isoformat()} and any shortfall "
-            "is larger than shown"
-        )
-    return None
 
 
 def assess(
@@ -303,11 +247,9 @@ def assess(
     transition_row_ids = {id(line) for line in transition_rows}
 
     pairs = [(line, compute_due(line, cal)) for line in lines]
-    apply_item4(pairs)
+    apply_item4(pairs, as_at)
     annotate_missing_flag(pairs)
     annotate_calendar_risk(pairs, cal)
-
-    donors = _donor_index(pairs)
 
     results: list[Result] = []
     for line, dl in pairs:
@@ -320,10 +262,6 @@ def assess(
             )
         if line.duplicate_note:
             result.caveats.append(line.duplicate_note)
-        inherited = _item4_seeded_by_unrecorded(line, dl, donors, as_at)
-        if inherited:
-            result.caveats.append(inherited)
-
         if dl.pathway == SKIP_DB or dl.due is None:
             result.verdict = SKIPPED
             results.append(result)
@@ -408,6 +346,20 @@ def assess(
             "is left blank and the notional earnings and SG charge figures on this "
             "line are a maximum, not a settled amount"
         )
+        possible_item4_due = dl.possible_item4_due
+        item4_uncertain = (
+            possible_item4_due is not None and possible_item4_due > dl.due
+        )
+        item4_unknown = (
+            "an earlier positive row could extend this deadline to "
+            f"{possible_item4_due.isoformat()} under s 18C(2) item 4, but the "
+            "file does not evidence an eligible contribution received by the fund, "
+            "applied to that earlier QE day and on time. The deadline shown is the "
+            "latest one proved by the supplied facts; reconcile the fund receipt and "
+            "statutory allocation before deciding between the candidate verdicts"
+            if item4_uncertain
+            else ""
+        )
 
         stale_prepayment = False
         if settled is not None:
@@ -441,7 +393,38 @@ def assess(
                         )
                         results.append(result)
                         continue
+                    if (
+                        past_horizon
+                        or (
+                            item4_uncertain
+                            and possible_item4_due is not None
+                            and as_at <= possible_item4_due
+                        )
+                    ):
+                        result.verdict = UNKNOWN
+                        result.horizon_verdicts = (LATE, "NOT_YET_DUE")
+                        if past_horizon:
+                            result.caveats.append(
+                                "the payday is unfunded, but the deadline runs past the "
+                                "calendar's coverage and may not have passed. No exposure "
+                                "is calculated until the missing whole-of-jurisdiction "
+                                "holiday facts are supplied"
+                            )
+                        if item4_uncertain:
+                            result.caveats.append(item4_unknown)
+                        results.append(result)
+                        continue
                     result.verdict = LATE
+            elif (
+                item4_uncertain
+                and possible_item4_due is not None
+                and dl.due < settled <= possible_item4_due
+            ):
+                result.verdict = UNKNOWN
+                result.horizon_verdicts = (LATE, ON_TIME)
+                result.caveats.append(item4_unknown)
+                results.append(result)
+                continue
             elif past_horizon and settled > dl.due:
                 result.verdict = UNKNOWN
                 result.horizon_verdicts = (LATE, ON_TIME)
@@ -451,6 +434,16 @@ def assess(
             else:
                 result.verdict = ON_TIME if settled <= dl.due else LATE
         elif remitted is not None:
+            if (
+                item4_uncertain
+                and possible_item4_due is not None
+                and dl.due < remitted <= possible_item4_due
+            ):
+                result.verdict = UNKNOWN
+                result.horizon_verdicts = (LATE, AT_RISK)
+                result.caveats.append(item4_unknown)
+                results.append(result)
+                continue
             if past_horizon and remitted > dl.due:
                 result.verdict = UNKNOWN
                 result.horizon_verdicts = (LATE, AT_RISK)
@@ -459,14 +452,34 @@ def assess(
                 continue
             result.verdict = AT_RISK if remitted <= dl.due else LATE
         elif dl.due < as_at:
-            # Nothing recorded and the deadline has passed. This is the
-            # largest exposure the tool can see, so it must not be silent -
-            # past the horizon the verdict still stands rather than becoming
-            # UNKNOWN, because a missing holiday moves a deadline by days
-            # while an unrecorded contribution is money owed either way.
-            # Only the claim that the deadline HAS passed is softened: past
-            # the coverage end the real deadline can only be later, and it
-            # may not have arrived at all.
+            # Nothing recorded and the supported deadline has passed. This is
+            # the largest exposure the tool can see, so it must not be silent.
+            # Past the calendar horizon, or while a possible item 4 deadline
+            # has not passed, the tool cannot establish that an unfunded row
+            # is due yet. Those rows remain attention-driving UNKNOWN with no
+            # exposure until the missing deadline facts are reconciled.
+            if (
+                past_horizon
+                or (
+                    item4_uncertain
+                    and possible_item4_due is not None
+                    and as_at <= possible_item4_due
+                )
+            ):
+                result.verdict = UNKNOWN
+                result.horizon_verdicts = (UNPAID, "NOT_YET_DUE")
+                if past_horizon:
+                    result.caveats.append(
+                        "no fund receipt is established for this payday, but the "
+                        f"deadline shown ({dl.due.isoformat()}) runs past the calendar's "
+                        "coverage and may not have passed. The row is left unassessed "
+                        "with no exposure until the missing whole-of-jurisdiction "
+                        "holiday facts are supplied"
+                    )
+                if item4_uncertain:
+                    result.caveats.append(item4_unknown)
+                results.append(result)
+                continue
             result.verdict = UNPAID
             # A date may exist and simply post-date the as-at filter, in which
             # case saying none is recorded contradicts the caveat added above
@@ -625,18 +638,17 @@ def assess(
 
 
 def horizon_indeterminate(results: list[Result]) -> list[Result]:
-    """Rows whose verdict could not be decided because the date landed after a
-    deadline running past the calendar's coverage.
+    """Rows whose verdict could not be decided from the supplied deadline facts.
 
+    This includes calendar-horizon gaps and an unevidenced item 4 extension.
     These drive the same non-zero exit code LATE does. A run that cannot tell
-    whether a 9,000 shortfall exists has not found nothing, and README
-    documents exit 0 as nothing exposed."""
+    whether a 9,000 shortfall exists has not found nothing."""
     return [r for r in results if r.horizon_verdicts is not None]
 
 
 def needs_attention(results: list[Result]) -> bool:
     """True where the run must not exit 0: real exposure, or a line the
-    calendar could not decide."""
+    supplied deadline facts could not decide."""
     return any(r.verdict in EXPOSED for r in results) or bool(
         horizon_indeterminate(results)
     )
@@ -833,8 +845,8 @@ def console_summary(
     if at_risk:
         lines.append(
             f"{len(at_risk)} line(s) remitted by the deadline but with no fund-receipt "
-            "date. Compliance turns on receipt by the fund, not the day you paid, and "
-            "clearing-house transit time is the employer's risk."
+            "date. The statutory timing test turns on receipt by the fund, not the "
+            "day you paid, and clearing-house transit time is the employer's risk."
         )
         # An at-risk line is in neither the exposure listing nor the unflagged
         # count, so without this its caveats never reached the console at all
@@ -863,18 +875,15 @@ def console_summary(
             )
         lines.append("")
 
-    # A row left UNKNOWN because it landed after a deadline the calendar
-    # cannot pin down is not a data-quality note. It is a payday that may be
-    # the whole shortfall, and it used to be summarised as "N other line(s)
-    # carry data-quality notes" with exit 0 behind it, which a scheduled job
-    # reads as nothing found.
+    # A row left UNKNOWN because a material deadline fact is unresolved is
+    # not a data-quality footnote. It may carry the whole shortfall, so it is
+    # listed explicitly and drives a non-zero exit.
     indeterminate = horizon_indeterminate(results)
     if indeterminate:
         lines.append(
-            f"{len(indeterminate)} line(s) cannot be assessed: the date recorded is "
-            "after the deadline shown, and that deadline runs past the calendar's "
-            "coverage, so a holiday the calendar does not hold could still make the "
-            "line on time. Each one is either verdict below and needs a decision."
+            f"{len(indeterminate)} line(s) cannot be assessed from the supplied "
+            "deadline facts. Each one is between the two verdicts below and needs "
+            "reconciliation before it can be treated as clear."
         )
         for r in indeterminate[:10]:
             worse, better = r.horizon_verdicts
@@ -934,17 +943,19 @@ def console_summary(
         "LCR 2026/3 were issued on 5 Aug 2026. LCR 2026/D1 remains a draft "
         "pending the appeal from Department of Education v Commissioner of "
         "Taxation [2026] FCA 898.",
-        "  - The amount column must be super guarantee only. Salary sacrifice and "
-        "additional contributions have a different base and must be filtered out first. "
-        "This tool does not decide whether termination or other payments are qualifying "
-        "earnings; that classification remains an operator decision while LCR 2026/D1 "
-        "is draft.",
+        "  - The amount column must be the operator-determined super guarantee amount "
+        "after applying the employee/payment boundaries in regulations 11 and 12, "
+        "qualifying earnings and other applicable limits. Salary sacrifice and "
+        "additional contributions must be filtered out. This tool does not make those "
+        "classifications; LCR 2026/D1 also remains draft.",
         "  - Deadlines use the national business-day calendar in SGAA s 6(1): "
         "weekends plus holidays applying to the whole of any State, the ACT or the NT.",
         assessment_line,
-        "  - Deadline alignment under s 18C(2) item 4 is tested only against rows in "
-        "this file, so include each employee's earlier paydays back through any "
-        "20-business-day window.",
+        "  - Deadline alignment under s 18C(2) item 4 is applied only where an "
+        "earlier row evidences an eligible contribution received by the fund, "
+        "allocated to that QE day and on time. Include each employee's earlier "
+        "paydays and reconcile the statutory allocation before treating an item 4 "
+        "extension as settled.",
         "  - The low estimate assumes a voluntary disclosure lodged within 30 days of "
         "the payday and a clean 24-month history; the high estimate assumes neither. "
         "Choice loading, the late payment penalty and interest on an unpaid assessment "

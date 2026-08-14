@@ -1,4 +1,4 @@
-# Primary-source release review — 15 August 2026
+# Primary-source implementation review — 15 August 2026
 
 This review supersedes the unresolved-source status in
 `research-notes-2026-08-02.md`. It checks the shipped rules against current
@@ -6,24 +6,35 @@ Commonwealth legislation, final ATO legal-database material and official
 jurisdiction holiday publications. Secondary commentary was not used to settle
 any rule.
 
-## Release position
+## Review position
 
-Deadline calculations are supported through 31 August 2027, subject to the
-input limitations below. Monetary SG-charge output remains an **experimental
-estimate**, not an assessment. Qualifying-earnings classification remains a
-human decision because LCR 2026/D1 is still draft. The checker does not post a
-payroll transaction, pay super, lodge a disclosure or SG statement, accept an
-assessment, or make an accounting decision.
+The bundled holiday table is complete through 31 August 2027, subject to the
+input and statutory-fact limitations below. That is a calendar boundary, not a
+claim that every deadline or compliance result in the period is established.
+Monetary SG-charge output and this checker as a whole remain **experimental**;
+the output is a review aid, not an assessment or compliance determination.
+Qualifying-earnings classification remains a human decision because LCR
+2026/D1 is still draft. The checker does not post a payroll transaction, pay
+super, lodge a disclosure or SG statement, accept an assessment, or make an
+accounting decision. This review does not itself authorise a release.
 
 The fail-closed controls added from this review are:
 
 - a contribution dated no later than 28 July 2026 cannot be assessed until the
   operator confirms the LCR 2026/1 transition allocation;
+- the importer refuses an employee with multiple positive in-scope paydays
+  until the operator confirms the LCR 2026/2 fund-receipt ordering,
+  earliest-shortfall allocation and assessment facts;
+- item 4 extends a later deadline only where an earlier canonical row
+  evidences an eligible contribution received by the fund, applied to that QE
+  day and on time; otherwise a verdict that depends on the extension is
+  attention-driving `UNKNOWN`;
 - `out_of_cycle=yes` is rejected without the subsequent standard QE day that
   the final determination requires;
 - an unconfirmed holiday date is not used to extend a deadline;
-- dates after the official whole-of-jurisdiction calendar horizon can produce
-  `UNKNOWN` rather than a false late/on-time conclusion; and
+- funded, unfunded and stale-prepayment rows after the official whole-of-
+  jurisdiction calendar horizon can produce attention-driving `UNKNOWN` with
+  no exposure rather than a false late/on-time or unpaid conclusion; and
 - every exposure figure is labelled experimental and explains the unresolved
   per-line rounding boundary.
 
@@ -42,14 +53,16 @@ the runtime and current guidance.
 Section 5 has a closed list: allowances, bonuses, commissions, loadings,
 payments in advance and back payments. The employer must have an established
 timing, pattern or schedule and the payment must fall outside it. Most
-importantly, subsection 5(3) requires a later, non-out-of-cycle QE payment on
-the next day consistent with that schedule.
+importantly, subsection 5(3) requires the employer to actually make a later,
+non-out-of-cycle QE payment on the next day consistent with that schedule.
 
-Runtime result: `out_of_cycle=yes` now requires `next_standard_payday` and
-rejects the row if it is missing or is not later than the first payment. A
-termination or final payment is not granted item 2 treatment merely because it
-contains one of the six listed payment kinds: without the required subsequent
-standard payment it must use the ordinary rules. This is tested both with and
+Runtime result: `out_of_cycle=yes` now requires `next_standard_payday` as an
+assertion of the actual subsequent non-out-of-cycle QE payment and rejects the
+row if it is missing or is not later than the first payment. A planned payday
+does not satisfy the field. A termination or final payment is not granted item
+2 treatment merely because it contains one of the six listed payment kinds:
+without the required subsequent payment the operator must set
+`out_of_cycle=no` and apply the ordinary rules. This is tested both with and
 without the separate first-to-fund rule.
 
 ## ATO ruling status and the July transition
@@ -70,9 +83,10 @@ The ATO legal database was read directly on 15 August 2026:
   still draft. The ATO says finalisation is pending the appeal from
   *Department of Education v Commissioner of Taxation* [2026] FCA 898.
 
-The former D2, D3 and D4 pages now point to final LCR 2026/2, LCR 2026/3 and
-LCR 2026/1 respectively. Any statement that all four rulings remain draft is
-out of date.
+The final rulings identify their previous drafts as LCR 2026/D2, LCR 2026/D3
+and LCR 2026/D4 respectively. Any statement that all four rulings remain draft
+is out of date; only LCR 2026/D1 remains draft in this series as at the review
+date.
 
 LCR 2026/1 paragraphs 15–21 allow a pre-1 July contribution to carry into the
 new regime only to the extent it is unused excess after the old regime. Its
@@ -88,6 +102,32 @@ outside the overlap. The operator must first reconcile each affected
 employee, then pass `--confirm-transition-allocation`. The confirmation and
 its basis are written into each affected report row. A known receipt after 28
 July needs no confirmation.
+
+LCR 2026/2 paragraphs 31–33 state that an on-time or late eligible
+contribution is applied automatically under the law, first to the earliest QE
+day with a base or final shortfall (assuming no assessment), with contributions
+ordered by receipt at the fund. A vendor pay-period end is not an allocation
+instruction. The importer has employer payment dates, not fund-receipt order,
+and does not know whether an assessment altered the available shortfalls.
+
+Runtime result: a shared payment is allocated oldest outstanding covered QE
+day first; the former period-end priority was removed. Where an employee has
+multiple positive in-scope paydays, the importer writes no canonical file
+until the operator reconciles all relevant paydays, fund receipts and
+assessments and passes `--confirm-statutory-allocation`. That flag asserts that
+the export periods plus payment-date/row order reproduce the statutory
+allocation. The confirmation is printed in the import record. Without that
+reconciliation, the operator must prepare the canonical row association from
+fund records rather than rely on the importer.
+
+SGAA s 18C(2) item 4 also requires the earlier eligible contribution to have
+been made and applied under s 18C(1). A positive SG amount or an employer
+remittance is not proof. The deadline engine now extends item 4 only from an
+on-time fund receipt associated with the earlier canonical row. Where an
+earlier row could qualify but does not prove those facts, the later row keeps
+the evidenced deadline and, only if the alternative deadline changes the
+outcome, reports both candidate verdicts as attention-driving `UNKNOWN` with no
+exposure.
 
 LCR 2026/D1 discusses termination payments, including payment in lieu of
 notice and unused annual leave, but those views remain draft. The checker does
@@ -121,10 +161,17 @@ from 1 July 2026](https://www.legislation.gov.au/F2018L01289/2026-07-01/2026-07-
   through 60 days, 30 points through 120 days and 15 points after 120 days,
   provided disclosure precedes assessment.
 
-The `sgc.py` matrix matches regulations 13A–13D. The report still presents a
-range because the CSV does not establish disclosure and prior-history facts;
-an assessment date can be supplied separately, but the ATO determines the
-assessment and applicable reductions.
+The runtime does not apply regulations 11 or 12 to raw payroll data. The
+operator-provided `sg_amount` must already reflect those employee and payment
+boundaries, qualifying earnings and other applicable limits; the checker does
+not represent their omission as resolved.
+
+The `sgc.py` matrix matches regulations 13A–13D. Regulation 13C(3) shortens the
+historical period tested during the transition; it does not prove that most or
+any particular employer meets the clean-history conditions. The report still
+presents a range because the CSV does not establish disclosure and prior-
+history facts; an assessment date can be supplied separately, but the ATO
+determines the assessment and applicable reductions.
 
 ## Maximum contribution base
 
@@ -148,7 +195,7 @@ LCR 2026/3 calculates the individual SG amount from total qualifying earnings
 for an employee on a QE day multiplied by 12%. It does not establish a
 per-line cents-rounding rule for this checker's intermediate values. Footnote
 86 confirms that TAA 1953 s 16B ([Taxation Administration Act
-1953](https://www.legislation.gov.au/C1953A00001/latest/text)) reduces the
+1953](https://www.legislation.gov.au/C1953A00001/2026-07-01/2026-07-01/text/original/epub/OEBPS/document_1/document_1.html)) reduces the
 Commissioner's final assessed SG charge to the nearest multiple of five cents.
 That is an assessment-level rule, not authority to round every employee,
 payday, shortfall, interest or uplift component first.
@@ -212,6 +259,13 @@ These are deliberate, visible limits rather than unverified claims:
 
 - LCR 2026/D1 remains draft, so raw-pay classification, including termination
   treatment, remains outside the checker and human-approved.
+- Regulations 11 and 12 are not applied to raw exports; `sg_amount` is an
+  operator-determined input after those boundaries.
+- Canonical contribution-to-QE allocation is an operator assertion. The
+  importer requires explicit LCR 2026/2 reconciliation when one employee has
+  multiple positive in-scope paydays.
+- Item 4 needs evidenced receipt, allocation and on-time status; unresolved
+  alternatives remain attention-driving rather than treated as extensions.
 - The maximum contribution base is warning-only because cumulative employee
   earnings are absent.
 - Choice loading, late-payment penalty, post-assessment GIC, fund deeds,
