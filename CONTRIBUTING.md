@@ -34,3 +34,14 @@ Name the rule you changed and the test that pins it. A behaviour change needs a 
 When you change a rule, search for everything else that states or enforces it. An enumeration in the report, a README table and a docstring can all keep asserting the old rule long after you have changed the code.
 
 For a potential security vulnerability, follow [SECURITY.md](SECURITY.md) rather than opening an issue.
+
+## Experimental prereleases
+
+Do not create or move a release tag from a pull-request branch. The owned-repo
+procedure in [docs/releases/PROCESS.md](docs/releases/PROCESS.md) requires the
+exact tag, current `main` commit, package versions and reviewed release notes to
+agree. It also requires an administrator to enable and re-check GitHub release
+immutability before tagging. The manual workflow publishes a non-latest GitHub
+prerelease with reproducible artefacts, checksums, an SPDX runtime SBOM and
+GitHub attestations; it does not publish to PyPI. A release remains an
+experimental review aid, not a compliance determination.
