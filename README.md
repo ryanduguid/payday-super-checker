@@ -127,7 +127,7 @@ Required: `employee_id`, `payment_date`, `sg_amount`. Everything else is optiona
 | `next_standard_qe_day` | `next_standard_payday` | The next schedule-consistent day on which the employer actually made a subsequent non-out-of-cycle QE payment. A planned payday or a date after employment ended is not enough |
 | `db_interest` | `defined_benefit` | Yes for defined-benefit interests, which are skipped |
 
-Dates read as `YYYY-MM-DD`, day-first `DD/MM/YYYY`, or `9 Jul 2026`, and a time component is ignored. Amounts accept `$` and thousands separators. Anything unreadable stops the run and names up to twenty bad cells at once, and so does a truncated row, a duplicated column heading, or a mapping that points at a column your file does not have. This experimental review tool refuses facts it cannot safely infer.
+Dates read as `YYYY-MM-DD`, day-first `DD/MM/YYYY`, or `9 Jul 2026`, and a zone-less time component is ignored. A date-time carrying a `Z` or UTC-offset marker is refused: its as-written day belongs to that zone, and a UTC evening stamp is already the next day in Australia, so keeping the written day could pass a receipt that was actually a day later. Convert it to the Australian local calendar date first. Amounts accept `$` and thousands separators. Anything unreadable stops the run and names up to twenty bad cells at once, and so does a truncated row, a duplicated column heading, or a mapping that points at a column your file does not have. This experimental review tool refuses facts it cannot safely infer.
 
 **The amount column must hold the operator-determined SG amount only.** Apply
 the employee and payment boundaries in regulations 11 and 12, the

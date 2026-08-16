@@ -179,7 +179,12 @@ def _date(value: str, field: str, row: int, formats: tuple[str, ...]) -> date | 
         # accepts. A vendor that writes one column ISO and another
         # day-first still reads, instead of failing on a date a human can
         # see is a date.
-        parsed = parse_date_text(text)
+        try:
+            parsed = parse_date_text(text)
+        except CsvError as exc:
+            # The offset refusal carries no row context of its own; name
+            # the cell the way every other message here does.
+            raise CsvError(f"row {row}: {field} {exc}")
     if parsed is None:
         raise CsvError(f"row {row}: cannot read {field} value {value!r} as a date")
     if parsed.year > LATEST_SANE_YEAR:
