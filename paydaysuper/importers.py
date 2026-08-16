@@ -5,7 +5,12 @@ No vendor export carries a fund receipt date. Xero gives the date a payment
 was sent to the fund, MYOB gives a Paid Date, Employment Hero gives a Beam
 status. The deadline in s 18C tests receipt, and clearing-house transit is
 the employer's risk, so every vendor date lands in `remitted` and the receipt
-column is left empty.
+column is left empty. Where a profile classifies a status column
+(`Profile.remitted_status`), a vendor date only lands in `remitted` when the
+row's status shows the payment actually left the employer: a Beam batch
+still at Created, Submission accepted or Awaiting payment carries a Payment
+Date for money that was never sent, and writing that date as a remittance
+would read a wholly unfunded payday as remitted by the deadline.
 
 Duplicate headers: `profiles._index` normalises headings and silently keeps
 the first of two that collide, because column *matching* only needs one
@@ -78,6 +83,13 @@ class SuperRow:
     paid_date: date | None
     amount: Decimal
     row: int
+    # The vendor status that showed this payment never left the employer
+    # (whitespace-collapsed, as written otherwise), set only where a
+    # profile's `remitted_status` classified the row as not sent. Such a
+    # row always carries `paid_date=None`, whatever its date cell said:
+    # the date belongs to a payment that was not made. None everywhere
+    # else, including for rows whose status shows the payment WAS sent.
+    unpaid_status: str | None = None
 
 
 def _check_duplicate_headers(headers: list[str], path: str | Path) -> None:
@@ -294,22 +306,55 @@ def read_super(
             "additional contributions cannot be told apart from super guarantee. "
             "Re-run the report with that column included, or map the file by hand."
         )
+    status_rule = profile.remitted_status
+    if status_rule is not None and status_rule.column not in resolved:
+        raise CsvError(
+            f"{path} has no payment status column, so a batch whose money never "
+            "left the employer cannot be told apart from one that was paid, and "
+            "every payment date in the file would be read as a remittance. "
+            "Re-run the report with that column included, or map the file by hand."
+        )
     wanted = {normalise_header(v) for v in (profile.sg_filter.include if profile.sg_filter else ())}
+    sent_statuses = {normalise_header(v) for v in (status_rule.sent if status_rule else ())}
+    not_sent_statuses = {normalise_header(v) for v in (status_rule.not_sent if status_rule else ())}
     rows: list[SuperRow] = []
     for i, raw in enumerate(raw_rows, start=2):
         if profile.sg_filter is not None:
             kind = normalise_header(_cell(raw, resolved, profile.sg_filter.column))
             if kind not in wanted:
                 continue
+        paid_date = _date(_cell(raw, resolved, "paid_date"), "paid date", i, profile.date_formats)
+        unpaid_status = None
+        if status_rule is not None:
+            status_text = _cell(raw, resolved, status_rule.column)
+            status_key = normalise_header(status_text)
+            if status_key in not_sent_statuses:
+                # The date cell belongs to a payment the status says was
+                # never made. Written through as a remittance, it would read
+                # a wholly unfunded payday as remitted by the deadline --
+                # the same rule `join` applies to an undated row: no
+                # evidence the money went is a blank date, not a date.
+                unpaid_status = " ".join(status_text.split())
+                paid_date = None
+            elif status_key not in sent_statuses:
+                raise CsvError(
+                    f"row {i}: status {status_text!r} is not one this tool knows "
+                    f"for profile {profile.key} (payment left the employer: "
+                    f"{list(status_rule.sent)}; money not yet sent: "
+                    f"{list(status_rule.not_sent)}), so there is no way to tell "
+                    "whether this payment was made. Correct the status column, "
+                    "or map the file by hand."
+                )
         rows.append(
             SuperRow(
                 employee_id=_cell(raw, resolved, "employee_id") or None,
                 employee_name=_cell(raw, resolved, "employee_name") or None,
                 period_start=_date(_cell(raw, resolved, "period_start"), "period start", i, profile.date_formats),
                 period_end=_date(_cell(raw, resolved, "period_end"), "period end", i, profile.date_formats),
-                paid_date=_date(_cell(raw, resolved, "paid_date"), "paid date", i, profile.date_formats),
+                paid_date=paid_date,
                 amount=_amount(_cell(raw, resolved, "amount"), "amount", i),
                 row=i,
+                unpaid_status=unpaid_status,
             )
         )
     if not rows:
@@ -1221,6 +1266,17 @@ def import_files(
     warnings.extend(f"row {o.payroll.row}: {o.flag}" for o in result.outcomes if o.flag)
     warnings.extend(
         f"super row {r.super_row.row}: {r.message}" for r in result.orphan_reasons
+    )
+    # Why an affected payday reads "no payment date": the row HAS a date in
+    # the export, and the status is the reason it was not used. Without this
+    # line, someone opens the super file, sees the date, and reads the
+    # blank remitted_date as this tool's mistake instead of Beam's ladder.
+    warnings.extend(
+        f"super row {s.row}: status {s.unpaid_status!r} means the money never "
+        "left the employer, so its payment date is not evidence of remittance "
+        "and was not used"
+        for s in super_rows
+        if s.unpaid_status is not None
     )
 
     return ImportReport(

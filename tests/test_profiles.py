@@ -271,3 +271,59 @@ def test_resolve_columns_returns_the_actual_heading():
     assert resolved["paid_date"] == "Paid Date"
     assert resolved["contribution_type"] == "Superannuation Category"
     assert "employee_id" not in resolved  # MYOB export has no Card ID column
+
+
+def test_shipped_beam_status_ladder_is_fully_classified():
+    # Every status Beam runs (see the profile's notes) must land in exactly
+    # one of the two lists: a status in neither is refused at read time, and
+    # a missing rung here would refuse real exports.
+    profile = next(p for p in load_profiles("super") if p.key == "employment-hero-super")
+    ladder = profile.remitted_status
+    assert ladder is not None
+    assert ladder.column == "status"
+    assert set(ladder.sent) == {"Awaiting clearance", "Sent to fund", "Reconciled"}
+    assert set(ladder.not_sent) == {"Created", "Submission accepted", "Awaiting payment"}
+
+
+def test_only_the_employment_hero_super_profile_classifies_a_status():
+    # The other vendors export a bare date with no status column; a profile
+    # growing one must classify it deliberately, not inherit this gate.
+    for p in load_profiles():
+        if p.key != "employment-hero-super":
+            assert p.remitted_status is None, p.key
+
+
+def test_remitted_status_list_as_a_string_raises_csv_error(tmp_path, monkeypatch):
+    # Same failure mode as sg_filter.include: a string is iterable, so
+    # "sent": "Reconciled" would silently build single-letter statuses.
+    monkeypatch.setattr(profiles, "PROFILE_DIR", tmp_path)
+    _write_profile(
+        tmp_path,
+        {
+            "remitted_status": {
+                "column": "contribution_type",
+                "sent": "Reconciled",
+                "not_sent": ["Created"],
+            }
+        },
+    )
+    with pytest.raises(CsvError):
+        profiles.load_profiles()
+
+
+def test_remitted_status_with_a_status_in_both_lists_raises_csv_error(tmp_path, monkeypatch):
+    # One status cannot mean both "the money left" and "it did not", and the
+    # comparison folds case, so "Created" and "created" collide too.
+    monkeypatch.setattr(profiles, "PROFILE_DIR", tmp_path)
+    _write_profile(
+        tmp_path,
+        {
+            "remitted_status": {
+                "column": "contribution_type",
+                "sent": ["Created"],
+                "not_sent": ["created"],
+            }
+        },
+    )
+    with pytest.raises(CsvError, match="both"):
+        profiles.load_profiles()

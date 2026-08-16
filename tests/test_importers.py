@@ -3124,3 +3124,122 @@ def test_import_calls_a_failed_write_a_write_even_with_a_relative_output(tmp_pat
     err = capsys.readouterr().err
     assert "cannot write" in err
     assert "cannot read" not in err
+
+
+# ---------------------------------------------------------------------------
+# Beam status gate: a batch whose status shows the money never left the
+# employer must not have its Payment Date written as a remittance date.
+# ---------------------------------------------------------------------------
+
+EH_PAYROLL = (
+    "Employee,Date Paid,Pay Period Ending,Super Guarantee\n"
+    "Test Employee One,09/07/2026,09/07/2026,612.00\n"
+)
+
+EH_SUPER = (
+    "Employee,Contribution Type,Period Start,Period End,Payment Date,Amount,Status\n"
+    "Test Employee One,Super Guarantee,01/07/2026,09/07/2026,{paid},612.00,{status}\n"
+)
+
+
+def _eh_files(tmp_path, status, paid="14/07/2026"):
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(EH_PAYROLL, encoding="utf-8")
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(EH_SUPER.format(paid=paid, status=status), encoding="utf-8")
+    return payroll_path, super_path
+
+
+def test_a_created_batch_is_not_written_as_a_remitted_payday(tmp_path):
+    # CRITICAL regression. The employment-hero-super profile mapped the Beam
+    # Status column, read_super resolved it, and then nothing ever looked at
+    # it: a batch at Status=Created -- money never sent -- had its Payment
+    # Date written straight into remitted_date, the import exited 0, and the
+    # checker read a wholly unfunded payday as AT_RISK "remitted by the
+    # deadline" instead of unpaid.
+    payroll_path, super_path = _eh_files(tmp_path, "Created")
+    out = tmp_path / "contributions.csv"
+    report = import_files(payroll_path, super_path, out, vendor="employment-hero")
+
+    rows = _canonical_rows(out)
+    assert rows[0]["sg_amount"] == "612.00"
+    assert rows[0]["remitted_date"] == "", "a Created batch was never paid"
+    assert report.outcome_counts.get(OUTCOME_UNDATED) == 1
+    assert report.clean is False
+    # The caveat names the status: the export DOES carry a date, and the
+    # status is the reason it was not used.
+    assert any(
+        "super row 2" in w and "'Created'" in w and "never left the employer" in w
+        for w in report.warnings
+    ), report.warnings
+
+
+def test_a_created_batch_exits_nonzero_through_the_real_cli(tmp_path, capsys):
+    payroll_path, super_path = _eh_files(tmp_path, "Created")
+    out = tmp_path / "contributions.csv"
+    code = cli_main(
+        ["import", "--payroll", str(payroll_path), "--super", str(super_path),
+         "-o", str(out), "--vendor", "employment-hero"]
+    )
+    printed = capsys.readouterr().out
+    assert code == EXIT_LATE_FOUND, "an unfunded payday must not exit 0"
+    assert "'Created'" in printed
+    assert _canonical_rows(out)[0]["remitted_date"] == ""
+
+
+@pytest.mark.parametrize("status", ["Created", "Submission accepted", "Awaiting payment"])
+def test_every_not_yet_paid_beam_status_blanks_the_paid_date(tmp_path, status):
+    _, super_path = _eh_files(tmp_path, status)
+    rows, _, _ = read_super(super_path, vendor="employment-hero")
+    assert rows[0].paid_date is None
+    assert rows[0].unpaid_status == status
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "Awaiting clearance",
+        "Sent to fund",
+        "Reconciled",
+        # Status comparison folds like every other heading-shaped value.
+        "RECONCILED",
+    ],
+)
+def test_every_sent_beam_status_keeps_the_paid_date(tmp_path, status):
+    payroll_path, super_path = _eh_files(tmp_path, status)
+    rows, _, _ = read_super(super_path, vendor="employment-hero")
+    assert rows[0].paid_date == date(2026, 7, 14)
+    assert rows[0].unpaid_status is None
+
+    out = tmp_path / "contributions.csv"
+    report = import_files(payroll_path, super_path, out, vendor="employment-hero")
+    assert _canonical_rows(out)[0]["remitted_date"] == "2026-07-14"
+    assert report.clean is True
+
+
+@pytest.mark.parametrize("status", ["Processing", ""])
+def test_a_status_outside_the_beam_ladder_is_refused_not_guessed(tmp_path, status):
+    # A status the profile does not classify could mean either thing, and
+    # guessing "paid" writes a remittance date for money that may never have
+    # left, while guessing "unpaid" invents a shortfall. Refused instead,
+    # naming the row.
+    _, super_path = _eh_files(tmp_path, status)
+    with pytest.raises(CsvError) as exc:
+        read_super(super_path, vendor="employment-hero")
+    message = str(exc.value)
+    assert "row 2" in message
+    assert "status" in message
+
+
+def test_eh_super_without_a_status_column_is_refused(tmp_path):
+    # Forced with --vendor, detection's signature check never runs, so a
+    # Status-less file would otherwise read every Payment Date as a
+    # remittance again -- the exact defect the status gate exists to stop.
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee,Contribution Type,Period Start,Period End,Payment Date,Amount\n"
+        "Test Employee One,Super Guarantee,01/07/2026,09/07/2026,14/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CsvError, match="payment status column"):
+        read_super(super_path, vendor="employment-hero")
