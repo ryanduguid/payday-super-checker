@@ -439,11 +439,24 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ERROR
 
     _reconfigure_stdout_for_unicode()
-    print(
-        console_summary(
+    try:
+        summary = console_summary(
             results, as_at, Path(args.output), LAW_CONTENT_DATE, rates, assessment_date
         )
-    )
+    except (ValueError, ArithmeticError) as exc:
+        # Same backstop as write_csv's, and needed for the same reason:
+        # the summary quantises TOTALS across the exposed rows, so figures
+        # that each rounded to cents inside write_csv can still sum past
+        # the default decimal context here. The report itself is complete
+        # on disk by this point, so name that in the message rather than
+        # leaving the operator to guess whether the file can be trusted.
+        print(
+            f"error: {exc}. The report was still written to {args.output}; "
+            "only this console summary failed.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    print(summary)
 
     return EXIT_LATE_FOUND if needs_attention(results) else EXIT_OK
 

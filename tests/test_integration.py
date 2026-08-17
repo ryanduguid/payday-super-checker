@@ -2208,6 +2208,51 @@ def test_check_reports_error_when_figures_outgrow_the_decimal_context(
     assert not out.exists()
 
 
+def test_check_reports_error_when_totals_outgrow_the_decimal_context(
+    tmp_path, capsys, monkeypatch
+):
+    # The multi-row variant of the test above, pinning the summary stage.
+    # Twenty rows at sg_amount 99999999999999 each grow figures that STILL
+    # quantise to cents inside write_csv (the per-row magnitudes stay within
+    # the default context's 28 significant digits), so the report is written
+    # in full -- and then console_summary sums them and money() quantises a
+    # TOTAL that no longer fits. Without the summary block's own backstop,
+    # that raised a raw decimal.InvalidOperation after the CSV was already
+    # on disk: the crash moved one stage later instead of being caught.
+    import shutil
+
+    from paydaysuper import rates as rates_module
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "gic_rates.json").write_text(
+        json.dumps(
+            {"quarters": [{"from": "2026-07-01", "to": "2026-09-30", "annual_pct": 15}]}
+        ),
+        encoding="utf-8",
+    )
+    shutil.copy(rates_module.DATA_DIR / "rates.json", data_dir / "rates.json")
+    monkeypatch.setattr(rates_module, "DATA_DIR", data_dir)
+
+    src = tmp_path / "contributions.csv"
+    src.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date\n"
+        + "".join(f"EMP{n:03d},2026-08-03,99999999999999,,\n" for n in range(1, 21)),
+        encoding="utf-8",
+    )
+    out = tmp_path / "report.csv"
+    code = main([str(src), "-o", str(out), "--as-at", "2200-12-31"])
+
+    assert code == EXIT_ERROR
+    captured = capsys.readouterr()
+    assert captured.err.startswith("error:")
+    assert "Traceback" not in captured.err
+    # Unlike the single-row case, the report survives: write_csv finished
+    # before the summary failed, and the message says so.
+    assert out.exists()
+    assert str(out) in captured.err
+
+
 def test_check_catches_arithmetic_error_from_assessment(tmp_path, capsys, monkeypatch):
     # The same backstop, for the assessment block: mirrors test_importers.
     # test_import_catches_arithmetic_error_from_import_files by forcing the
