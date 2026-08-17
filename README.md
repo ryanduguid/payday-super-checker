@@ -2,7 +2,7 @@
 
 [![tests](https://github.com/ryanduguid/payday-super-checker/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/payday-super-checker/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
-**Experimental review aid — not a compliance determination.** Check Australian
+**Experimental review aid. Not a compliance determination.** Check Australian
 super contributions against the payday-super deadlines and produce an
 experimental SG-charge estimate for lines that the supplied facts establish as
 late.
@@ -61,7 +61,7 @@ identifiers in process logs. Use that row number to find the full record in
 
 Full detail goes to `report.csv`: due date, which deadline rule applied, days late, the final shortfall after any offset, notional earnings, best and worst case uplift, and every warning that applies to that line.
 
-The sample contains contributions from the 1–28 July 2026 transition period,
+The sample contains contributions from the 1 to 28 July 2026 transition period,
 so its command includes `--confirm-transition-allocation`. Do not copy that
 flag mechanically. LCR 2026/1 applies those contributions first to any
 employee shortfall for the quarter ended 30 June 2026. Use the flag only after
@@ -109,7 +109,7 @@ The exit code is 0 when nothing is exposed and nothing is left undecided, 2 when
 | `--map FIELD=COLUMN` | Point one field at your column name; repeatable |
 | `--mapping-file FILE` | Same thing as JSON, see `examples/mapping.example.json` |
 | `--holidays-override FILE` | Add or remove public holidays from the bundled calendar; its optional `verified_until` declares how far you have entered them |
-| `--confirm-transition-allocation` | Confirm you reconciled LCR 2026/1 for every contribution dated no later than 28 July 2026: pre-1 July amounts are unused excess and 1–28 July amounts remain after any June-quarter employee shortfall |
+| `--confirm-transition-allocation` | Confirm you reconciled LCR 2026/1 for every contribution dated no later than 28 July 2026: pre-1 July amounts are unused excess and 1 to 28 July amounts remain after any June-quarter employee shortfall |
 
 ### Input columns
 
@@ -151,7 +151,7 @@ payday-super-check contributions.csv --confirm-transition-allocation
 The first command reads both exports and writes the canonical CSV the second
 command checks. Where an employee has more than one in-scope positive payday,
 it stops without output unless you pass `--confirm-statutory-allocation`. Do not
-copy that flag mechanically. LCR 2026/2 paragraphs 31–33 apply contributions in
+copy that flag mechanically. LCR 2026/2 paragraphs 31 to 33 apply contributions in
 fund-receipt order to the earliest QE day with a base or final shortfall. Vendor
 exports provide employer payment dates and pay-period labels, not that receipt
 order or the assessment facts that can change it. Use the flag only after you
@@ -239,6 +239,6 @@ The suite pins the ATO's own worked examples: a first payday of 9 July 2026 fall
 
 ## Disclaimer
 
-This is an educational tool, not tax, legal or financial advice, and using it creates no professional relationship. The ATO assesses the SG charge; figures here are experimental estimates that exclude components listed above. LCR 2026/1–3 are final, while LCR 2026/D1 remains draft and may change after the pending appeal. Check anything material against current ATO guidance and calculators, and get advice for your circumstances.
+This is an educational tool, not tax, legal or financial advice, and using it creates no professional relationship. The ATO assesses the SG charge; figures here are experimental estimates that exclude components listed above. LCR 2026/1, 2026/2 and 2026/3 are final, while LCR 2026/D1 remains draft and may change after the pending appeal. Check anything material against current ATO guidance and calculators, and get advice for your circumstances.
 
 MIT licensed.
