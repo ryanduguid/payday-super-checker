@@ -77,7 +77,10 @@ def load_mapping(
     explicit: set[str] = set()
     if path is not None:
         with open(path, encoding="utf-8") as f:
-            user = json.load(f)
+            try:
+                user = json.load(f)
+            except json.JSONDecodeError as exc:
+                raise CsvError(f"{path} is not valid JSON: {exc}")
         if not isinstance(user, dict):
             raise CsvError(f"{path} must be a JSON object of field: column pairs")
         # Keys starting with an underscore are comments, not mappings.
