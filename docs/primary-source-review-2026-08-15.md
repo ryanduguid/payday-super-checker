@@ -1,4 +1,4 @@
-# Primary-source implementation review — 15 August 2026
+# Primary-source implementation review, 15 August 2026
 
 This review supersedes the unresolved-source status in
 `research-notes-2026-08-02.md`. It checks the shipped rules against current
@@ -69,16 +69,16 @@ without the separate first-to-fund rule.
 
 The ATO legal database was read directly on 15 August 2026:
 
-- [LCR 2026/1 — application, savings and transitional
+- [LCR 2026/1: application, savings and transitional
   provisions](https://www.ato.gov.au/law/view/document?DocID=COG%2FLCR20261%2FNAT%2FATO%2F00001),
   issued 5 August 2026;
-- [LCR 2026/2 — eligible
+- [LCR 2026/2: eligible
   contributions](https://www.ato.gov.au/law/view/document?DocID=COG%2FLCR20262%2FNAT%2FATO%2F00001),
   issued 5 August 2026;
-- [LCR 2026/3 — calculation and assessment of the SG
+- [LCR 2026/3: calculation and assessment of the SG
   charge](https://www.ato.gov.au/law/view/document?DocID=COG%2FLCR20263%2FNAT%2FATO%2F00001),
   issued 5 August 2026; and
-- [LCR 2026/D1 — qualifying
+- [LCR 2026/D1: qualifying
   earnings](https://www.ato.gov.au/law/view/document?DocID=COD%2FLCR2026D1%2FNAT%2FATO%2F00001),
   still draft. The ATO says finalisation is pending the appeal from
   *Department of Education v Commissioner of Taxation* [2026] FCA 898.
@@ -88,9 +88,9 @@ and LCR 2026/D4 respectively. Any statement that all four rulings remain draft
 is out of date; only LCR 2026/D1 remains draft in this series as at the review
 date.
 
-LCR 2026/1 paragraphs 15–21 allow a pre-1 July contribution to carry into the
+LCR 2026/1 paragraphs 15 to 21 allow a pre-1 July contribution to carry into the
 new regime only to the extent it is unused excess after the old regime. Its
-paragraphs 25–29 require contributions made from 1 to 28 July 2026 to reduce
+paragraphs 25 to 29 require contributions made from 1 to 28 July 2026 to reduce
 any employee shortfall for the quarter ended 30 June 2026 before a remainder
 can be applied to a new-regime QE day. The canonical CSV has no old-quarter
 balance and cannot calculate that allocation.
@@ -103,7 +103,7 @@ employee, then pass `--confirm-transition-allocation`. The confirmation and
 its basis are written into each affected report row. A known receipt after 28
 July needs no confirmation.
 
-LCR 2026/2 paragraphs 31–33 state that an on-time or late eligible
+LCR 2026/2 paragraphs 31 to 33 state that an on-time or late eligible
 contribution is applied automatically under the law, first to the earliest QE
 day with a base or final shortfall (assuming no assessment), with contributions
 ordered by receipt at the fund. A vendor pay-period end is not an allocation
@@ -166,7 +166,7 @@ operator-provided `sg_amount` must already reflect those employee and payment
 boundaries, qualifying earnings and other applicable limits; the checker does
 not represent their omission as resolved.
 
-The `sgc.py` matrix matches regulations 13A–13D. Regulation 13C(3) shortens the
+The `sgc.py` matrix matches regulations 13A to 13D. Regulation 13C(3) shortens the
 historical period tested during the transition; it does not prove that most or
 any particular employer meets the clean-history conditions. The report still
 presents a range because the CSV does not establish disclosure and prior-
@@ -178,7 +178,7 @@ determines the assessment and applicable reductions.
 The ATO's [Maximum contribution
 base](https://www.ato.gov.au/businesses-and-organisations/super-for-employers/paying-super-on-payday/what-payments-are-qualifying-earnings/maximum-contributions-base)
 page, updated 10 August 2026, gives **$270,830 annual per employer for
-2026–27**. It states the formula: the $32,500 concessional contributions cap
+2026-27**. It states the formula: the $32,500 concessional contributions cap
 multiplied by 100/12, rounded down to the nearest $10. This was cross-checked
 against the ATO's [Super guarantee rates and thresholds
 table](https://www.ato.gov.au/tax-rates-and-codes/key-superannuation-rates-and-thresholds/super-guarantee).
