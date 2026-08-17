@@ -2164,3 +2164,67 @@ def test_a_not_yet_due_row_does_not_claim_no_date_when_one_was_supplied():
 
     assert not any("no remittance or fund-receipt date supplied" in w for w in r.warnings)
     assert any("is after the as-at date and is ignored here" in w for w in r.warnings)
+
+
+def test_check_reports_error_when_figures_outgrow_the_decimal_context(
+    tmp_path, capsys, monkeypatch
+):
+    # decimal.InvalidOperation is an ArithmeticError, not a ValueError, so it
+    # was invisible to both of main()'s handlers. This is the verified way to
+    # raise one from accepted input: a hand-edited GIC rate of 15% a year
+    # (well under the 100% ceiling), an sg_amount at the largest magnitude
+    # _parse_amount accepts (adjusted() == 15), and an --as-at inside
+    # LATEST_SANE_YEAR. Notional earnings compound daily on the shortfall for
+    # 174 years, and quantising the result to cents in write_csv then needs
+    # more than the default decimal context's 28 significant digits.
+    import shutil
+
+    from paydaysuper import rates as rates_module
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "gic_rates.json").write_text(
+        json.dumps(
+            {"quarters": [{"from": "2026-07-01", "to": "2026-09-30", "annual_pct": 15}]}
+        ),
+        encoding="utf-8",
+    )
+    shutil.copy(rates_module.DATA_DIR / "rates.json", data_dir / "rates.json")
+    monkeypatch.setattr(rates_module, "DATA_DIR", data_dir)
+
+    src = tmp_path / "contributions.csv"
+    src.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date\n"
+        "EMP001,2026-08-03,9999999999999999,,\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "report.csv"
+    code = main([str(src), "-o", str(out), "--as-at", "2200-12-31"])
+
+    assert code == EXIT_ERROR
+    captured = capsys.readouterr()
+    assert captured.err.startswith("error:")
+    assert "Traceback" not in captured.err
+    assert not out.exists()
+
+
+def test_check_catches_arithmetic_error_from_assessment(tmp_path, capsys, monkeypatch):
+    # The same backstop, for the assessment block: mirrors test_importers.
+    # test_import_catches_arithmetic_error_from_import_files by forcing the
+    # case directly, so the guard holds even if every real route to it is
+    # closed one day.
+    from decimal import InvalidOperation
+
+    import paydaysuper.cli as cli_module
+
+    def _boom(*args, **kwargs):
+        raise InvalidOperation("synthetic failure for the CLI's own guard")
+
+    monkeypatch.setattr(cli_module, "assess", _boom)
+
+    code = main([str(FIXTURE), "-o", str(tmp_path / "out.csv"), "--as-at", "2026-08-10"])
+
+    assert code == EXIT_ERROR
+    captured = capsys.readouterr()
+    assert captured.err.startswith("error:")
+    assert "Traceback" not in captured.err
