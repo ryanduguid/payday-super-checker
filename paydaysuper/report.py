@@ -22,6 +22,7 @@ from .deadlines import (
     annotate_missing_flag,
     apply_item4,
     compute_due,
+    earliest_prepayment_day,
 )
 from .rates import GicTable
 from .sgc import exposure_range, notional_earnings, uplift_scenarios
@@ -90,15 +91,6 @@ def csv_safe(text: str) -> str:
     if stripped[:1] in FORMULA_LEAD:
         return "'" + text
     return text
-
-
-def twelve_months_before(d: date) -> date:
-    """The same calendar date a year earlier, with 29 February falling back
-    to 28 February."""
-    try:
-        return d.replace(year=d.year - 1)
-    except ValueError:
-        return d.replace(year=d.year - 1, month=2, day=28)
 
 
 def financial_year(d: date) -> str:
@@ -366,9 +358,7 @@ def assess(
             if settled < line.qe_day:
                 # Pre-payments count only inside the 12-month window ending
                 # the day before the QE day (s 18C(1)(c)(ii)).
-                earliest = twelve_months_before(
-                    line.qe_day - timedelta(days=1)
-                ) + timedelta(days=1)
+                earliest = earliest_prepayment_day(line.qe_day)
                 if settled >= earliest:
                     result.verdict = ON_TIME
                     result.notes.append(
