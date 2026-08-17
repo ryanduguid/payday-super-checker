@@ -149,7 +149,7 @@ FRACTION_OVERFLOW = re.compile(r"(:\d{2}\.\d{6})\d+")
 FRACTION_PAD = re.compile(r"(:\d{2})\.(\d{1,5})(?!\d)")
 
 # The ISO surface this tool accepts: a hyphenated calendar date, alone or
-# followed by a colon-separated time and an optional numeric offset — the
+# followed by a colon-separated time and an optional numeric offset. This is the
 # grammar Python 3.10, the declared floor, itself parses once Z and the
 # fraction are normalised. fromisoformat on 3.11+ additionally reads compact
 # dates (20260709), week dates (2026-W28-4), bare year-months (2026-07, as
@@ -175,8 +175,8 @@ def parse_date_text(text: str) -> date | None:
     if not text:
         return None
     # datetime.fromisoformat accepts ISO dates and ISO date-times (including a
-    # space or T separator). Normalise first — Z for Python versions before
-    # 3.11, the fraction truncated then zero-padded to microseconds — and
+    # space or T separator). Normalise first (Z for Python versions before
+    # 3.11, the fraction truncated then zero-padded to microseconds) and
     # shape-check the normalised text, so the gate and the parser see the
     # same string and every supported interpreter accepts the same surface.
     iso_text = text.removesuffix("Z") + "+00:00" if text.endswith("Z") else text
