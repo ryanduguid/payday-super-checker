@@ -235,6 +235,17 @@ def _twelve_months_before(d: date) -> date:
         return d.replace(year=d.year - 1, month=2, day=28)
 
 
+def earliest_prepayment_day(qe_day: date) -> date:
+    """First day of the 12-month pre-payment window in s 18C(1)(c)(ii).
+
+    The window ends the day before the QE day, so it opens the day after the
+    same calendar date a year before that. Public because report.assess tests
+    a pre-payment against the same window: one statutory rule, stated once,
+    so the pre-payment verdict and the item 4 evidence test cannot drift
+    apart."""
+    return _twelve_months_before(qe_day - timedelta(days=1)) + timedelta(days=1)
+
+
 def _item4_evidence(
     line: ContribLine,
     confirmed_due: date,
@@ -253,9 +264,7 @@ def _item4_evidence(
         return "impossible"
 
     receipt = line.received
-    earliest_prepayment = _twelve_months_before(
-        line.qe_day - timedelta(days=1)
-    ) + timedelta(days=1)
+    earliest_prepayment = earliest_prepayment_day(line.qe_day)
     if receipt is not None:
         if receipt < earliest_prepayment:
             return "impossible"

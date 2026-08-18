@@ -172,6 +172,22 @@ def test_quarters_must_be_a_list(tmp_path, monkeypatch):
     assert "must be a list" in str(exc.value)
 
 
+def test_a_table_that_is_not_json_is_a_rates_error_naming_the_file(
+    tmp_path, monkeypatch
+):
+    """json.JSONDecodeError is a ValueError, so the CLI already printed
+    "error: ..." for a hand-edit that broke the JSON itself, but the message
+    was a bare parse error with no path in it. Re-raised as RatesError naming
+    the file, the way profiles.load_profiles already does."""
+    (tmp_path / "gic_rates.json").write_text('{"quarters": [,]}', encoding="utf-8")
+    monkeypatch.setattr(rates_module, "DATA_DIR", tmp_path)
+    with pytest.raises(RatesError) as exc:
+        load_gic()
+    message = str(exc.value)
+    assert "is not valid JSON" in message
+    assert "gic_rates.json" in message
+
+
 def test_the_cli_prints_a_top_level_rates_error_without_a_traceback(
     tmp_path, monkeypatch, capsys
 ):
