@@ -210,7 +210,10 @@ def load_calendar(override_path: str | Path | None = None) -> BusinessCalendar:
     a file that has 2029 covered."""
     path = DATA_DIR / "business_days.json"
     with open(path, encoding="utf-8") as f:
-        doc = _checked_document(json.load(f), path)
+        try:
+            doc = _checked_document(json.load(f), path)
+        except json.JSONDecodeError as exc:
+            raise CalendarError(f"{path} is not valid JSON: {exc}")
     holidays: dict[date, Holiday] = {}
     for n, entry in enumerate(doc["non_business_days"], start=1):
         holiday = _parse_entry(entry, f"bundled calendar entry {n}")
@@ -221,7 +224,10 @@ def load_calendar(override_path: str | Path | None = None) -> BusinessCalendar:
     declared_until: date | None = None
     if override_path is not None:
         with open(override_path, encoding="utf-8") as f:
-            override = json.load(f)
+            try:
+                override = json.load(f)
+            except json.JSONDecodeError as exc:
+                raise CalendarError(f"{override_path} is not valid JSON: {exc}")
         if not isinstance(override, dict):
             raise CalendarError(
                 f"{override_path} must be an object with 'add' and 'remove' lists"

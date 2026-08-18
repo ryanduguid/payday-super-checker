@@ -368,6 +368,20 @@ def test_mapping_file_that_is_not_an_object_is_rejected(tmp_path):
         load_mapping(mapping_file)
 
 
+def test_mapping_file_that_is_not_json_is_a_csv_error_naming_the_file(tmp_path):
+    # json.JSONDecodeError is a ValueError, so the CLI already printed
+    # "error: ..." for it, but the message was a bare parse error with no
+    # path in it. Re-raised as the module's own error naming the file, the
+    # way profiles.load_profiles already does.
+    mapping_file = tmp_path / "map.json"
+    mapping_file.write_text("{not json", encoding="utf-8")
+    with pytest.raises(CsvError) as excinfo:
+        load_mapping(mapping_file)
+    message = str(excinfo.value)
+    assert "is not valid JSON" in message
+    assert str(mapping_file) in message
+
+
 def test_absurdly_large_amount_is_rejected(tmp_path):
     path = write_csv(tmp_path, "E1,2026-07-09,10000000000000000,,,no,no,,no")
     with pytest.raises(CsvError, match="too large"):
