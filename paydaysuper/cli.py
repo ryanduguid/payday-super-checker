@@ -92,7 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
 def _parse_cli_date(value: str | None, flag: str) -> date | None:
     if value is None:
         return None
-    parsed = parse_date_text(value)
+    try:
+        parsed = parse_date_text(value)
+    except CsvError as exc:
+        # The offset refusal names no flag of its own; say which one.
+        raise CsvError(f"{flag} {exc}")
     if parsed is None:
         raise CsvError(
             f"{flag} expects a date such as 2026-08-10 or 10/08/2026, got {value!r}"

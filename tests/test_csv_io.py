@@ -159,9 +159,43 @@ def test_date_with_trailing_junk_is_rejected(tmp_path):
         parse_rows(path, *load_mapping(None))
 
 
-def test_iso_datetime_is_accepted_as_its_calendar_day(tmp_path):
-    path = write_csv(tmp_path, "E1,2026-07-09T14:30:00+10:00,600.00,,,no,no,,no")
+def test_zone_less_iso_datetime_is_accepted_as_its_calendar_day(tmp_path):
+    path = write_csv(tmp_path, "E1,2026-07-09T14:30:00,600.00,,,no,no,,no")
     assert parse_rows(path, *load_mapping(None))[0].qe_day == date(2026, 7, 9)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The reviewed regression: a UTC fund-receipt stamp whose as-written
+        # day is 21 July but whose AEST day is 22 July. Silently keeping the
+        # written day read the receipt one day early -- a false ON_TIME, the
+        # failure direction the tool otherwise refuses. Every explicit zone
+        # marker the old gate read through is refused loudly now, including
+        # an offset that happens to be an Australian one: the tool cannot
+        # know the operator's zone, and DST splits the country across two.
+        "2026-07-21T20:00:00Z",
+        "2026-07-09T14:30:00+10:00",
+        "2026-07-09T14:30:00-05:00",
+        "2026-07-09 14:30:00+10:00",
+        "2026-07-09T00:00:00.0000000Z",
+        "2026-07-09T14:30:00.1234567+10:00",
+    ],
+)
+def test_a_datetime_carrying_a_zone_offset_is_refused_not_read_a_day_early(text):
+    with pytest.raises(CsvError, match="UTC or timezone offset"):
+        parse_date_text(text)
+
+
+def test_the_offset_refusal_reaches_the_row_reader_with_a_row_number(tmp_path):
+    path = write_csv(tmp_path, "E1,2026-07-09,600.00,,2026-07-21T20:00:00Z,no,no,,no")
+    with pytest.raises(CsvError) as exc:
+        parse_rows(path, *load_mapping(None))
+    message = str(exc.value)
+    assert "row 2" in message
+    assert "received" in message
+    assert "UTC or timezone offset" in message
+    assert "Australian local" in message
 
 
 @pytest.mark.parametrize(
@@ -171,11 +205,10 @@ def test_iso_datetime_is_accepted_as_its_calendar_day(tmp_path):
         # digits; the last case is a nine-digit nanosecond stamp. Python 3.10,
         # the declared floor, refuses a fraction longer than six digits that
         # 3.11+ truncates itself, so these are the cases that exercise the
-        # parser's own truncation on the floor version.
+        # parser's own truncation on the floor version. Zone-less stamps
+        # only: an offset-carrying stamp is refused outright, see above.
         "2026-07-09T00:00:00.0000000",
         "2026-07-09 00:00:00.0000000",
-        "2026-07-09T00:00:00.0000000Z",
-        "2026-07-09T14:30:00.1234567+10:00",
         "2026-07-09 00:00:00.000000000",
     ],
 )
@@ -217,7 +250,7 @@ def test_iso_shapes_beyond_the_documented_surface_are_refused(text):
         # Python 3.10 fromisoformat accepts only 3- or 6-digit fractions;
         # zero-padding to microseconds makes short fractions parse the same
         # on every supported interpreter.
-        "2026-07-09T14:30:00.5+10:00",
+        "2026-07-09T14:30:00.5",
         "2026-07-09T00:00:00.12345",
         "2026-07-09 23:59:59.1",
     ],
