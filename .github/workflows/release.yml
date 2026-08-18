@@ -30,9 +30,9 @@ jobs:
     name: validate, attest and publish prerelease
     runs-on: ubuntu-latest
     permissions:
-      attestations: write
-      contents: write
-      id-token: write
+      attestations: write # Publish build-provenance and SBOM attestations.
+      contents: write # Create the prerelease and upload its assets.
+      id-token: write # Obtain the OIDC identity used for attestations.
     steps:
       - name: Check out the workflow commit without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
