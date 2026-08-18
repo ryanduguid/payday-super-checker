@@ -799,7 +799,7 @@ def console_summary(
         for r in exposed[:10]:
             figures = _rounded_figures(r)
             # Standard output is commonly retained by task runners and CI logs.
-            # The report CSV is the private, row-level artifact; retain the source
+            # The report CSV is the private, row-level artefact; retain the source
             # row here so an operator can locate the result without leaking an
             # employee identifier into those logs. Days late is left unset where
             # the deadline runs past the calendar's coverage, so never print
