@@ -152,39 +152,67 @@ FRACTION_OVERFLOW = re.compile(r"(:\d{2}\.\d{6})\d+")
 FRACTION_PAD = re.compile(r"(:\d{2})\.(\d{1,5})(?!\d)")
 
 # The ISO surface this tool accepts: a hyphenated calendar date, alone or
-# followed by a colon-separated time and an optional numeric offset. This is the
-# grammar Python 3.10, the declared floor, itself parses once Z and the
-# fraction are normalised. fromisoformat on 3.11+ additionally reads compact
-# dates (20260709), week dates (2026-W28-4), bare year-months (2026-07, as
-# its FIRST day), compact times (T000000), comma decimal seconds and
-# hour-only offsets; the pre-fromisoformat parser accepted none of them and
-# README documents none of them. The shape gate refuses them all on every
-# version: a tool that refuses ambiguous dates must not read 2026-07 as
-# 2026-07-01, and version-dependent acceptance is how the same file gets
-# two different compliance verdicts.
+# followed by a colon-separated ZONE-LESS time. This is the grammar Python
+# 3.10, the declared floor, itself parses once the fraction is normalised.
+# fromisoformat on 3.11+ additionally reads compact dates (20260709), week
+# dates (2026-W28-4), bare year-months (2026-07, as its FIRST day), compact
+# times (T000000), comma decimal seconds and hour-only offsets; the
+# pre-fromisoformat parser accepted none of them and README documents none
+# of them. The shape gate refuses them all on every version: a tool that
+# refuses ambiguous dates must not read 2026-07 as 2026-07-01, and
+# version-dependent acceptance is how the same file gets two different
+# compliance verdicts.
 ISO_SHAPE = re.compile(
     r"\d{4}-\d{2}-\d{2}"
-    r"(?:[T ]\d{2}(?::\d{2}(?::\d{2}(?:\.\d{1,6})?)?)?"
-    r"(?:[+-]\d{2}:\d{2}(?::\d{2})?)?)?$"
+    r"(?:[T ]\d{2}(?::\d{2}(?::\d{2}(?:\.\d{1,6})?)?)?)?$"
+)
+
+# A date-time carrying an explicit zone marker: Z, or the [+-]HH:MM(:SS)
+# offset the old gate read through. Its as-written calendar day belongs to
+# that zone, not necessarily to the Australian day the law tests:
+# 2026-07-21T20:00:00Z is already 22 July 2026 in AEST, so reading the
+# written day moves a fund receipt one day early and can turn a LATE
+# receipt into a false ON_TIME, the one direction this tool refuses to
+# fail in. Refused loudly rather than converted: the tool does not know
+# which Australian zone the operator means, and DST splits the country
+# across two. A zone-less time is different (dropping it cannot move the
+# day), so ISO_SHAPE above still reads it. Hour-only offsets (+10) never
+# parsed here on any version and keep their ordinary refusal.
+ISO_OFFSET_SHAPE = re.compile(
+    r"\d{4}-\d{2}-\d{2}"
+    r"[T ]\d{2}(?::\d{2}(?::\d{2}(?:\.\d{1,6})?)?)?"
+    r"(?:[Zz]|[+-]\d{2}:\d{2}(?::\d{2})?)$"
 )
 
 
 def parse_date_text(text: str) -> date | None:
     """Read a date in any format this tool accepts, or None.
 
-    A time component is dropped. The law tests whole days, so a receipt
-    stamped 14:30 is neither earlier nor later than one stamped midnight."""
+    A zone-less time component is dropped. The law tests whole days, so a
+    receipt stamped 14:30 is neither earlier nor later than one stamped
+    midnight. A date-time carrying a Z or UTC-offset marker is refused with
+    a CsvError instead: its as-written day belongs to that zone, and
+    silently keeping it can move a receipt one day early against the
+    Australian calendar (see ISO_OFFSET_SHAPE)."""
     text = text.strip()
     if not text:
         return None
     # datetime.fromisoformat accepts ISO dates and ISO date-times (including a
-    # space or T separator). Normalise first (Z for Python versions before
-    # 3.11, the fraction truncated then zero-padded to microseconds) and
-    # shape-check the normalised text, so the gate and the parser see the
-    # same string and every supported interpreter accepts the same surface.
-    iso_text = text.removesuffix("Z") + "+00:00" if text.endswith("Z") else text
-    iso_text = FRACTION_OVERFLOW.sub(r"\1", iso_text)
+    # space or T separator). Normalise the fraction first, truncated then
+    # zero-padded to microseconds, and shape-check the normalised text, so
+    # the gate and the parser see the same string and every supported
+    # interpreter accepts the same surface.
+    iso_text = FRACTION_OVERFLOW.sub(r"\1", text)
     iso_text = FRACTION_PAD.sub(lambda m: m.group(1) + "." + m.group(2).ljust(6, "0"), iso_text)
+    if ISO_OFFSET_SHAPE.match(iso_text):
+        raise CsvError(
+            f"value {text!r} carries a UTC or timezone offset marker, and its "
+            "as-written calendar day belongs to that zone, not necessarily to "
+            "the Australian day the law tests -- 2026-07-21T20:00:00Z is "
+            "already 22 July 2026 in AEST, so keeping the written day would "
+            "read a receipt one day early. Convert it to the Australian local "
+            "calendar date and supply that instead"
+        )
     if ISO_SHAPE.match(iso_text):
         try:
             return datetime.fromisoformat(iso_text).date()
@@ -205,7 +233,12 @@ def parse_date_text(text: str) -> date | None:
 
 
 def _parse_date(value: str, field: str, row: int) -> date:
-    parsed = parse_date_text(value)
+    try:
+        parsed = parse_date_text(value)
+    except CsvError as exc:
+        # parse_date_text's offset refusal carries no row context; name the
+        # cell the way every other message here does.
+        raise CsvError(f"row {row}: {field} {exc}")
     if parsed is None:
         raise CsvError(
             f"row {row}: cannot read {field} value {value!r}: use YYYY-MM-DD or "

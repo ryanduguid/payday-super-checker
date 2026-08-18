@@ -72,6 +72,21 @@ class SgFilter:
 
 
 @dataclass(frozen=True)
+class RemittedStatus:
+    """How a vendor status column decides whether a payment left the employer.
+
+    `sent` holds the statuses that evidence the payment was actually made;
+    `not_sent` holds the ones that mean the money never left (a batch merely
+    created, submitted or still awaiting the employer's payment). Both lists
+    together must cover the vendor's whole ladder: a status in neither is
+    refused at read time rather than guessed either way."""
+
+    column: str
+    sent: tuple[str, ...]
+    not_sent: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Profile:
     key: str
     name: str
@@ -81,6 +96,7 @@ class Profile:
     columns: dict[str, tuple[str, ...]]
     date_formats: tuple[str, ...]
     sg_filter: SgFilter | None
+    remitted_status: RemittedStatus | None
     notes: str
 
 
@@ -134,6 +150,45 @@ def _build(raw: dict, path: Path) -> Profile:
             column=str(sg_raw["column"]),
             include=tuple(str(v) for v in include_raw),
         )
+    rs_raw = raw.get("remitted_status")
+    remitted_status = None
+    if rs_raw is not None:
+        if (
+            not isinstance(rs_raw, dict)
+            or "column" not in rs_raw
+            or "sent" not in rs_raw
+            or "not_sent" not in rs_raw
+        ):
+            raise CsvError(
+                f"profile {path.name}: remitted_status needs 'column', 'sent' and "
+                "'not_sent'"
+            )
+        if rs_raw["column"] not in columns:
+            raise CsvError(
+                f"profile {path.name}: remitted_status column {rs_raw['column']!r} "
+                "is not one of the mapped columns"
+            )
+        for list_name in ("sent", "not_sent"):
+            if not isinstance(rs_raw[list_name], list) or not rs_raw[list_name]:
+                raise CsvError(
+                    f"profile {path.name}: remitted_status {list_name!r} must be a "
+                    "non-empty list of values"
+                )
+        sent = tuple(str(v) for v in rs_raw["sent"])
+        not_sent = tuple(str(v) for v in rs_raw["not_sent"])
+        overlap = sorted(
+            {normalise_header(v) for v in sent} & {normalise_header(v) for v in not_sent}
+        )
+        if overlap:
+            # One status cannot mean both "the money left" and "it did not":
+            # whichever branch read it first would silently win.
+            raise CsvError(
+                f"profile {path.name}: remitted_status lists {overlap} as both "
+                "'sent' and 'not_sent'"
+            )
+        remitted_status = RemittedStatus(
+            column=str(rs_raw["column"]), sent=sent, not_sent=not_sent
+        )
     if "date_formats" in raw:
         date_formats_raw = raw["date_formats"]
         if not isinstance(date_formats_raw, list) or not date_formats_raw:
@@ -159,6 +214,7 @@ def _build(raw: dict, path: Path) -> Profile:
         columns=columns,
         date_formats=date_formats,
         sg_filter=sg_filter,
+        remitted_status=remitted_status,
         notes=str(raw.get("notes", "")),
     )
 
