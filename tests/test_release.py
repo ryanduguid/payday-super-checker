@@ -64,6 +64,22 @@ def _tiny_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _write_test_tar(
+    path: Path, members: list[tuple[tarfile.TarInfo, bytes | None]]
+) -> None:
+    with tarfile.open(path, mode="w:gz") as archive:
+        for info, data in members:
+            if data is not None:
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+            else:
+                archive.addfile(info)
+
+
+def _regular_member(name: str, data: bytes = b"safe\n") -> tuple[tarfile.TarInfo, bytes]:
+    return tarfile.TarInfo(name), data
+
+
 def test_release_metadata_is_exactly_v011_and_explicitly_experimental():
     metadata = release.load_metadata(ROOT)
 
@@ -176,6 +192,97 @@ def test_source_archive_refuses_a_tracked_text_blob_with_crlf(tmp_path):
 
     with pytest.raises(release.ReleaseError, match="LF-only"):
         release.write_source_archives(repo, tmp_path / "out", metadata, EPOCH)
+
+
+@pytest.mark.parametrize(
+    "force_manual_fallback", [False, True], ids=["filtered", "python-3.10-fallback"]
+)
+def test_source_extraction_writes_safe_regular_files(
+    tmp_path, monkeypatch, force_manual_fallback
+):
+    prefix = "package-0.1.1"
+    tar_path = tmp_path / "source.tar.gz"
+    tool = tarfile.TarInfo(f"{prefix}/nested/tool.py")
+    tool.mode = 0o755
+    _write_test_tar(
+        tar_path,
+        [
+            _regular_member(f"{prefix}/README.md", b"safe source\n"),
+            (tool, b"#!/usr/bin/env python3\n"),
+        ],
+    )
+
+    if force_manual_fallback:
+
+        def unsupported_filter(*_args, **_kwargs):
+            raise TypeError("filter is unavailable")
+
+        monkeypatch.setattr(tarfile.TarFile, "extractall", unsupported_filter)
+
+    source = release._extract_source(tar_path, tmp_path / "extracted", prefix)
+
+    assert (source / "README.md").read_bytes() == b"safe source\n"
+    extracted_tool = source / "nested" / "tool.py"
+    assert extracted_tool.read_bytes() == b"#!/usr/bin/env python3\n"
+
+
+@pytest.mark.parametrize(
+    "member_name",
+    [
+        "/absolute.txt",
+        "../outside.txt",
+        "package-0.1.1/../../outside.txt",
+        "package-0.1.1\\..\\outside.txt",
+        "package-0.1.1/control\nname.txt",
+    ],
+)
+def test_source_extraction_rejects_unsafe_paths(tmp_path, member_name):
+    tar_path = tmp_path / "source.tar.gz"
+    _write_test_tar(tar_path, [_regular_member(member_name)])
+
+    with pytest.raises(release.ReleaseError, match="unsafe source archive member"):
+        release._extract_source(tar_path, tmp_path / "extracted", "package-0.1.1")
+
+    assert not (tmp_path / "outside.txt").exists()
+
+
+@pytest.mark.parametrize(
+    "member_type",
+    [
+        tarfile.SYMTYPE,
+        tarfile.LNKTYPE,
+        tarfile.FIFOTYPE,
+        tarfile.CHRTYPE,
+        tarfile.BLKTYPE,
+    ],
+    ids=["symlink", "hardlink", "fifo", "character-device", "block-device"],
+)
+def test_source_extraction_rejects_links_and_special_files(tmp_path, member_type):
+    prefix = "package-0.1.1"
+    tar_path = tmp_path / "source.tar.gz"
+    member = tarfile.TarInfo(f"{prefix}/unsafe")
+    member.type = member_type
+    member.linkname = f"{prefix}/target"
+    _write_test_tar(tar_path, [(member, None)])
+
+    with pytest.raises(release.ReleaseError, match="directories or regular files"):
+        release._extract_source(tar_path, tmp_path / "extracted", prefix)
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("package-0.1.1/README.md", "package-0.1.1/README.md"),
+        ("package-0.1.1/README.md", "package-0.1.1/readme.md"),
+    ],
+    ids=["duplicate", "case-collision"],
+)
+def test_source_extraction_rejects_duplicate_and_case_colliding_paths(tmp_path, names):
+    tar_path = tmp_path / "source.tar.gz"
+    _write_test_tar(tar_path, [_regular_member(name) for name in names])
+
+    with pytest.raises(release.ReleaseError, match="duplicate or case-colliding"):
+        release._extract_source(tar_path, tmp_path / "extracted", "package-0.1.1")
 
 
 def test_spdx_sbom_is_deterministic_runtime_scope_and_binds_the_commit(tmp_path):

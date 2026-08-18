@@ -22,6 +22,7 @@ from .deadlines import (
     annotate_missing_flag,
     apply_item4,
     compute_due,
+    earliest_prepayment_day,
 )
 from .rates import GicTable
 from .sgc import exposure_range, notional_earnings, uplift_scenarios
@@ -90,15 +91,6 @@ def csv_safe(text: str) -> str:
     if stripped[:1] in FORMULA_LEAD:
         return "'" + text
     return text
-
-
-def twelve_months_before(d: date) -> date:
-    """The same calendar date a year earlier, with 29 February falling back
-    to 28 February."""
-    try:
-        return d.replace(year=d.year - 1)
-    except ValueError:
-        return d.replace(year=d.year - 1, month=2, day=28)
 
 
 def financial_year(d: date) -> str:
@@ -171,6 +163,392 @@ def _flag_duplicates(lines: list[ContribLine]) -> None:
             )
             for line in group:
                 line.duplicate_note = note
+
+
+def _assess_line(
+    line: ContribLine,
+    dl: Deadline,
+    cal: BusinessCalendar,
+    gic: GicTable,
+    as_at: date,
+    assessment_date: date | None,
+    transition_row_ids: set[int],
+) -> Result:
+    """Verdict, caveats and exposure figures for one contribution line.
+
+    Runs after compute_due, apply_item4 and the annotate_* passes have
+    settled the line's deadline, so everything here reads `dl` as final.
+    The file-level checks (date problems, duplicate flagging, pre-regime
+    rows, the transition gate) stay in assess: they are about the whole
+    file, not any one line."""
+    result = Result(line, dl, UNKNOWN, notes=list(dl.notes), caveats=list(dl.caveats))
+    if id(line) in transition_row_ids:
+        result.notes.append(
+            "operator confirmed the LCR 2026/1 transition allocation: any "
+            "pre-1 July amount is unused excess and any 1-28 July amount remains "
+            "after the employee's June-quarter shortfall"
+        )
+    if line.duplicate_note:
+        result.caveats.append(line.duplicate_note)
+    if dl.pathway == SKIP_DB or dl.due is None:
+        result.verdict = SKIPPED
+        return result
+
+    # A row carrying no SG has no exposure behind any verdict, so the
+    # amount is tested once here rather than bolted onto one branch of
+    # the ladder. Bolted to the UNPAID branch alone, a 0.00 row with a
+    # late remittance or receipt date still came out LATE and still
+    # forced exit code 2.
+    if line.sg_amount <= 0:
+        if dl.due < as_at:
+            result.caveats.append(
+                f"the deadline passed on {dl.due.isoformat()}, but this row records "
+                "no SG amount, so there is nothing to assess. Check the amount "
+                "column if this payday should have carried super"
+            )
+        else:
+            result.caveats.append(
+                "this row records no SG amount, so there is nothing to assess. "
+                "Check the amount column if this payday should have carried super"
+            )
+        return result
+
+    # An as-at report must not use a future remittance or receipt to settle
+    # a historical shortfall. Keeping that future fact in the calculation
+    # made the report say a contribution was already offset on a date when
+    # the fund had not received it yet.
+    settled = line.received if line.received is not None and line.received <= as_at else None
+    remitted = line.remitted if line.remitted is not None and line.remitted <= as_at else None
+    if line.received is not None and line.received > as_at:
+        result.caveats.append(
+            f"fund receipt date {line.received.isoformat()} is after the as-at date "
+            f"{as_at.isoformat()}: it is ignored for this as-at report"
+        )
+    if line.remitted is not None and line.remitted > as_at:
+        result.caveats.append(
+            f"remittance date {line.remitted.isoformat()} is after the as-at date "
+            f"{as_at.isoformat()}: it is ignored for this as-at report"
+        )
+    if settled is None and remitted is not None:
+        if line.received is not None:
+            # A receipt date exists but post-dates the as-at date, so
+            # NO_RECEIPT_CAVEAT would be false on this row. The variant
+            # keeps the constant meaning exactly what the console's
+            # at-risk filter assumes it means.
+            result.caveats.append(
+                "the only fund-receipt date on record "
+                f"({line.received.isoformat()}) is after the as-at date, so as at "
+                f"{as_at.isoformat()} the statutory test of receipt by the fund "
+                "(SGAA s 18C(1)) is not met and a remittance date alone cannot "
+                "show the contribution was on time"
+            )
+        else:
+            result.caveats.append(NO_RECEIPT_CAVEAT)
+
+    # Past the calendar's coverage the holiday table is empty, so every
+    # weekday counts as a business day and the deadline computed here can
+    # only be too EARLY. That asymmetry decides which verdicts survive.
+    #
+    # A date on or before the computed deadline is on time under every
+    # possible holiday set, because a missing holiday can only push the
+    # real deadline later, never earlier. Those verdicts are provable and
+    # are given. Only a date after the computed deadline is indeterminable:
+    # it is late on this calendar and could be on time on the real one.
+    #
+    # A pre-payment verdict is not affected either: it compares the receipt
+    # with the QE day and a 12-month calendar window, never the deadline.
+    past_horizon = dl.due > cal.coverage_until
+    horizon_unknown = (
+        "the date recorded here is after that deadline, and a holiday the "
+        "calendar does not hold could move the deadline past it, so the line is "
+        "left unassessed rather than called late. Supply the missing holidays "
+        "with --holidays-override and set its \"verified_until\" to the last date "
+        "you entered them for, or extend paydaysuper/data/business_days.json, "
+        "to assess it"
+    )
+    horizon_figures = (
+        f"the deadline {dl.due.isoformat()} runs past the calendar's coverage "
+        f"({cal.coverage_until.isoformat()}) and can only move later, so days late "
+        "is left blank and the notional earnings and SG charge figures on this "
+        "line are a maximum, not a settled amount"
+    )
+    possible_item4_due = dl.possible_item4_due
+    item4_uncertain = (
+        possible_item4_due is not None and possible_item4_due > dl.due
+    )
+    item4_unknown = (
+        "an earlier positive row could extend this deadline to "
+        f"{possible_item4_due.isoformat()} under s 18C(2) item 4, but the "
+        "file does not evidence an eligible contribution received by the fund, "
+        "applied to that earlier QE day and on time. The deadline shown is the "
+        "latest one proved by the supplied facts; reconcile the fund receipt and "
+        "statutory allocation before deciding between the candidate verdicts"
+        if item4_uncertain
+        else ""
+    )
+
+    stale_prepayment = False
+    if settled is not None:
+        if settled < line.qe_day:
+            # Pre-payments count only inside the 12-month window ending
+            # the day before the QE day (s 18C(1)(c)(ii)).
+            earliest = earliest_prepayment_day(line.qe_day)
+            if settled >= earliest:
+                result.verdict = ON_TIME
+                result.notes.append(
+                    "received before the QE day: counted as an on-time pre-payment "
+                    "under s 18C(1)(c)(ii)"
+                )
+            else:
+                stale_prepayment = True
+                result.caveats.append(
+                    f"received {settled.isoformat()}, before the 12-month pre-payment "
+                    "window in s 18C(1)(c)(ii), so it cannot be applied to this payday. "
+                    "The payday is treated as unfunded"
+                )
+                if dl.due >= as_at:
+                    # Unfunded, but not yet due. Same treatment as a payday
+                    # with nothing recorded against it at all: a deadline
+                    # that has not arrived cannot have been missed, so there
+                    # is no shortfall, no SG charge and nothing to flag.
+                    result.caveats.append(
+                        "the deadline has not passed, so there is nothing to assess "
+                        "on this payday yet"
+                    )
+                    return result
+                if (
+                    past_horizon
+                    or (
+                        item4_uncertain
+                        and possible_item4_due is not None
+                        and as_at <= possible_item4_due
+                    )
+                ):
+                    result.verdict = UNKNOWN
+                    result.horizon_verdicts = (LATE, "NOT_YET_DUE")
+                    if past_horizon:
+                        result.caveats.append(
+                            "the payday is unfunded, but the deadline runs past the "
+                            "calendar's coverage and may not have passed. No exposure "
+                            "is calculated until the missing whole-of-jurisdiction "
+                            "holiday facts are supplied"
+                        )
+                    if item4_uncertain:
+                        result.caveats.append(item4_unknown)
+                    return result
+                result.verdict = LATE
+        elif (
+            item4_uncertain
+            and possible_item4_due is not None
+            and dl.due < settled <= possible_item4_due
+        ):
+            result.verdict = UNKNOWN
+            result.horizon_verdicts = (LATE, ON_TIME)
+            result.caveats.append(item4_unknown)
+            return result
+        elif past_horizon and settled > dl.due:
+            result.verdict = UNKNOWN
+            result.horizon_verdicts = (LATE, ON_TIME)
+            result.caveats.append(horizon_unknown)
+            return result
+        else:
+            result.verdict = ON_TIME if settled <= dl.due else LATE
+    elif remitted is not None:
+        if (
+            item4_uncertain
+            and possible_item4_due is not None
+            and dl.due < remitted <= possible_item4_due
+        ):
+            result.verdict = UNKNOWN
+            result.horizon_verdicts = (LATE, AT_RISK)
+            result.caveats.append(item4_unknown)
+            return result
+        if past_horizon and remitted > dl.due:
+            result.verdict = UNKNOWN
+            result.horizon_verdicts = (LATE, AT_RISK)
+            result.caveats.append(horizon_unknown)
+            return result
+        result.verdict = AT_RISK if remitted <= dl.due else LATE
+    elif dl.due < as_at:
+        # Nothing recorded and the supported deadline has passed. This is
+        # the largest exposure the tool can see, so it must not be silent.
+        # Past the calendar horizon, or while a possible item 4 deadline
+        # has not passed, the tool cannot establish that an unfunded row
+        # is due yet. Those rows remain attention-driving UNKNOWN with no
+        # exposure until the missing deadline facts are reconciled.
+        if (
+            past_horizon
+            or (
+                item4_uncertain
+                and possible_item4_due is not None
+                and as_at <= possible_item4_due
+            )
+        ):
+            result.verdict = UNKNOWN
+            result.horizon_verdicts = (UNPAID, "NOT_YET_DUE")
+            if past_horizon:
+                result.caveats.append(
+                    "no fund receipt is established for this payday, but the "
+                    f"deadline shown ({dl.due.isoformat()}) runs past the calendar's "
+                    "coverage and may not have passed. The row is left unassessed "
+                    "with no exposure until the missing whole-of-jurisdiction "
+                    "holiday facts are supplied"
+                )
+            if item4_uncertain:
+                result.caveats.append(item4_unknown)
+            return result
+        result.verdict = UNPAID
+        # A date may exist and simply post-date the as-at filter, in which
+        # case saying none is recorded contradicts the caveat added above
+        # and sends the reader to fix an export that is already correct.
+        # The AT_RISK branch already varies its wording this way.
+        _ignored = sorted(
+            d for d in (line.remitted, line.received)
+            if d is not None and d > as_at
+        )
+        _none_recorded = (
+            "no remittance or fund-receipt date is recorded"
+            if not _ignored
+            else "the only remittance or fund-receipt date on record ("
+            + ", ".join(d.isoformat() for d in _ignored)
+            + ") is after the as-at date and is ignored here"
+        )
+        if past_horizon:
+            result.caveats.append(
+                f"{_none_recorded}, and the deadline "
+                f"shown ({dl.due.isoformat()}) runs past the calendar's coverage, so "
+                "it may fall later than shown and may not have passed yet. Figures "
+                "assume the contribution is still unpaid; if your export has no date "
+                "columns, supply them before relying on this"
+            )
+        else:
+            result.caveats.append(
+                f"the deadline passed on {dl.due.isoformat()} and {_none_recorded}. "
+                "Figures assume the contribution is "
+                "still unpaid; if your export has no date columns, supply them "
+                "before relying on this"
+            )
+    else:
+        _ignored = sorted(
+            d for d in (line.remitted, line.received)
+            if d is not None and d > as_at
+        )
+        result.caveats.append(
+            ("no remittance or fund-receipt date supplied"
+             if not _ignored
+             else "the only remittance or fund-receipt date on record ("
+                  + ", ".join(d.isoformat() for d in _ignored)
+                  + ") is after the as-at date and is ignored here")
+            + ", and the deadline has not passed: nothing to assess yet"
+        )
+        return result
+
+    if result.verdict in EXPOSED:
+        base_shortfall = line.sg_amount
+        landed = settled if settled is not None else remitted
+
+        # Notional earnings compound on the base shortfall until the fund
+        # receives money that counts for this payday (s 19A). Where none
+        # has, they run to the as-at date, and they stop the day before an
+        # assessment, after which GIC on the assessment takes over.
+        if settled is not None and not stale_prepayment:
+            nec_end = settled
+            result.lateness_basis = "fund receipt"
+        elif landed is not None and not stale_prepayment:
+            nec_end = as_at
+            result.lateness_basis = "as-at date (no fund receipt recorded)"
+            result.notes.append(
+                "treated as still unpaid at the as-at date: notional earnings keep "
+                "accruing until the fund receives the contribution"
+            )
+        else:
+            nec_end = as_at
+            result.lateness_basis = "as-at date (nothing applied to this payday)"
+
+        outstanding_to = nec_end
+        if assessment_date is not None and nec_end >= assessment_date:
+            nec_end = assessment_date - timedelta(days=1)
+            result.caveats.append(
+                f"notional earnings stop {nec_end.isoformat()}, the day before the "
+                "assessment. Interest on the unpaid charge after that is general "
+                "interest charge, which this tool does not estimate"
+            )
+
+        # A row still exposed past the calendar's coverage got there
+        # without comparing a date against the deadline (an unpaid payday,
+        # or a receipt outside the 12-month pre-payment window), so the
+        # verdict holds. The arithmetic hanging off the deadline does not:
+        # printing a whole number of days late from a date the row's own
+        # caveat says cannot be pinned down states more than is known.
+        result.days_late = (
+            None if past_horizon else max((outstanding_to - dl.due).days, 0)
+        )
+        if past_horizon:
+            result.caveats.append(horizon_figures)
+        result.nec = (
+            notional_earnings(base_shortfall, dl.due, nec_end, gic)
+            if nec_end > dl.due
+            else Decimal("0")
+        )
+
+        # s 18D: a late contribution received in the late period, before
+        # the ATO assesses the charge, reduces the final shortfall. A
+        # payment made before the deadline is not a late-period payment,
+        # so a stale pre-payment cannot offset anything.
+        offset = (
+            settled is not None
+            and settled > dl.due
+            and (assessment_date is None or settled < assessment_date)
+        )
+        if offset:
+            result.final_shortfall = Decimal("0")
+            assumption = (
+                f"before the assessment on {assessment_date.isoformat()}"
+                if assessment_date is not None
+                else "and no SG charge assessment had issued for this payday by then"
+            )
+            result.notes.append(
+                f"contribution received {settled.isoformat()} {assumption}: the final "
+                "shortfall is nil under s 18D, leaving notional earnings and uplift"
+            )
+        else:
+            result.final_shortfall = base_shortfall
+
+        result.offset_s18d = offset
+        result.base_shortfall = base_shortfall
+        result.uplift = uplift_scenarios(result.final_shortfall, result.nec)
+        result.sgc_low, result.sgc_high = exposure_range(
+            result.final_shortfall, result.nec
+        )
+
+        # A missed new-starter flag is the most likely reason a line is
+        # wrongly late, and the operator cannot tell which rows to check.
+        if (
+            dl.pathway == USUAL_7BD
+            and landed is not None
+            and not stale_prepayment
+            and landed >= line.qe_day
+        ):
+            extended = cal.add_business_days(line.qe_day, 20)
+            if landed <= extended:
+                becomes = (
+                    "the line becomes on time"
+                    if settled is not None
+                    else "the line stops being late, though it stays at risk until "
+                    "you supply a fund-receipt date"
+                )
+                result.caveats.append(
+                    "this assumes the contribution is not the first to this fund. If "
+                    "it is a new starter or a fund switch, set "
+                    f"first_contribution_to_fund=yes and {becomes} "
+                    f"(due {extended.isoformat()})"
+                )
+
+        stale = gic.staleness(nec_end)
+        if stale:
+            result.caveats.append(stale)
+
+    return result
 
 
 def assess(
@@ -253,386 +631,9 @@ def assess(
 
     results: list[Result] = []
     for line, dl in pairs:
-        result = Result(line, dl, UNKNOWN, notes=list(dl.notes), caveats=list(dl.caveats))
-        if id(line) in transition_row_ids:
-            result.notes.append(
-                "operator confirmed the LCR 2026/1 transition allocation: any "
-                "pre-1 July amount is unused excess and any 1-28 July amount remains "
-                "after the employee's June-quarter shortfall"
-            )
-        if line.duplicate_note:
-            result.caveats.append(line.duplicate_note)
-        if dl.pathway == SKIP_DB or dl.due is None:
-            result.verdict = SKIPPED
-            results.append(result)
-            continue
-
-        # A row carrying no SG has no exposure behind any verdict, so the
-        # amount is tested once here rather than bolted onto one branch of
-        # the ladder. Bolted to the UNPAID branch alone, a 0.00 row with a
-        # late remittance or receipt date still came out LATE and still
-        # forced exit code 2.
-        if line.sg_amount <= 0:
-            if dl.due < as_at:
-                result.caveats.append(
-                    f"the deadline passed on {dl.due.isoformat()}, but this row records "
-                    "no SG amount, so there is nothing to assess. Check the amount "
-                    "column if this payday should have carried super"
-                )
-            else:
-                result.caveats.append(
-                    "this row records no SG amount, so there is nothing to assess. "
-                    "Check the amount column if this payday should have carried super"
-                )
-            results.append(result)
-            continue
-
-        # An as-at report must not use a future remittance or receipt to settle
-        # a historical shortfall. Keeping that future fact in the calculation
-        # made the report say a contribution was already offset on a date when
-        # the fund had not received it yet.
-        settled = line.received if line.received is not None and line.received <= as_at else None
-        remitted = line.remitted if line.remitted is not None and line.remitted <= as_at else None
-        if line.received is not None and line.received > as_at:
-            result.caveats.append(
-                f"fund receipt date {line.received.isoformat()} is after the as-at date "
-                f"{as_at.isoformat()}: it is ignored for this as-at report"
-            )
-        if line.remitted is not None and line.remitted > as_at:
-            result.caveats.append(
-                f"remittance date {line.remitted.isoformat()} is after the as-at date "
-                f"{as_at.isoformat()}: it is ignored for this as-at report"
-            )
-        if settled is None and remitted is not None:
-            if line.received is not None:
-                # A receipt date exists but post-dates the as-at date, so
-                # NO_RECEIPT_CAVEAT would be false on this row. The variant
-                # keeps the constant meaning exactly what the console's
-                # at-risk filter assumes it means.
-                result.caveats.append(
-                    "the only fund-receipt date on record "
-                    f"({line.received.isoformat()}) is after the as-at date, so as at "
-                    f"{as_at.isoformat()} the statutory test of receipt by the fund "
-                    "(SGAA s 18C(1)) is not met and a remittance date alone cannot "
-                    "show the contribution was on time"
-                )
-            else:
-                result.caveats.append(NO_RECEIPT_CAVEAT)
-
-        # Past the calendar's coverage the holiday table is empty, so every
-        # weekday counts as a business day and the deadline computed here can
-        # only be too EARLY. That asymmetry decides which verdicts survive.
-        #
-        # A date on or before the computed deadline is on time under every
-        # possible holiday set, because a missing holiday can only push the
-        # real deadline later, never earlier. Those verdicts are provable and
-        # are given. Only a date after the computed deadline is indeterminable:
-        # it is late on this calendar and could be on time on the real one.
-        #
-        # A pre-payment verdict is not affected either: it compares the receipt
-        # with the QE day and a 12-month calendar window, never the deadline.
-        past_horizon = dl.due > cal.coverage_until
-        horizon_unknown = (
-            "the date recorded here is after that deadline, and a holiday the "
-            "calendar does not hold could move the deadline past it, so the line is "
-            "left unassessed rather than called late. Supply the missing holidays "
-            "with --holidays-override and set its \"verified_until\" to the last date "
-            "you entered them for, or extend paydaysuper/data/business_days.json, "
-            "to assess it"
+        results.append(
+            _assess_line(line, dl, cal, gic, as_at, assessment_date, transition_row_ids)
         )
-        horizon_figures = (
-            f"the deadline {dl.due.isoformat()} runs past the calendar's coverage "
-            f"({cal.coverage_until.isoformat()}) and can only move later, so days late "
-            "is left blank and the notional earnings and SG charge figures on this "
-            "line are a maximum, not a settled amount"
-        )
-        possible_item4_due = dl.possible_item4_due
-        item4_uncertain = (
-            possible_item4_due is not None and possible_item4_due > dl.due
-        )
-        item4_unknown = (
-            "an earlier positive row could extend this deadline to "
-            f"{possible_item4_due.isoformat()} under s 18C(2) item 4, but the "
-            "file does not evidence an eligible contribution received by the fund, "
-            "applied to that earlier QE day and on time. The deadline shown is the "
-            "latest one proved by the supplied facts; reconcile the fund receipt and "
-            "statutory allocation before deciding between the candidate verdicts"
-            if item4_uncertain
-            else ""
-        )
-
-        stale_prepayment = False
-        if settled is not None:
-            if settled < line.qe_day:
-                # Pre-payments count only inside the 12-month window ending
-                # the day before the QE day (s 18C(1)(c)(ii)).
-                earliest = twelve_months_before(
-                    line.qe_day - timedelta(days=1)
-                ) + timedelta(days=1)
-                if settled >= earliest:
-                    result.verdict = ON_TIME
-                    result.notes.append(
-                        "received before the QE day: counted as an on-time pre-payment "
-                        "under s 18C(1)(c)(ii)"
-                    )
-                else:
-                    stale_prepayment = True
-                    result.caveats.append(
-                        f"received {settled.isoformat()}, before the 12-month pre-payment "
-                        "window in s 18C(1)(c)(ii), so it cannot be applied to this payday. "
-                        "The payday is treated as unfunded"
-                    )
-                    if dl.due >= as_at:
-                        # Unfunded, but not yet due. Same treatment as a payday
-                        # with nothing recorded against it at all: a deadline
-                        # that has not arrived cannot have been missed, so there
-                        # is no shortfall, no SG charge and nothing to flag.
-                        result.caveats.append(
-                            "the deadline has not passed, so there is nothing to assess "
-                            "on this payday yet"
-                        )
-                        results.append(result)
-                        continue
-                    if (
-                        past_horizon
-                        or (
-                            item4_uncertain
-                            and possible_item4_due is not None
-                            and as_at <= possible_item4_due
-                        )
-                    ):
-                        result.verdict = UNKNOWN
-                        result.horizon_verdicts = (LATE, "NOT_YET_DUE")
-                        if past_horizon:
-                            result.caveats.append(
-                                "the payday is unfunded, but the deadline runs past the "
-                                "calendar's coverage and may not have passed. No exposure "
-                                "is calculated until the missing whole-of-jurisdiction "
-                                "holiday facts are supplied"
-                            )
-                        if item4_uncertain:
-                            result.caveats.append(item4_unknown)
-                        results.append(result)
-                        continue
-                    result.verdict = LATE
-            elif (
-                item4_uncertain
-                and possible_item4_due is not None
-                and dl.due < settled <= possible_item4_due
-            ):
-                result.verdict = UNKNOWN
-                result.horizon_verdicts = (LATE, ON_TIME)
-                result.caveats.append(item4_unknown)
-                results.append(result)
-                continue
-            elif past_horizon and settled > dl.due:
-                result.verdict = UNKNOWN
-                result.horizon_verdicts = (LATE, ON_TIME)
-                result.caveats.append(horizon_unknown)
-                results.append(result)
-                continue
-            else:
-                result.verdict = ON_TIME if settled <= dl.due else LATE
-        elif remitted is not None:
-            if (
-                item4_uncertain
-                and possible_item4_due is not None
-                and dl.due < remitted <= possible_item4_due
-            ):
-                result.verdict = UNKNOWN
-                result.horizon_verdicts = (LATE, AT_RISK)
-                result.caveats.append(item4_unknown)
-                results.append(result)
-                continue
-            if past_horizon and remitted > dl.due:
-                result.verdict = UNKNOWN
-                result.horizon_verdicts = (LATE, AT_RISK)
-                result.caveats.append(horizon_unknown)
-                results.append(result)
-                continue
-            result.verdict = AT_RISK if remitted <= dl.due else LATE
-        elif dl.due < as_at:
-            # Nothing recorded and the supported deadline has passed. This is
-            # the largest exposure the tool can see, so it must not be silent.
-            # Past the calendar horizon, or while a possible item 4 deadline
-            # has not passed, the tool cannot establish that an unfunded row
-            # is due yet. Those rows remain attention-driving UNKNOWN with no
-            # exposure until the missing deadline facts are reconciled.
-            if (
-                past_horizon
-                or (
-                    item4_uncertain
-                    and possible_item4_due is not None
-                    and as_at <= possible_item4_due
-                )
-            ):
-                result.verdict = UNKNOWN
-                result.horizon_verdicts = (UNPAID, "NOT_YET_DUE")
-                if past_horizon:
-                    result.caveats.append(
-                        "no fund receipt is established for this payday, but the "
-                        f"deadline shown ({dl.due.isoformat()}) runs past the calendar's "
-                        "coverage and may not have passed. The row is left unassessed "
-                        "with no exposure until the missing whole-of-jurisdiction "
-                        "holiday facts are supplied"
-                    )
-                if item4_uncertain:
-                    result.caveats.append(item4_unknown)
-                results.append(result)
-                continue
-            result.verdict = UNPAID
-            # A date may exist and simply post-date the as-at filter, in which
-            # case saying none is recorded contradicts the caveat added above
-            # and sends the reader to fix an export that is already correct.
-            # The AT_RISK branch already varies its wording this way.
-            _ignored = sorted(
-                d for d in (line.remitted, line.received)
-                if d is not None and d > as_at
-            )
-            _none_recorded = (
-                "no remittance or fund-receipt date is recorded"
-                if not _ignored
-                else "the only remittance or fund-receipt date on record ("
-                + ", ".join(d.isoformat() for d in _ignored)
-                + ") is after the as-at date and is ignored here"
-            )
-            if past_horizon:
-                result.caveats.append(
-                    f"{_none_recorded}, and the deadline "
-                    f"shown ({dl.due.isoformat()}) runs past the calendar's coverage, so "
-                    "it may fall later than shown and may not have passed yet. Figures "
-                    "assume the contribution is still unpaid; if your export has no date "
-                    "columns, supply them before relying on this"
-                )
-            else:
-                result.caveats.append(
-                    f"the deadline passed on {dl.due.isoformat()} and {_none_recorded}. "
-                    "Figures assume the contribution is "
-                    "still unpaid; if your export has no date columns, supply them "
-                    "before relying on this"
-                )
-        else:
-            _ignored = sorted(
-                d for d in (line.remitted, line.received)
-                if d is not None and d > as_at
-            )
-            result.caveats.append(
-                ("no remittance or fund-receipt date supplied"
-                 if not _ignored
-                 else "the only remittance or fund-receipt date on record ("
-                      + ", ".join(d.isoformat() for d in _ignored)
-                      + ") is after the as-at date and is ignored here")
-                + ", and the deadline has not passed: nothing to assess yet"
-            )
-            results.append(result)
-            continue
-
-        if result.verdict in EXPOSED:
-            base_shortfall = line.sg_amount
-            landed = settled if settled is not None else remitted
-
-            # Notional earnings compound on the base shortfall until the fund
-            # receives money that counts for this payday (s 19A). Where none
-            # has, they run to the as-at date, and they stop the day before an
-            # assessment, after which GIC on the assessment takes over.
-            if settled is not None and not stale_prepayment:
-                nec_end = settled
-                result.lateness_basis = "fund receipt"
-            elif landed is not None and not stale_prepayment:
-                nec_end = as_at
-                result.lateness_basis = "as-at date (no fund receipt recorded)"
-                result.notes.append(
-                    "treated as still unpaid at the as-at date: notional earnings keep "
-                    "accruing until the fund receives the contribution"
-                )
-            else:
-                nec_end = as_at
-                result.lateness_basis = "as-at date (nothing applied to this payday)"
-
-            outstanding_to = nec_end
-            if assessment_date is not None and nec_end >= assessment_date:
-                nec_end = assessment_date - timedelta(days=1)
-                result.caveats.append(
-                    f"notional earnings stop {nec_end.isoformat()}, the day before the "
-                    "assessment. Interest on the unpaid charge after that is general "
-                    "interest charge, which this tool does not estimate"
-                )
-
-            # A row still exposed past the calendar's coverage got there
-            # without comparing a date against the deadline (an unpaid payday,
-            # or a receipt outside the 12-month pre-payment window), so the
-            # verdict holds. The arithmetic hanging off the deadline does not:
-            # printing a whole number of days late from a date the row's own
-            # caveat says cannot be pinned down states more than is known.
-            result.days_late = (
-                None if past_horizon else max((outstanding_to - dl.due).days, 0)
-            )
-            if past_horizon:
-                result.caveats.append(horizon_figures)
-            result.nec = (
-                notional_earnings(base_shortfall, dl.due, nec_end, gic)
-                if nec_end > dl.due
-                else Decimal("0")
-            )
-
-            # s 18D: a late contribution received in the late period, before
-            # the ATO assesses the charge, reduces the final shortfall. A
-            # payment made before the deadline is not a late-period payment,
-            # so a stale pre-payment cannot offset anything.
-            offset = (
-                settled is not None
-                and settled > dl.due
-                and (assessment_date is None or settled < assessment_date)
-            )
-            if offset:
-                result.final_shortfall = Decimal("0")
-                assumption = (
-                    f"before the assessment on {assessment_date.isoformat()}"
-                    if assessment_date is not None
-                    else "and no SG charge assessment had issued for this payday by then"
-                )
-                result.notes.append(
-                    f"contribution received {settled.isoformat()} {assumption}: the final "
-                    "shortfall is nil under s 18D, leaving notional earnings and uplift"
-                )
-            else:
-                result.final_shortfall = base_shortfall
-
-            result.offset_s18d = offset
-            result.base_shortfall = base_shortfall
-            result.uplift = uplift_scenarios(result.final_shortfall, result.nec)
-            result.sgc_low, result.sgc_high = exposure_range(
-                result.final_shortfall, result.nec
-            )
-
-            # A missed new-starter flag is the most likely reason a line is
-            # wrongly late, and the operator cannot tell which rows to check.
-            if (
-                dl.pathway == USUAL_7BD
-                and landed is not None
-                and not stale_prepayment
-                and landed >= line.qe_day
-            ):
-                extended = cal.add_business_days(line.qe_day, 20)
-                if landed <= extended:
-                    becomes = (
-                        "the line becomes on time"
-                        if settled is not None
-                        else "the line stops being late, though it stays at risk until "
-                        "you supply a fund-receipt date"
-                    )
-                    result.caveats.append(
-                        "this assumes the contribution is not the first to this fund. If "
-                        "it is a new starter or a fund switch, set "
-                        f"first_contribution_to_fund=yes and {becomes} "
-                        f"(due {extended.isoformat()})"
-                    )
-
-            stale = gic.staleness(nec_end)
-            if stale:
-                result.caveats.append(stale)
-
-        results.append(result)
 
     return results
 
@@ -798,7 +799,7 @@ def console_summary(
         for r in exposed[:10]:
             figures = _rounded_figures(r)
             # Standard output is commonly retained by task runners and CI logs.
-            # The report CSV is the private, row-level artifact; retain the source
+            # The report CSV is the private, row-level artefact; retain the source
             # row here so an operator can locate the result without leaking an
             # employee identifier into those logs. Days late is left unset where
             # the deadline runs past the calendar's coverage, so never print
