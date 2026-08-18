@@ -164,7 +164,10 @@ def _checked_document(doc: object, path: Path) -> dict:
 def load_gic() -> GicTable:
     path = DATA_DIR / "gic_rates.json"
     with open(path, encoding="utf-8") as f:
-        doc = _checked_document(json.load(f), path)
+        try:
+            doc = _checked_document(json.load(f), path)
+        except json.JSONDecodeError as exc:
+            raise RatesError(f"{path} is not valid JSON: {exc}")
     quarters = []
     for n, e in enumerate(doc["quarters"], start=1):
         if not isinstance(e, dict):
@@ -190,7 +193,10 @@ def load_rates() -> dict:
     # traceback rather than "error: ...".
     path = DATA_DIR / "rates.json"
     with open(path, encoding="utf-8") as f:
-        doc = json.load(f)
+        try:
+            doc = json.load(f)
+        except json.JSONDecodeError as exc:
+            raise RatesError(f"{path} is not valid JSON: {exc}")
     if not isinstance(doc, dict):
         raise RatesError(
             f"{path} must be a JSON object with a 'financial_years' map; it holds a "

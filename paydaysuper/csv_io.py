@@ -77,7 +77,10 @@ def load_mapping(
     explicit: set[str] = set()
     if path is not None:
         with open(path, encoding="utf-8") as f:
-            user = json.load(f)
+            try:
+                user = json.load(f)
+            except json.JSONDecodeError as exc:
+                raise CsvError(f"{path} is not valid JSON: {exc}")
         if not isinstance(user, dict):
             raise CsvError(f"{path} must be a JSON object of field: column pairs")
         # Keys starting with an underscore are comments, not mappings.
@@ -264,6 +267,54 @@ def _parse_bool(value: str, field: str, row: int) -> bool:
 
 MISSING = object()  # marks a field the row never supplied at all
 
+# How many row problems an error message lists in full before summarising
+# the rest as a count. Enough to fix a messy export in one pass without
+# printing a report-sized error for a file that is wrong in every row.
+MAX_PROBLEMS_SHOWN = 20
+
+
+def malformed_row_problem(row: dict, i: int) -> str | None:
+    """The problem with a row whose field count does not match the header,
+    or None for a well-shaped row.
+
+    A truncated row is refused because a missing cell is not the same as a
+    blank one, and a row with surplus values is refused because a misaligned
+    row (an unescaped comma inside a name, say) shifts every later column
+    one place left, so an amount could be a different column's value read
+    under the wrong name. `row` must come from a DictReader constructed with
+    restval=MISSING: an empty string is a legitimate cell value and cannot
+    also mean "this row never supplied a value for this column at all".
+    Shared with importers._read_dicts so the checker and the importer cannot
+    drift on what a malformed row is."""
+    short = sorted(k for k, v in row.items() if v is MISSING and k)
+    if short:
+        return (
+            f"row {i} stops early and supplies no value for {short}. A truncated "
+            "row is not the same as a blank field, so it is not assumed empty."
+        )
+    surplus = [v for v in (row.get(None) or []) if v and v.strip()]
+    if surplus:
+        return (
+            f"row {i} carries more values than the header has columns: "
+            f"{surplus}. They would be dropped, so the row is refused instead."
+        )
+    return None
+
+
+def raise_problems(problems: list[str], path: str | Path) -> None:
+    """Raise the collected row problems as one CsvError, at most
+    MAX_PROBLEMS_SHOWN of them in full, so a messy export can be fixed in
+    one pass without the message scrolling off the terminal."""
+    shown = problems[:MAX_PROBLEMS_SHOWN]
+    more = (
+        f" ... and {len(problems) - MAX_PROBLEMS_SHOWN} more problem(s)."
+        if len(problems) > MAX_PROBLEMS_SHOWN
+        else ""
+    )
+    raise CsvError(
+        f"{len(problems)} problem(s) in {path}:\n  - " + "\n  - ".join(shown) + more
+    )
+
 
 def parse_rows(
     path: str | Path, mapping: dict[str, str], explicit: set[str] | None = None
@@ -327,19 +378,9 @@ def _parse_rows(
         problems: list[str] = []
         for i, raw in enumerate(reader, start=2):  # row 1 is the header
             row = {(k.strip() if k else k): v for k, v in raw.items()}
-            short = sorted(k for k, v in row.items() if v is MISSING and k)
-            if short:
-                problems.append(
-                    f"row {i} stops early and supplies no value for {short}. A truncated "
-                    "row is not the same as a blank field, so it is not assumed empty."
-                )
-                continue
-            surplus = [v for v in (row.get(None) or []) if v and v.strip()]
-            if surplus:
-                problems.append(
-                    f"row {i} carries more values than the header has columns: "
-                    f"{surplus}. They would be dropped, so the row is refused instead."
-                )
+            malformed = malformed_row_problem(row, i)
+            if malformed is not None:
+                problems.append(malformed)
                 continue
             row = {k: (v or "") for k, v in row.items() if k is not None}
 
@@ -382,15 +423,7 @@ def _parse_rows(
             lines.append(line)
 
     if problems:
-        shown = problems[:20]
-        more = (
-            f" ... and {len(problems) - 20} more problem(s)."
-            if len(problems) > 20
-            else ""
-        )
-        raise CsvError(
-            f"{len(problems)} problem(s) in {path}:\n  - " + "\n  - ".join(shown) + more
-        )
+        raise_problems(problems, path)
     if not lines:
         raise CsvError(f"{path} has a header but no data rows")
     return lines
