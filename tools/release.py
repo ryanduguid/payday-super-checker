@@ -502,17 +502,142 @@ def _run_build(source: Path, output: Path, epoch: int) -> list[Path]:
     return built
 
 
-def _extract_source(tar_path: Path, destination: Path, prefix: str) -> Path:
-    destination.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(tar_path, mode="r:gz") as archive:
-        for member in archive.getmembers():
-            pure = PurePosixPath(member.name)
-            if pure.is_absolute() or ".." in pure.parts:
-                raise ReleaseError(f"unsafe source archive member: {member.name}")
+def _portable_archive_parts(name: str, description: str) -> tuple[str, ...]:
+    if (
+        not name
+        or name.startswith("/")
+        or "\\" in name
+        or any(ord(character) < 32 or ord(character) == 127 for character in name)
+    ):
+        raise ReleaseError(f"unsafe {description}: {name!r}")
+    trimmed = name[:-1] if name.endswith("/") else name
+    parts = tuple(trimmed.split("/"))
+    if not parts or any(
+        part in ("", ".", "..")
+        or ":" in part
+        or part.endswith((" ", "."))
+        for part in parts
+    ):
+        raise ReleaseError(f"unsafe {description}: {name!r}")
+    return parts
+
+
+def _validated_source_members(
+    archive: tarfile.TarFile, prefix: str
+) -> list[tuple[tarfile.TarInfo, tuple[str, ...]]]:
+    prefix_parts = _portable_archive_parts(prefix, "source archive root")
+    validated: list[tuple[tarfile.TarInfo, tuple[str, ...]]] = []
+    seen: dict[tuple[str, ...], tuple[str, bool]] = {}
+
+    for member in archive.getmembers():
+        if not (member.isdir() or member.isreg()):
+            raise ReleaseError(
+                "source archive members must be directories or regular files: "
+                f"{member.name!r}"
+            )
+        parts = _portable_archive_parts(member.name, "source archive member")
+        if parts[: len(prefix_parts)] != prefix_parts:
+            raise ReleaseError(
+                f"source archive member is outside {prefix!r}: {member.name!r}"
+            )
+        if parts == prefix_parts and not member.isdir():
+            raise ReleaseError("source archive root must be a directory")
+        collision_key = tuple(part.casefold() for part in parts)
+        if collision_key in seen:
+            previous = seen[collision_key][0]
+            raise ReleaseError(
+                "duplicate or case-colliding source archive members: "
+                f"{previous!r} and {member.name!r}"
+            )
+        seen[collision_key] = (member.name, member.isdir())
+        validated.append((member, parts))
+
+    for member, parts in validated:
+        collision_key = tuple(part.casefold() for part in parts)
+        for length in range(1, len(collision_key)):
+            parent = seen.get(collision_key[:length])
+            if parent is not None and not parent[1]:
+                raise ReleaseError(
+                    "regular source archive member cannot contain another member: "
+                    f"{parent[0]!r} and {member.name!r}"
+                )
+    return validated
+
+
+def _ensure_source_directory(root: Path, parts: tuple[str, ...]) -> Path:
+    current = root
+    for part in parts:
+        current = current / part
+        if current.is_symlink():
+            raise ReleaseError(f"source extraction encountered a symlink: {current}")
         try:
-            archive.extractall(destination, filter="data")
-        except TypeError:  # Python 3.10 and 3.11 do not expose filters.
-            archive.extractall(destination)
+            current.mkdir()
+        except FileExistsError as exc:
+            if not current.is_dir() or current.is_symlink():
+                raise ReleaseError(
+                    f"source extraction path is not a directory: {current}"
+                ) from exc
+    return current
+
+
+def _extract_source_manually(
+    archive: tarfile.TarFile,
+    destination: Path,
+    members: Sequence[tuple[tarfile.TarInfo, tuple[str, ...]]],
+) -> None:
+    for member, parts in members:
+        if member.isdir():
+            directory = _ensure_source_directory(destination, parts)
+            directory.chmod(0o755)
+            continue
+
+        parent = _ensure_source_directory(destination, parts[:-1])
+        target = parent / parts[-1]
+        if target.exists() or target.is_symlink():
+            raise ReleaseError(f"source extraction target already exists: {target}")
+        extracted = archive.extractfile(member)
+        if extracted is None:
+            raise ReleaseError(f"could not read source archive member: {member.name!r}")
+        try:
+            with extracted, target.open("xb") as output:
+                shutil.copyfileobj(extracted, output)
+                if output.tell() != member.size:
+                    raise ReleaseError(
+                        f"source archive member has an invalid size: {member.name!r}"
+                    )
+            target.chmod(0o755 if member.mode & 0o111 else 0o644)
+        except OSError as exc:
+            raise ReleaseError(
+                f"could not write source archive member: {member.name!r}"
+            ) from exc
+
+
+def _extract_source(tar_path: Path, destination: Path, prefix: str) -> Path:
+    if destination.exists():
+        if destination.is_symlink() or not destination.is_dir():
+            raise ReleaseError(f"source extraction destination is unsafe: {destination}")
+        if any(destination.iterdir()):
+            raise ReleaseError(
+                f"source extraction destination is not empty: {destination}"
+            )
+    else:
+        destination.mkdir(parents=True)
+    with tarfile.open(tar_path, mode="r:gz") as archive:
+        members = _validated_source_members(archive, prefix)
+        try:
+            archive.extractall(
+                destination,
+                members=(member for member, _parts in members),
+                filter="data",
+            )
+        except TypeError as exc:
+            # Older supported Python patch releases do not expose filters. The
+            # unsupported keyword is rejected before extraction starts.
+            if any(destination.iterdir()):
+                raise ReleaseError(
+                    "filtered source extraction failed after writing data"
+                ) from exc
+            _extract_source_manually(archive, destination, members)
     source = destination / prefix
     if not source.is_dir():
         raise ReleaseError("source archive did not contain its expected root")
