@@ -34,7 +34,9 @@ from .csv_io import (
     LATEST_SANE_YEAR,
     MISSING,
     CsvError,
+    malformed_row_problem,
     parse_date_text,
+    raise_problems,
 )
 from .deadlines import REGIME_START
 from .profiles import (
@@ -129,39 +131,21 @@ def _read_dicts(path: str | Path) -> tuple[list[str], list[dict[str, str]]]:
     # misaligned row (an unescaped comma inside a name, say) shifts every
     # later column one place left, so an amount this tool reports could
     # actually be a different column's value read under the wrong name.
-    # csv_io.py's _parse_rows refuses exactly this; mirrored here with the
-    # same restval sentinel technique, because an empty string is a
-    # legitimate cell value and cannot also mean "this row never supplied a
-    # value for this column at all".
+    # csv_io.py's _parse_rows refuses exactly this, and the refusal is now
+    # written once as csv_io.malformed_row_problem (fed by the same restval
+    # sentinel above), so the checker and the importer cannot drift on what
+    # a malformed row is.
     problems: list[str] = []
     rows: list[dict[str, str]] = []
     for i, raw in enumerate(raw_rows, start=2):  # row 1 is the header
-        short = sorted(k for k, v in raw.items() if v is MISSING and k)
-        if short:
-            problems.append(
-                f"row {i} stops early and supplies no value for {short}. A truncated "
-                "row is not the same as a blank field, so it is not assumed empty."
-            )
-            continue
-        surplus = [v for v in (raw.get(None) or []) if v and v.strip()]
-        if surplus:
-            problems.append(
-                f"row {i} carries more values than the header has columns: "
-                f"{surplus}. They would be dropped, so the row is refused instead."
-            )
+        malformed = malformed_row_problem(raw, i)
+        if malformed is not None:
+            problems.append(malformed)
             continue
         rows.append({k: (v or "") for k, v in raw.items() if k is not None})
 
     if problems:
-        shown = problems[:20]
-        more = (
-            f" ... and {len(problems) - 20} more problem(s)."
-            if len(problems) > 20
-            else ""
-        )
-        raise CsvError(
-            f"{len(problems)} problem(s) in {path}:\n  - " + "\n  - ".join(shown) + more
-        )
+        raise_problems(problems, path)
     if not rows:
         raise CsvError(f"{path} has a header but no data rows")
     return headers, rows

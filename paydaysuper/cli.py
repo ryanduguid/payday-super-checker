@@ -384,7 +384,26 @@ def main(argv: list[str] | None = None) -> int:
             assessment_date,
             transition_allocation_confirmed=args.confirm_transition_allocation,
         )
-    except (CsvError, CalendarError, RatesError, PreRegimeError, ValueError) as exc:
+    except OverflowError:
+        # A sentinel date such as 9999-12-31 walked past date.max. Before the
+        # ArithmeticError backstop below, which covers this subclass and
+        # would otherwise swallow the specific message.
+        print(
+            "error: a date in this file is too far in the future to work with. "
+            "Check for placeholder dates such as 9999-12-31.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    # decimal.InvalidOperation is an ArithmeticError, not a ValueError, so it
+    # is not covered by the CsvError/ValueError names below. Every amount read
+    # here is already guarded against it (see csv_io._parse_amount and its
+    # "too large to be a real amount" check), but this is the check path's own
+    # backstop against anything upstream that changes and stops holding that
+    # guarantee, mirroring import_main's: a raw traceback is never an
+    # acceptable failure mode here, only "error: <message>".
+    except (
+        CsvError, CalendarError, RatesError, PreRegimeError, ValueError, ArithmeticError
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     except FileNotFoundError as exc:
@@ -393,14 +412,6 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as exc:
         target = exc.filename or args.csv_path
         print(f"error: cannot read {target}: {exc.strerror or exc}", file=sys.stderr)
-        return EXIT_ERROR
-    except OverflowError:
-        # A sentinel date such as 9999-12-31 walked past date.max.
-        print(
-            "error: a date in this file is too far in the future to work with. "
-            "Check for placeholder dates such as 9999-12-31.",
-            file=sys.stderr,
-        )
         return EXIT_ERROR
 
     try:
@@ -413,9 +424,14 @@ def main(argv: list[str] | None = None) -> int:
             source=Path(args.csv_path).resolve(),
             gic_provenance=gic.provenance(),
         )
-    except ValueError as exc:
+    except (ValueError, ArithmeticError) as exc:
         # Backstop: the -o rule is already checked above, so anything landing
         # here is a new write-time rejection. "error: <message>" either way.
+        # ArithmeticError because rounding to cents can raise
+        # decimal.InvalidOperation here: notional earnings compound an
+        # accepted sg_amount, so a figure whose every input passed its own
+        # magnitude guard can still outgrow the default decimal context by
+        # the time write_csv quantises it.
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     except OSError as exc:
@@ -423,11 +439,24 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ERROR
 
     _reconfigure_stdout_for_unicode()
-    print(
-        console_summary(
+    try:
+        summary = console_summary(
             results, as_at, Path(args.output), LAW_CONTENT_DATE, rates, assessment_date
         )
-    )
+    except (ValueError, ArithmeticError) as exc:
+        # Same backstop as write_csv's, and needed for the same reason:
+        # the summary quantises TOTALS across the exposed rows, so figures
+        # that each rounded to cents inside write_csv can still sum past
+        # the default decimal context here. The report itself is complete
+        # on disk by this point, so name that in the message rather than
+        # leaving the operator to guess whether the file can be trusted.
+        print(
+            f"error: {exc}. The report was still written to {args.output}; "
+            "only this console summary failed.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    print(summary)
 
     return EXIT_LATE_FOUND if needs_attention(results) else EXIT_OK
 
