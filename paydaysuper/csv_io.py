@@ -10,10 +10,49 @@ import csv
 import json
 import re
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
 from .deadlines import ContribLine
+
+CENTS = Decimal("0.01")
+
+# Characters Excel and Sheets can evaluate at the start of a cell. Classifying
+# selected suffixes as safe is not reliable: scientific notation, booleans,
+# R1C1 references and workbook-defined names can all be alphanumeric. The
+# spreadsheet-facing CSV is therefore always quoted after any leading space;
+# the source payroll export remains the record of the unmodified identifier.
+FORMULA_LEAD = ("=", "+", "-", "@")
+
+
+def money(value: Decimal | None) -> str:
+    if value is None:
+        return ""
+    return str(value.quantize(CENTS, rounding=ROUND_HALF_UP))
+
+
+def cents(value: Decimal | None) -> Decimal:
+    return Decimal("0") if value is None else value.quantize(CENTS, rounding=ROUND_HALF_UP)
+
+
+def csv_safe(text: str) -> str:
+    """Stop a spreadsheet treating a cell as a formula.
+
+    Applied to every field written from input text, not to a single
+    trusted-looking one. `report` writes employee ids; `importers.
+    write_canonical` writes employee names as well, and puts its dates and
+    amounts through the same guard rather than reasoning per field about
+    which of them could ever start with `=`.
+
+    The trigger is looked for after leading whitespace, not at position 0:
+    a sheet ignores the space, so testing position 0 let " =cmd" through a
+    guard that catches "=cmd". Every formula-leading value is quoted. A
+    selective suffix rule leaves data-integrity gaps such as `+1E3`, `-R1C1`,
+    `+TRUE` and workbook-defined names."""
+    stripped = text.lstrip()
+    if stripped[:1] in FORMULA_LEAD:
+        return "'" + text
+    return text
 
 CANONICAL = {
     "employee_id": True,

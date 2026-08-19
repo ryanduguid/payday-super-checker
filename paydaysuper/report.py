@@ -4,12 +4,13 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 from pathlib import Path
 
 from . import __version__
 from .atomic_io import atomic_text_output
 from .calendar import BusinessCalendar
+from .csv_io import CENTS, FORMULA_LEAD, cents, csv_safe, money
 from .deadlines import (
     ITEM4_ALIGNED,
     REGIME_START,
@@ -39,7 +40,9 @@ SKIPPED = "SKIPPED"
 VERDICTS = (ON_TIME, AT_RISK, LATE, UNPAID, UNKNOWN, SKIPPED)
 EXPOSED = (LATE, UNPAID)
 
-CENTS = Decimal("0.01")
+# CENTS, FORMULA_LEAD, money, cents and csv_safe live in csv_io and are
+# re-exported here unchanged, so report.money and friends keep working for
+# every existing importer.
 
 # Appended wherever the verdict rests on a remittance date with no
 # fund-receipt date supplied at all. Named here so the console can tell it
@@ -54,43 +57,6 @@ NO_RECEIPT_CAVEAT = (
     "fund (SGAA s 18C(1)), so a remittance date alone cannot show the "
     "contribution was on time"
 )
-
-# Characters Excel and Sheets can evaluate at the start of a cell. Classifying
-# selected suffixes as safe is not reliable: scientific notation, booleans,
-# R1C1 references and workbook-defined names can all be alphanumeric. The
-# spreadsheet-facing CSV is therefore always quoted after any leading space;
-# the source payroll export remains the record of the unmodified identifier.
-FORMULA_LEAD = ("=", "+", "-", "@")
-
-
-def money(value: Decimal | None) -> str:
-    if value is None:
-        return ""
-    return str(value.quantize(CENTS, rounding=ROUND_HALF_UP))
-
-
-def cents(value: Decimal | None) -> Decimal:
-    return Decimal("0") if value is None else value.quantize(CENTS, rounding=ROUND_HALF_UP)
-
-
-def csv_safe(text: str) -> str:
-    """Stop a spreadsheet treating a cell as a formula.
-
-    Applied to every field written from input text, not to a single
-    trusted-looking one. This report writes employee ids; `importers.
-    write_canonical` writes employee names as well, and puts its dates and
-    amounts through the same guard rather than reasoning per field about
-    which of them could ever start with `=`.
-
-    The trigger is looked for after leading whitespace, not at position 0:
-    a sheet ignores the space, so testing position 0 let " =cmd" through a
-    guard that catches "=cmd". Every formula-leading value is quoted. A
-    selective suffix rule leaves data-integrity gaps such as `+1E3`, `-R1C1`,
-    `+TRUE` and workbook-defined names."""
-    stripped = text.lstrip()
-    if stripped[:1] in FORMULA_LEAD:
-        return "'" + text
-    return text
 
 
 def financial_year(d: date) -> str:
