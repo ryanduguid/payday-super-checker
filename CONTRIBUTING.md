@@ -10,7 +10,7 @@ This tool checks contributions against the payday-super deadline and estimates S
 
 ## Legislation and calendar changes
 
-- Trace every rate, threshold and deadline to a primary source, and cite the provision or instrument in your pull request. `docs/research-notes-2026-08-02.md` shows the level of detail we expect.
+- Trace every rate, threshold and deadline to a primary source, and cite the provision or instrument in your pull request. `docs/archive/research-notes-2026-08-02.md` shows the level of detail we expect.
 - Business days follow one national calendar. A day is not a business day if it falls on a Saturday, a Sunday, or a public holiday declared for the whole of any State, the ACT or the NT. Regional holidays do not stop the clock.
 - Vendor column profiles ship `"verified": false` because no Australian payroll vendor publishes its export header list. To flip a profile to `"verified": true`, quote a real header row from that vendor's export in the pull request. Headers only, no data.
 

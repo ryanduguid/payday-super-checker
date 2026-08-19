@@ -1,0 +1,4 @@
+Employee,Super Contribution Type,Period Start,Period End,Payment Date,Amount,Status
+Test Employee One,Super Guarantee,01/07/2026,09/07/2026,14/07/2026,612.00,Sent to fund
+Test Employee One,Salary Sacrifice,01/07/2026,09/07/2026,14/07/2026,200.00,Sent to fund
+Test Employee Two,Super Guarantee,01/07/2026,09/07/2026,30/07/2026,540.00,Reconciled

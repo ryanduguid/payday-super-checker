@@ -132,6 +132,72 @@ def test_read_payroll_surfaces_the_resolved_columns_for_this_file():
     assert resolved["period_end"] == "Pay Period End"
 
 
+def test_xero_pair_is_detected_and_imports(tmp_path):
+    # The shipped xero profiles had no fixture at all: only the MYOB pair
+    # was ever exercised. Detection must pick the xero profiles unforced
+    # (the Employee Number heading is what separates xero-payroll from
+    # myob-business-payroll, whose normalised signature also matches), the
+    # SG filter must drop the salary-sacrifice row, and the canonical file
+    # must carry the vendor payment date as a remittance date only.
+    payroll_rows, payroll_profile, _ = read_payroll(FIXTURES / "xero_payroll.csv")
+    assert payroll_profile.key == "xero-payroll"
+    assert payroll_rows[0].payday == date(2026, 7, 9)
+    assert payroll_rows[0].sg_amount == Decimal("612.00")
+
+    super_rows, super_profile, _ = read_super(FIXTURES / "xero_super.csv")
+    assert super_profile.key == "xero-super"
+    assert len(super_rows) == 2, "salary sacrifice row was not excluded"
+    assert {r.amount for r in super_rows} == {Decimal("612.00"), Decimal("540.00")}
+
+    out = tmp_path / "contributions.csv"
+    report = import_files(FIXTURES / "xero_payroll.csv", FIXTURES / "xero_super.csv", out)
+    assert report.matched == 2
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    assert [r["employee_id"] for r in rows] == ["E1", "E2"]
+    assert rows[0]["payment_date"] == "2026-07-09"
+    assert rows[0]["sg_amount"] == "612.00"
+    assert rows[0]["remitted_date"] == "2026-07-14"
+    assert rows[0]["fund_received_date"] == ""  # no vendor export carries it
+
+
+def test_employment_hero_pair_is_detected_and_imports(tmp_path):
+    # Same gap for the Employment Hero / KeyPay profiles, plus their one
+    # extra rule: the Beam Status column decides whether a Payment Date is
+    # written as a remittance date at all. Both fixture statuses (Sent to
+    # fund, Reconciled) evidence money that left the employer.
+    payroll_rows, payroll_profile, _ = read_payroll(
+        FIXTURES / "employment_hero_payroll.csv"
+    )
+    assert payroll_profile.key == "employment-hero-payroll"
+    assert payroll_rows[0].payday == date(2026, 7, 9)
+    assert payroll_rows[0].sg_amount == Decimal("612.00")
+
+    super_rows, super_profile, _ = read_super(FIXTURES / "employment_hero_super.csv")
+    assert super_profile.key == "employment-hero-super"
+    assert len(super_rows) == 2, "salary sacrifice row was not excluded"
+    assert {r.amount for r in super_rows} == {Decimal("612.00"), Decimal("540.00")}
+
+    out = tmp_path / "contributions.csv"
+    report = import_files(
+        FIXTURES / "employment_hero_payroll.csv",
+        FIXTURES / "employment_hero_super.csv",
+        out,
+    )
+    assert report.matched == 2
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    assert [r["employee_id"] for r in rows] == [
+        "Test Employee One",
+        "Test Employee Two",
+    ]
+    assert rows[0]["payment_date"] == "2026-07-09"
+    assert rows[0]["sg_amount"] == "612.00"
+    assert rows[0]["remitted_date"] == "2026-07-14"
+    assert rows[1]["remitted_date"] == "2026-07-30"
+    assert rows[0]["fund_received_date"] == ""  # a Beam status is not receipt
+
+
 def test_read_payroll_resolved_columns_omit_an_absent_period_end(tmp_path):
     # A payroll file with no pay period end column at all must not resolve
     # one: import_files reads its absence from here to warn through join's

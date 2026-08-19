@@ -1,3 +1,8 @@
+> **Archived.** Superseded on 2026-08-15 by
+> [`primary-source-review-2026-08-15.md`](../primary-source-review-2026-08-15.md),
+> which is the current review document. This file is kept as an audit trail
+> and must not be treated as current.
+
 # Payday super: research notes, 2 August 2026
 
 > **Historical snapshot: source gates re-checked 15 August 2026.** The
@@ -5,7 +10,7 @@
 > contribution base resting on snippets, unread SGAR regulations, an unread
 > out-of-cycle instrument, calendar coverage through 2028 and unresolved
 > release-browser checks are superseded by
-> [`primary-source-review-2026-08-15.md`](primary-source-review-2026-08-15.md).
+> [`primary-source-review-2026-08-15.md`](../primary-source-review-2026-08-15.md).
 > LCR 2026/1–3 are final; only LCR 2026/D1 remains draft. F2026L00784,
 > regulations 11–13D, the $270,830 base and all eight official holiday sources
 > were read directly. The old wording remains below to preserve the audit trail
