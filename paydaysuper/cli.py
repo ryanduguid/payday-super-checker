@@ -344,7 +344,23 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     try:
-        as_at = _parse_cli_date(args.as_at, "--as-at") or date.today()
+        as_at = _parse_cli_date(args.as_at, "--as-at")
+        if as_at is None:
+            # Named out loud rather than silently assumed: the host clock's
+            # calendar day is not necessarily the Australian date -- a UTC
+            # server in the hours around midnight AEST is a day behind, and
+            # a day is exactly what a deadline verdict turns on. The reader
+            # already refuses UTC-marked datetime INPUTS for this reason;
+            # the default as-at deserves at least a notice. No timezone
+            # conversion is attempted: naming the assumption keeps the
+            # operator in charge of it.
+            as_at = date.today()
+            print(
+                f"note: --as-at not supplied; assuming {as_at.isoformat()} from this "
+                "machine's clock, which may not be today's date in Australia. Pass "
+                "--as-at explicitly in scheduled runs.",
+                file=sys.stderr,
+            )
         assessment_date = _parse_cli_date(args.assessment_date, "--assessment-date")
         # Every file this command reads, not only the positional one.
         # --mapping-file and --holidays-override are input files the operator

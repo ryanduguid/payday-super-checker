@@ -419,3 +419,81 @@ def test_absurdly_large_amount_is_rejected(tmp_path):
     path = write_csv(tmp_path, "E1,2026-07-09,10000000000000000,,,no,no,,no")
     with pytest.raises(CsvError, match="too large"):
         parse_rows(path, *load_mapping(None))
+
+
+def _outcome(fn, text):
+    """One parser's verdict on one input, comparable across parsers: the
+    Decimal it returned, or ('refused', <reason kind>) for a CsvError."""
+    try:
+        return fn(text, "sg_amount", 2)
+    except CsvError as exc:
+        message = str(exc)
+        for kind in ("is negative", "under half a cent", "as an amount", "too large"):
+            if kind in message:
+                return ("refused", kind)
+        return ("refused", message)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Round-3 review claimed importers._amount and csv_io._parse_amount
+        # diverged on these. They did, in two ways, both fixed: the importer
+        # refused Excel's accounting-format negative "($ 612.00)" with a
+        # message blaming a comma for a space (the checker's reader named it
+        # negative), and the checker's reader kept sub-cent digits the
+        # importer rounded to the cent, so 1,234.567 meant two different
+        # numbers depending on which door it came through. The README
+        # invites hand-editing the canonical file, so BOTH parsers can
+        # receive every one of these.
+        "($ 612.00)",
+        "($  1,234.56)",
+        "(1,234.56)",
+        "(612.00)",
+        "$1,234.567",
+        "540.004",
+        "612.005",
+        "0.004",
+        "612,00",
+        "$ 612.00",
+        "1,234,567.89",
+        "1e2",
+        "0",
+        "600.00",
+    ],
+)
+def test_both_amount_parsers_agree_on_every_input_both_can_receive(text):
+    from paydaysuper.csv_io import _parse_amount
+    from paydaysuper.importers import _amount
+
+    assert _outcome(_amount, text) == _outcome(_parse_amount, text), text
+
+
+def test_the_check_path_reads_amounts_to_the_cent(tmp_path):
+    # The second half of the round-3 finding: parse_rows left sg_amount
+    # unquantized while the importer rounded via money(), so a hand-edited
+    # 1,234.567 rode into the assessment carrying sub-cent residue the
+    # importer's own output never could. Both read boundaries now quantise,
+    # ROUND_HALF_UP, the same rounding money() applies on the way out.
+    path = write_csv(tmp_path, 'E1,2026-07-09,"$1,234.567",,,no,no,,no')
+    value = parse_rows(path, *load_mapping(None))[0].sg_amount
+    assert value == Decimal("1234.57")
+    assert value == value.quantize(Decimal("0.01"))
+
+
+def test_a_sub_half_cent_amount_is_refused_not_rounded_to_nothing(tmp_path):
+    # importers._amount's refusal, now on the checker's side too: rounding
+    # 0.004 to 0.00 would destroy the row rather than trim it.
+    path = write_csv(tmp_path, "E1,2026-07-09,0.004,,,no,no,,no")
+    with pytest.raises(CsvError, match="under half a cent"):
+        parse_rows(path, *load_mapping(None))
+
+
+def test_the_importer_reads_an_accounting_format_negative_as_negative(tmp_path):
+    # "($ 612.00)" is Excel's accounting format for -612.00. The importer
+    # used to refuse it with a message blaming a comma for a space; it now
+    # names the real problem, the same way csv_io._parse_amount does.
+    from paydaysuper.importers import _amount
+
+    with pytest.raises(CsvError, match="is negative"):
+        _amount("($ 612.00)", "sg amount", 2)
