@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 
 from paydaysuper.calendar import load_calendar
-from paydaysuper.cli import EXIT_ERROR, EXIT_LATE_FOUND, main as cli_main
+from paydaysuper.cli import EXIT_ERROR, EXIT_LATE_FOUND, EXIT_OK, main as cli_main
 from paydaysuper.csv_io import load_mapping, parse_rows
 from paydaysuper.deadlines import ContribLine
 from paydaysuper.rates import load_gic, load_rates
@@ -2273,3 +2273,48 @@ def test_check_catches_arithmetic_error_from_assessment(tmp_path, capsys, monkey
     captured = capsys.readouterr()
     assert captured.err.startswith("error:")
     assert "Traceback" not in captured.err
+
+
+def test_defaulted_as_at_is_named_in_a_notice(tmp_path, capsys):
+    # A defaulted as-at comes from the host clock, and the host clock's
+    # calendar day is not necessarily the Australian date: a UTC server in
+    # the hours around midnight AEST is a day behind, and a deadline
+    # verdict turns on exactly that day. The reader already refuses
+    # UTC-marked datetime inputs for this reason, so the one date this
+    # tool assumes on its own must at least be named, not silently used.
+    path = tmp_path / "contributions.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        "E1,2026-08-06,600.00,2026-08-07,2026-08-10,no,no,,no\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "report.csv"
+
+    code = main([str(path), "-o", str(out)])
+
+    assert code in (EXIT_OK, EXIT_LATE_FOUND)
+    err = capsys.readouterr().err
+    assert "note: --as-at not supplied; assuming" in err
+    assert date.today().isoformat() in err
+    assert "machine's clock" in err
+
+
+def test_an_explicit_as_at_prints_no_default_notice(tmp_path, capsys):
+    # Teeth for the test above: the notice belongs to the DEFAULT only. An
+    # operator who supplied the date already owns the assumption, and a
+    # notice on every run would train everyone to ignore it.
+    path = tmp_path / "contributions.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        "E1,2026-08-06,600.00,2026-08-07,2026-08-10,no,no,,no\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "report.csv"
+
+    code = main([str(path), "-o", str(out), "--as-at", "2026-09-10"])
+
+    assert code in (EXIT_OK, EXIT_LATE_FOUND)
+    err = capsys.readouterr().err
+    assert "--as-at not supplied" not in err

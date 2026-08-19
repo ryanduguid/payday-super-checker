@@ -325,7 +325,25 @@ def _parse_amount(value: str, field: str, row: int) -> Decimal:
         )
     if amount < 0:
         raise CsvError(f"row {row}: {field} is negative ({value!r})")
-    return amount
+    # Quantised to the cent HERE, at the read boundary, exactly as
+    # importers._amount does, and refusing the one case quantising would
+    # destroy. The two readers exist to agree about what a figure means
+    # (see AMOUNT_TEXT above), and they had drifted on precision: the
+    # importer read 1,234.567 as 1234.57 while this reader kept 1234.567,
+    # so a hand-edited canonical file -- which the README invites --
+    # carried sub-cent residue the imported file could not. Every figure
+    # the checker matches, writes and reports is a cent figure;
+    # ROUND_HALF_UP through cents(), the same rounding money() applies on
+    # the way out.
+    rounded = cents(amount)
+    if rounded == 0 and amount != 0:
+        raise CsvError(
+            f"row {row}: {field} value {value!r} is under half a cent, so reading it "
+            "to the cent leaves the row carrying no money at all. Every figure this "
+            "tool matches, writes and reports is a cent figure. Round it yourself, or "
+            "take the row out."
+        )
+    return rounded
 
 
 def _parse_bool(value: str, field: str, row: int) -> bool:
