@@ -146,7 +146,7 @@ The exit code is 0 when nothing is exposed and nothing is left undecided, 2 when
 | Option | What it does |
 | --- | --- |
 | `-o, --output` | Where to write the report CSV (default `report.csv`) |
-| `--as-at DATE` | Measures notional earnings on still-unpaid contributions to this date (default: today) |
+| `--as-at DATE` | Measures notional earnings on still-unpaid contributions to this date (default: today, read from the host clock and named in a printed notice). Pass it explicitly in scheduled or CI runs: the host clock's calendar day can differ from the Australian date near midnight, and a verdict can turn on that day |
 | `--assessment-date DATE` | The day the ATO assessed the charge for these paydays. Only contributions received before it clear the shortfall. Omit if no assessment has issued |
 | `--map FIELD=COLUMN` | Point one field at your column name; repeatable |
 | `--mapping-file FILE` | Same thing as JSON, see `examples/mapping.example.json` |
