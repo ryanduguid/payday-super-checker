@@ -39,7 +39,10 @@ from .csv_io import (
     LATEST_SANE_YEAR,
     MISSING,
     CsvError,
+    cents,
+    csv_safe,
     malformed_row_problem,
+    money,
     parse_date_text,
     raise_problems,
 )
@@ -51,7 +54,6 @@ from .profiles import (
     normalise_name,
     resolve_columns,
 )
-from .report import cents, csv_safe, money
 
 # A separator is allowed only where a thousands separator belongs. Stripping
 # every comma turns the European decimal 612,00 into 61200. The pattern
