@@ -1,0 +1,4 @@
+Employee,Employee Number,Contribution Type,Period Start,Period End,Payment Date,Amount
+Test Employee One,E1,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,612.00
+Test Employee One,E1,Salary Sacrifice,01/07/2026,09/07/2026,14/07/2026,200.00
+Test Employee Two,E2,Superannuation Guarantee,01/07/2026,09/07/2026,30/07/2026,540.00
