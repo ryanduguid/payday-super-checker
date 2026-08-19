@@ -45,16 +45,42 @@ records do not establish them.
 
 ## Use
 
+Start with the sample that has no transition-period contributions. This
+command runs to a verdict with no confirmation flags:
+
+```bash
+payday-super-check examples/sample_payrun_no_transition.csv --as-at 2026-09-10
+```
+
+```
+payday-super-checker: 7 contribution lines, as at 2026-09-10
+
+  ON_TIME: 3  AT_RISK: 1  LATE: 1  UNPAID: 1  UNKNOWN: 0  SKIPPED: 1
+
+Lines with exposure (experimental estimates, largest first):
+  row 5  QE day 2026-08-06  due 2026-08-17  UNPAID, 24 days late to as-at date (nothing applied to this payday)
+      shortfall $780.00  notional earnings $5.88  experimental SG charge estimate $785.88 - $1257.41
+  row 3  QE day 2026-08-06  due 2026-08-17  LATE, 17 days late to fund receipt
+      super $540.00 (received, so the shortfall is nil)  notional earnings $2.88  experimental SG charge estimate $2.88 - $4.61
+
+  Total across 2 line(s): shortfall $780.00, notional earnings $8.76,
+  experimental estimated SG charge $788.76 - $1262.02.
+```
+
+The second sample, `examples/sample_payrun.csv`, contains contributions from
+the 1 to 28 July 2026 transition period, and running it the same way stops
+before writing a verdict:
+
 ```bash
 payday-super-check examples/sample_payrun.csv --as-at 2026-08-10
 ```
 
-The sample contains contributions from the 1 to 28 July 2026 transition
-period, so the command above stops before writing a verdict and asks for
-`--confirm-transition-allocation`. Do not copy that flag mechanically. LCR
-2026/1 applies those contributions first to any employee shortfall for the
-quarter ended 30 June 2026. Use the flag only after you have reconciled every
-affected employee; the confirmation is recorded in the report.
+That stop is the tool working as designed. LCR 2026/1 applies 1-28 July 2026
+contributions first to any employee shortfall for the quarter ended 30 June
+2026, and this file cannot calculate those old-regime balances. The tool asks
+for `--confirm-transition-allocation`. Do not copy that flag mechanically:
+use it only after you have reconciled every affected employee. The
+confirmation is recorded in the report.
 
 ```bash
 payday-super-check examples/sample_payrun.csv --as-at 2026-08-10 --confirm-transition-allocation
@@ -76,8 +102,8 @@ Lines with exposure (experimental estimates, largest first):
   experimental estimated SG charge $788.07 - $1260.92.
 ```
 
-The block above is abridged: the real run lists every exposed line and then a page
-of assumptions. It deliberately identifies an exposed record by its input row
+Both output blocks above are abridged: the real runs list every exposed line and then a page
+of assumptions. The console deliberately identifies an exposed record by its input row
 rather than its employee identifier, so redirected output does not place payroll
 identifiers in process logs. Use that row number to find the full record in
 `report.csv`.
