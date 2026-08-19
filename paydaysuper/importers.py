@@ -243,7 +243,12 @@ def _amount(value: str, field: str, row: int) -> Decimal:
     super guarantee is ordinary, and already has its own outcome."""
     text = (value or "").strip().replace("$", "").strip()
     if text.startswith("(") and text.endswith(")"):
-        text = "-" + text[1:-1]
+        # Stripped inside the parens too, mirroring _parse_amount: Excel's
+        # accounting format writes a negative as "($ 612.00)", and without
+        # this strip the space the "$" left behind broke the pattern match,
+        # so the refusal blamed a comma for a space instead of naming the
+        # negative the way the checker's reader does.
+        text = "-" + text[1:-1].strip()
     if not text:
         raise CsvError(f"row {row}: {field} is empty")
     if not _AMOUNT.match(text):
