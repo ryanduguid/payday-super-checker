@@ -31,7 +31,30 @@ Cloning first means you have the sample file the next command uses. To skip
 the clone, `pip install git+https://github.com/ryanduguid/payday-super-checker.git`
 installs the tool alone; point it at your own CSV.
 
+## Before you run
+
+Gather these facts first. The checker refuses or marks `UNKNOWN` where the
+records do not establish them.
+
+| Fact | Where it comes from | Why |
+| --- | --- | --- |
+| Payroll export | Your payroll system | The payday (the day you actually paid the wages) and the operator-determined SG amount per employee. Apply regulations 11 and 12 and filter out salary sacrifice before supplying the amount |
+| Super payment export | Your payroll or clearing-house portal | The day you sent the money. This is the `remitted` date; on its own it can only give `AT_RISK` |
+| Fund receipt dates | Your clearing house's per-contribution settlement or status report, or the fund's own contribution history | The law tests receipt by the fund. No payroll system or clearing house exports this date, so fill it in before treating any verdict as final |
+| Holidays coverage | The bundled calendar, complete through 31 August 2027 | Deadlines past that horizon fail closed until you supply later official dates in a reviewed `--holidays-override` file with `verified_until` |
+
 ## Use
+
+```bash
+payday-super-check examples/sample_payrun.csv --as-at 2026-08-10
+```
+
+The sample contains contributions from the 1 to 28 July 2026 transition
+period, so the command above stops before writing a verdict and asks for
+`--confirm-transition-allocation`. Do not copy that flag mechanically. LCR
+2026/1 applies those contributions first to any employee shortfall for the
+quarter ended 30 June 2026. Use the flag only after you have reconciled every
+affected employee; the confirmation is recorded in the report.
 
 ```bash
 payday-super-check examples/sample_payrun.csv --as-at 2026-08-10 --confirm-transition-allocation
@@ -60,13 +83,6 @@ identifiers in process logs. Use that row number to find the full record in
 `report.csv`.
 
 Full detail goes to `report.csv`: due date, which deadline rule applied, days late, the final shortfall after any offset, notional earnings, best and worst case uplift, and every warning that applies to that line.
-
-The sample contains contributions from the 1 to 28 July 2026 transition period,
-so its command includes `--confirm-transition-allocation`. Do not copy that
-flag mechanically. LCR 2026/1 applies those contributions first to any
-employee shortfall for the quarter ended 30 June 2026. Use the flag only after
-you have reconciled every affected employee; the confirmation is recorded in
-the report. Without it the checker stops before writing a verdict.
 
 Verdicts are `ON_TIME`, `AT_RISK` (remitted in time but no fund receipt recorded), `LATE`, `UNPAID` (a supported deadline has passed and nothing is recorded against it), `UNKNOWN` (the verdict is not available) and `SKIPPED` (defined-benefit interests). `LATE` and `UNPAID` both carry experimental exposure figures.
 
@@ -186,7 +202,7 @@ Generated outputs must have an explicit `.csv` filename. They are staged in the 
 
 ## The rules it applies
 
-The enacted framework is the Treasury Laws Amendment (Payday Superannuation) Act 2025 (No. 57 of 2025, assent 6 November 2025), the Superannuation Guarantee Charge Amendment Act 2025 (No. 58 of 2025), and the regulations registered as F2026L00133, which amend the Superannuation Guarantee (Administration) Regulations 2018; the current 1 July 2026 compilation is F2026C00535. It applies to paydays from 1 July 2026. A primary-source implementation review was completed on **15 August 2026**. [The review](docs/primary-source-review-2026-08-15.md) records the exact legislation, final ruling status, holiday authorities, runtime comparison and residual limits. It does not turn this experimental tool into an ATO compliance determination or authorise a release. The original 2 August research notes remain as a historical audit trail.
+The enacted framework is the Treasury Laws Amendment (Payday Superannuation) Act 2025 (No. 57 of 2025, assent 6 November 2025), the Superannuation Guarantee Charge Amendment Act 2025 (No. 58 of 2025), and the regulations registered as F2026L00133, which amend the Superannuation Guarantee (Administration) Regulations 2018; the current 1 July 2026 compilation is F2026C00535. It applies to paydays from 1 July 2026. A primary-source implementation review was completed on **15 August 2026**. [The review](docs/primary-source-review-2026-08-15.md) records the exact legislation, final ruling status, holiday authorities, runtime comparison and residual limits. It does not turn this experimental tool into an ATO compliance determination or authorise a release. The original 2 August research notes remain in `docs/archive/` as a historical audit trail.
 
 ATO LCR 2026/1, LCR 2026/2 and LCR 2026/3 were issued on 5 August 2026. LCR 2026/D1 remains draft pending the appeal from *Department of Education v Commissioner of Taxation* [2026] FCA 898. The tool therefore accepts an operator-provided SG amount and does not decide qualifying-earnings or termination classifications.
 
