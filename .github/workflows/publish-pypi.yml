@@ -1,0 +1,44 @@
+name: Publish to PyPI
+
+# Runs only when a GitHub release is published. Releases in this repository
+# are created solely by the fail-closed release workflow (release.yml), so a
+# published release means every verification gate already passed. This job
+# gates nothing else: if it fails (for example before the PyPI trusted
+# publisher is registered), the GitHub release itself is unaffected.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-publish-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish the exact release assets to PyPI
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read # Download the published release assets.
+      id-token: write # Mint the OIDC token for PyPI trusted publishing.
+    steps:
+      - name: Download the wheel and sdist from the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir assets dist
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets
+          (cd assets && sha256sum --check SHA256SUMS)
+          mv assets/*.whl assets/*.tar.gz dist/
+
+      - name: Publish to PyPI via trusted publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist
