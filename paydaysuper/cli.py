@@ -85,6 +85,14 @@ def build_parser() -> argparse.ArgumentParser:
             "amounts remain after any June-quarter employee shortfall"
         ),
     )
+    parser.add_argument(
+        "--confirm-remittance-only",
+        action="store_true",
+        help=(
+            "confirm you accept a remittance-only review: no fund-receipt date is "
+            "on any in-scope positive row, so the file cannot produce ON_TIME"
+        ),
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -461,7 +469,13 @@ def main(argv: list[str] | None = None) -> int:
     _reconfigure_stdout_for_unicode()
     try:
         summary = console_summary(
-            results, as_at, Path(args.output), LAW_CONTENT_DATE, rates, assessment_date
+            results,
+            as_at,
+            Path(args.output),
+            LAW_CONTENT_DATE,
+            rates,
+            assessment_date,
+            remittance_only_confirmed=args.confirm_remittance_only,
         )
     except (ValueError, ArithmeticError) as exc:
         # Same backstop as write_csv's, and needed for the same reason:
@@ -478,7 +492,13 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ERROR
     print(summary)
 
-    return EXIT_LATE_FOUND if needs_attention(results) else EXIT_OK
+    return (
+        EXIT_LATE_FOUND
+        if needs_attention(
+            results, remittance_only_confirmed=args.confirm_remittance_only
+        )
+        else EXIT_OK
+    )
 
 
 if __name__ == "__main__":

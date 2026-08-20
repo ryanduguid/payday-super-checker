@@ -1747,7 +1747,7 @@ def test_a_formula_in_an_employee_name_is_guarded(tmp_path):
     assert "'-00123" in text, "numeric-looking formula lead was not neutralised"
 
 
-def test_canonical_csv_round_trips_through_parse_rows_and_the_real_cli(tmp_path):
+def test_canonical_csv_round_trips_through_parse_rows_and_the_real_cli(tmp_path, capsys):
     # Requirement: the canonical CSV must be readable by the existing
     # checker without modification. Proven two ways -- through the reader
     # function directly, with the default mapping and nothing special-cased
@@ -1774,7 +1774,8 @@ def test_canonical_csv_round_trips_through_parse_rows_and_the_real_cli(tmp_path)
             "--confirm-transition-allocation",
         ]
     )
-    assert code in (EXIT_OK, EXIT_LATE_FOUND), "the real CLI choked on our own output"
+    assert code == EXIT_LATE_FOUND
+    assert "cannot produce ON_TIME" in capsys.readouterr().out
     with open(report_out, newline="", encoding="utf-8") as f:
         report_rows = [r for r in _csv.DictReader(f) if r["employee_id"] != "NOTE"]
     assert len(report_rows) == 2
@@ -2977,7 +2978,8 @@ def test_the_blocker_reproduction_checks_clean_end_to_end(tmp_path, capsys):
         ]
     )
     printed = capsys.readouterr().out
-    assert code == EXIT_OK
+    assert code == EXIT_LATE_FOUND
+    assert "cannot produce ON_TIME" in printed
     assert "LATE: 0" in printed and "UNPAID: 0" in printed
     assert "shortfall $540.00" not in printed
     assert "SG charge estimate" not in printed
