@@ -70,6 +70,8 @@ def test_final_ruling_status_and_transition_gate_are_current():
         assert "LCR 2026/D1" in document
         assert "draft" in document
         assert "--confirm-transition-allocation" in document
+    assert "--confirm-remittance-only" in readme
+    assert "--confirm-remittance-only" in design
     assert "5 August 2026" in review
     assert "Department of Education v Commissioner of Taxation" in review
 
