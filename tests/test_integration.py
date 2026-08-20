@@ -1718,6 +1718,59 @@ def test_at_risk_caveats_reach_the_console():
     text = console_summary(results, AS_AT, "report.csv", "2026-08-02", load_rates())
     assert "counted 2 times" in text
     assert "receipt by the fund" in text
+    assert "cannot produce ON_TIME" in text
+    assert needs_attention(results)
+    assert not needs_attention(results, remittance_only_confirmed=True)
+
+
+def test_remittance_only_import_check_exits_nonzero_until_confirmed(tmp_path, capsys):
+    """Vendor imports never write fund_received_date. A fully remitted file
+    is all AT_RISK and used to exit 0, so a scheduled wrapper that alarms
+    on exit 2 stayed quiet."""
+    src = tmp_path / "contributions.csv"
+    src.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        "E1,2026-08-06,600.00,2026-08-07,,no,no,,no\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "report.csv"
+    code = main([str(src), "-o", str(out), "--as-at", "2026-08-20"])
+    printed = capsys.readouterr().out
+    assert code == EXIT_LATE_FOUND
+    assert "cannot produce ON_TIME" in printed
+    assert "AT_RISK: 1" in printed
+
+    code = main(
+        [
+            str(src),
+            "-o",
+            str(tmp_path / "report2.csv"),
+            "--as-at",
+            "2026-08-20",
+            "--confirm-remittance-only",
+        ]
+    )
+    printed = capsys.readouterr().out
+    assert code == EXIT_OK
+    assert "Operator confirmed remittance-only review" in printed
+
+
+def test_a_file_with_any_fund_receipt_is_not_remittance_only(tmp_path, capsys):
+    src = tmp_path / "contributions.csv"
+    src.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        "E1,2026-08-06,600.00,2026-08-07,2026-08-10,no,no,,no\n"
+        "E2,2026-08-06,318.00,2026-08-11,,no,no,,no\n",
+        encoding="utf-8",
+    )
+    code = main([str(src), "-o", str(tmp_path / "report.csv"), "--as-at", "2026-08-20"])
+    printed = capsys.readouterr().out
+    assert code == EXIT_OK
+    assert "cannot produce ON_TIME" not in printed
+    assert "ON_TIME: 1" in printed
+    assert "AT_RISK: 1" in printed
 
 
 def test_the_universal_at_risk_caveat_does_not_fill_the_listing():
