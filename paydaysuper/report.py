@@ -613,12 +613,35 @@ def horizon_indeterminate(results: list[Result]) -> list[Result]:
     return [r for r in results if r.horizon_verdicts is not None]
 
 
-def needs_attention(results: list[Result]) -> bool:
-    """True where the run must not exit 0: real exposure, or a line the
-    supplied deadline facts could not decide."""
-    return any(r.verdict in EXPOSED for r in results) or bool(
+def remittance_only_unproven(results: list[Result]) -> bool:
+    """True when every in-scope positive row lacks a fund-receipt date.
+
+    Vendor imports never write ``fund_received_date``, so a fully remitted
+    file is all ``AT_RISK`` and cannot produce ``ON_TIME``. Defined-benefit
+    rows and nil amounts are not lateness-tested, so they do not count. A
+    file with no assessable rows is not remittance-only.
+    """
+    assessable = [
+        r
+        for r in results
+        if r.verdict != SKIPPED and r.line.sg_amount > 0
+    ]
+    if not assessable:
+        return False
+    return all(r.line.received is None for r in assessable)
+
+
+def needs_attention(
+    results: list[Result], *, remittance_only_confirmed: bool = False
+) -> bool:
+    """True where the run must not exit 0: real exposure, a line the
+    supplied deadline facts could not decide, or a file that cannot
+    produce ON_TIME because no fund-receipt date was supplied."""
+    if any(r.verdict in EXPOSED for r in results) or bool(
         horizon_indeterminate(results)
-    )
+    ):
+        return True
+    return remittance_only_unproven(results) and not remittance_only_confirmed
 
 
 CSV_HEADER = [
@@ -746,6 +769,7 @@ def console_summary(
     law_date: str,
     rates: dict,
     assessment_date: date | None = None,
+    remittance_only_confirmed: bool = False,
 ) -> str:
     counts: dict[str, int] = {}
     for r in results:
@@ -807,6 +831,24 @@ def console_summary(
             f"${money(total_high)}.",
             "",
         ]
+
+    if remittance_only_unproven(results):
+        if remittance_only_confirmed:
+            lines.append(
+                "Operator confirmed remittance-only review: no fund-receipt date is "
+                "recorded on any in-scope positive row, so this file cannot produce "
+                "ON_TIME. The confirmation is recorded; fill fund_received_date from "
+                "the clearing house or fund before treating a verdict as final."
+            )
+        else:
+            lines.append(
+                "This file cannot produce ON_TIME: every in-scope positive row lacks "
+                "a fund-receipt date. Fill fund_received_date from the clearing house "
+                "or fund, then rerun. To accept remittance-only AT_RISK results after "
+                "that gap is understood, pass --confirm-remittance-only. No payroll "
+                "payment, lodgment or accounting decision is made by this tool."
+            )
+        lines.append("")
 
     at_risk = [r for r in results if r.verdict == AT_RISK]
     if at_risk:
