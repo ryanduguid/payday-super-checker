@@ -24,6 +24,12 @@ NOTE_TEXT = (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def _run_report_tests_inside_tmp_path(tmp_path, monkeypatch):
+    """Practitioner-pack paths are confined to cwd; keep pytest's tmp dir as cwd."""
+    monkeypatch.chdir(tmp_path)
+
+
 def _row(**overrides):
     values = {
         "row": "2",
@@ -58,11 +64,12 @@ def _note(**overrides):
 
 
 def _write_report(path: Path, rows=None, header=None):
-    with path.open("w", encoding="utf-8-sig", newline="") as stream:
+    dest = Path(path.name)
+    with dest.open("w", encoding="utf-8-sig", newline="") as stream:
         writer = csv.writer(stream)
         writer.writerow(header or EXPECTED_REPORT_HEADER)
         writer.writerows(rows or [_row(), _note()])
-    return path
+    return dest
 
 
 def test_contract_is_deliberately_pinned_to_the_report_writer():
@@ -261,3 +268,21 @@ def test_cli_refuses_input_output_collision_through_a_symlink(tmp_path, capsys):
 
     assert cli.main(["review-pack", str(source), "-o", str(output)]) == cli.EXIT_ERROR
     assert "overwrite the input report" in capsys.readouterr().err
+
+def test_relative_report_path_cannot_leave_cwd(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    outside = tmp_path.parent / "escaped-report.csv"
+    _write_report(outside)
+    try:
+        with pytest.raises(PractitionerPackError, match="filename in the working directory"):
+            load_report_snapshot(Path("..") / outside.name)
+    finally:
+        outside.unlink(missing_ok=True)
+
+
+def test_report_path_must_be_csv(tmp_path):
+    source = tmp_path / "report.txt"
+    source.write_text("not csv", encoding="utf-8")
+    with pytest.raises(PractitionerPackError, match=".csv"):
+        load_report_snapshot(source)
+

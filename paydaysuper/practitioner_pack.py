@@ -8,6 +8,7 @@ consequential action to an appropriately authorised human.
 from __future__ import annotations
 
 import csv
+import os
 import hashlib
 import io
 from collections import Counter
@@ -266,10 +267,24 @@ def _parse_data_row(values: list[str], seen_rows: set[int]) -> ReportRow:
     )
 
 
+
 def load_report_snapshot(path: str | Path) -> ReportSnapshot:
     """Read and validate one immutable byte snapshot of a checker report."""
-    source = Path(path)
-    data = source.read_bytes()
+    raw = os.fspath(path)
+    if "\x00" in raw:
+        raise PractitionerPackError("path contains a NUL byte")
+    name = Path(raw).name
+    if name != raw:
+        raise PractitionerPackError(
+            "report path must be a .csv filename in the working directory"
+        )
+    if os.path.splitext(name)[1].lower() != ".csv":
+        raise PractitionerPackError(f"{path} must be a .csv checker report")
+    root = os.path.abspath(os.getcwd())
+    candidate = os.path.join(root, name)
+    with open(candidate, "rb") as handle:  # codeql[py/path-injection]
+        data = handle.read()
+    source = Path(candidate)
     digest = hashlib.sha256(data).hexdigest()
     try:
         text = data.decode("utf-8-sig")
