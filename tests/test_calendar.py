@@ -424,4 +424,4 @@ def test_data_files_ship_inside_the_package():
         assert (package_root / "data" / name).is_file()
 
     pyproject = (package_root.parent / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'paydaysuper = ["data/*.json", "data/profiles/*.json"]' in pyproject
+    assert 'paydaysuper = ["data/*.json", "data/profiles/*.json", "py.typed"]' in pyproject

@@ -24,7 +24,8 @@ Repository = "https://github.com/ryanduguid/CharlesHenryWickens.git"
 Issues = "https://github.com/ryanduguid/CharlesHenryWickens/issues"
 
 [project.optional-dependencies]
-dev = ["build==1.5.0", "pytest>=8", "holidays==0.102", "setuptools==84.0.0"]
+dev = [
+    "ruff>=0.11", "mypy>=1.14","build==1.5.0", "pytest>=8", "holidays==0.102", "setuptools==84.0.0"]
 
 [project.scripts]
 payday-super-check = "paydaysuper.cli:main"
@@ -34,7 +35,23 @@ packages = ["paydaysuper"]
 include-package-data = false
 
 [tool.setuptools.package-data]
-paydaysuper = ["data/*.json", "data/profiles/*.json"]
+paydaysuper = ["data/*.json", "data/profiles/*.json", "py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["paydaysuper", "tests"]
+
+[tool.ruff.lint]
+# First-enablement set: syntax and undefined-name errors only (E9, F82).
+# Keep Decimal("10.00") money literals and existing import layout.
+select = ["E9", "F82"]
+
+[tool.mypy]
+python_version = "3.10"
+packages = ["paydaysuper"]
+ignore_missing_imports = true
+pretty = true
+

@@ -3225,17 +3225,17 @@ def test_unmet_never_holds_a_sub_cent_residue_and_money_is_conserved(monkeypatch
     # boundary now changes a value on its way in: every cent of every super
     # row that was used lands on exactly one payday, nothing is invented,
     # and the same rows in any order render identically.
-    import paydaysuper.importers as importers_module
+    import paydaysuper.join as join_module
 
     balances = []
-    real_unmet = importers_module._unmet
+    real_unmet = join_module._unmet
 
     def spy(row, allocated_total):
         value = real_unmet(row, allocated_total)
         balances.append(value)
         return value
 
-    monkeypatch.setattr(importers_module, "_unmet", spy)
+    monkeypatch.setattr(join_module, "_unmet", spy)
 
     rng = random.Random(20260804)
     paydays = ["2026-07-09", "2026-07-23", "2026-08-06"]
