@@ -1,4 +1,4 @@
-# payday-super-checker: design
+# Charles Henry Wickens: design
 
 Design as implemented. Legal content researched 2 August 2026 and refreshed
 against current primary sources on 15 August 2026. See
