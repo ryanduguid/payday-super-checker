@@ -273,19 +273,17 @@ def load_report_snapshot(path: str | Path) -> ReportSnapshot:
     raw = os.fspath(path)
     if "\x00" in raw:
         raise PractitionerPackError("path contains a NUL byte")
-    if os.path.isabs(raw) or ".." in Path(raw).parts:
+    name = Path(raw).name
+    if name != raw:
         raise PractitionerPackError(
-            "report path must be a relative .csv file under the working directory"
+            "report path must be a .csv filename in the working directory"
         )
-    root = os.path.abspath(os.getcwd())
-    candidate = os.path.abspath(os.path.join(root, raw))
-    if os.path.splitext(candidate)[1].lower() != ".csv":
+    if os.path.splitext(name)[1].lower() != ".csv":
         raise PractitionerPackError(f"{path} must be a .csv checker report")
-    if os.path.commonpath([root, candidate]) == root:
-        with open(candidate, "rb") as handle:
-            data = handle.read()
-    else:
-        raise PractitionerPackError(f"{path} escapes the working directory")
+    root = os.path.abspath(os.getcwd())
+    candidate = os.path.join(root, name)
+    with open(candidate, "rb") as handle:  # codeql[py/path-injection]
+        data = handle.read()
     source = Path(candidate)
     digest = hashlib.sha256(data).hexdigest()
     try:

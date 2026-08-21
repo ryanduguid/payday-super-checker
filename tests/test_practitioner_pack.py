@@ -274,7 +274,7 @@ def test_relative_report_path_cannot_leave_cwd(tmp_path, monkeypatch):
     outside = tmp_path.parent / "escaped-report.csv"
     _write_report(outside)
     try:
-        with pytest.raises(PractitionerPackError, match="relative .csv"):
+        with pytest.raises(PractitionerPackError, match="filename in the working directory"):
             load_report_snapshot(Path("..") / outside.name)
     finally:
         outside.unlink(missing_ok=True)
