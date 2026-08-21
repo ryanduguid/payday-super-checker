@@ -24,6 +24,12 @@ NOTE_TEXT = (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def _run_report_tests_inside_tmp_path(tmp_path, monkeypatch):
+    """Practitioner-pack paths are confined to cwd; keep pytest's tmp dir as cwd."""
+    monkeypatch.chdir(tmp_path)
+
+
 def _row(**overrides):
     values = {
         "row": "2",
@@ -267,7 +273,7 @@ def test_relative_report_path_cannot_leave_cwd(tmp_path, monkeypatch):
     outside = tmp_path.parent / "escaped-report.csv"
     _write_report(outside)
     try:
-        with pytest.raises(PractitionerPackError, match="allowed directory"):
+        with pytest.raises(PractitionerPackError, match="working directory"):
             load_report_snapshot(Path("..") / outside.name)
     finally:
         outside.unlink(missing_ok=True)

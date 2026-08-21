@@ -269,28 +269,23 @@ def _parse_data_row(values: list[str], seen_rows: set[int]) -> ReportRow:
 
 
 def _resolved_report_file(path: str | Path) -> str:
-    """Return a canonical path confined to an allowed directory.
+    """Return a canonical path confined to the current working directory.
 
-    Relative paths must stay under the current working directory.
-    Absolute paths must stay under their named parent after ``..`` is
-    collapsed with ``os.path.abspath`` (lexical; no symlink follow).
+    ``os.getcwd()`` is the trusted root. Absolute paths are allowed only
+    when they still sit under that root after ``os.path.abspath``.
     ``os.path.commonpath`` is the CodeQL-recognised confinement check.
     """
     raw = os.fspath(path)
     if "\x00" in raw:
         raise PractitionerPackError("path contains a NUL byte")
-    if os.path.isabs(raw):
-        base = os.path.abspath(os.path.dirname(raw))
-        candidate = os.path.abspath(raw)
-    else:
-        base = os.path.abspath(os.getcwd())
-        candidate = os.path.abspath(os.path.join(base, raw))
+    root = os.path.abspath(os.getcwd())
+    candidate = os.path.abspath(raw if os.path.isabs(raw) else os.path.join(root, raw))
     try:
-        confined = os.path.commonpath([base, candidate]) == base
+        confined = os.path.commonpath([root, candidate]) == root
     except ValueError:
         confined = False
     if not confined:
-        raise PractitionerPackError(f"{path} escapes the allowed directory")
+        raise PractitionerPackError(f"{path} escapes the working directory")
     if os.path.splitext(candidate)[1].lower() != ".csv":
         raise PractitionerPackError(f"{path} must be a .csv checker report")
     return candidate
