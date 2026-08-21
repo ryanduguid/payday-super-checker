@@ -27,6 +27,7 @@ concurrency:
 
 jobs:
   release:
+    timeout-minutes: 15
     name: validate, attest and publish prerelease
     runs-on: ubuntu-latest
     permissions:
