@@ -296,7 +296,6 @@ def load_report_snapshot(path: str | Path) -> ReportSnapshot:
         return (
             record["row"] == ""
             and record["employee_id"] == "NOTE"
-            and bool(record["notes"])
             and all(
                 not value
                 for field, value in record.items()
@@ -318,13 +317,18 @@ def load_report_snapshot(path: str | Path) -> ReportSnapshot:
         for field, value in note_record.items()
         if field not in {"employee_id", "notes"} and value
     ]
-    if unexpected_note_values or not note_record["notes"]:
+    if unexpected_note_values or not note_record["notes"].strip():
         raise PractitionerPackError(
             f"{source} has a malformed terminal NOTE row"
         )
 
     seen_rows: set[int] = set()
-    rows = tuple(_parse_data_row(values, seen_rows) for values in body[:-1])
+    data_rows = body[:-1]
+    if not data_rows:
+        raise PractitionerPackError(
+            f"{source} must contain at least one contribution row"
+        )
+    rows = tuple(_parse_data_row(values, seen_rows) for values in data_rows)
     return ReportSnapshot(
         source_path=source,
         source_sha256=digest,

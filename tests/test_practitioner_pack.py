@@ -160,6 +160,20 @@ def test_employee_identifier_note_is_not_a_terminal_note(tmp_path):
     assert [row.source_row for row in snapshot.rows] == [2]
 
 
+def test_note_only_report_is_rejected_instead_of_rendering_no_exceptions(tmp_path):
+    source = _write_report(tmp_path / "report.csv", [_note()])
+
+    with pytest.raises(PractitionerPackError, match="at least one contribution row"):
+        load_report_snapshot(source)
+
+
+def test_terminal_note_requires_non_whitespace_provenance(tmp_path):
+    source = _write_report(tmp_path / "report.csv", [_row(), _note(notes=" \t ")])
+
+    with pytest.raises(PractitionerPackError, match="malformed terminal NOTE"):
+        load_report_snapshot(source)
+
+
 def test_malformed_terminal_note_with_data_fields_fails_closed(tmp_path):
     source = _write_report(tmp_path / "report.csv", [_row(), _note(row="3")])
 
