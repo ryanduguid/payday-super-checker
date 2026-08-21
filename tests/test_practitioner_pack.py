@@ -261,3 +261,21 @@ def test_cli_refuses_input_output_collision_through_a_symlink(tmp_path, capsys):
 
     assert cli.main(["review-pack", str(source), "-o", str(output)]) == cli.EXIT_ERROR
     assert "overwrite the input report" in capsys.readouterr().err
+
+def test_relative_report_path_cannot_leave_cwd(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    outside = tmp_path.parent / "escaped-report.csv"
+    _write_report(outside)
+    try:
+        with pytest.raises(PractitionerPackError, match="working directory"):
+            load_report_snapshot(Path("..") / outside.name)
+    finally:
+        outside.unlink(missing_ok=True)
+
+
+def test_report_path_must_be_csv(tmp_path):
+    source = tmp_path / "report.txt"
+    source.write_text("not csv", encoding="utf-8")
+    with pytest.raises(PractitionerPackError, match=".csv"):
+        load_report_snapshot(source)
+

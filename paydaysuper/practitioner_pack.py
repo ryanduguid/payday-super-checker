@@ -8,6 +8,7 @@ consequential action to an appropriately authorised human.
 from __future__ import annotations
 
 import csv
+import os
 import hashlib
 import io
 from collections import Counter
@@ -266,9 +267,39 @@ def _parse_data_row(values: list[str], seen_rows: set[int]) -> ReportRow:
     )
 
 
+
+def _resolved_report_file(path: str | Path) -> Path:
+    """Resolve an operator-selected report path and refuse traversal.
+
+    Relative paths must stay under the current working directory.
+    Absolute paths must resolve to a regular .csv file that still sits
+    inside the named parent directory after ``..`` and symlinks expand.
+    """
+    raw = Path(os.fspath(path))
+    if "\x00" in os.fspath(path):
+        raise PractitionerPackError("path contains a NUL byte")
+    if raw.is_absolute():
+        parent = raw.parent.resolve()
+        resolved = raw.resolve()
+        if not resolved.is_relative_to(parent):
+            raise PractitionerPackError(
+                f"{path} does not resolve to a file inside its parent directory"
+            )
+    else:
+        root = Path.cwd().resolve()
+        resolved = (root / raw).resolve()
+        if not resolved.is_relative_to(root):
+            raise PractitionerPackError(f"{path} escapes the working directory")
+    if resolved.suffix.lower() != ".csv":
+        raise PractitionerPackError(f"{path} must be a .csv checker report")
+    if not resolved.is_file():
+        raise FileNotFoundError(str(resolved))
+    return resolved
+
+
 def load_report_snapshot(path: str | Path) -> ReportSnapshot:
     """Read and validate one immutable byte snapshot of a checker report."""
-    source = Path(path)
+    source = _resolved_report_file(path)
     data = source.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
     try:
