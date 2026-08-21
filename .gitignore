@@ -8,6 +8,7 @@
 *.[oO][fF][xX]
 *.[pP][dD][fF]
 *.[cC][sS][vV]
+/practitioner-review.md
 !examples/*.csv
 !tests/fixtures/importers/*.csv
 
