@@ -497,3 +497,112 @@ def test_the_importer_reads_an_accounting_format_negative_as_negative(tmp_path):
 
     with pytest.raises(CsvError, match="is negative"):
         _amount("($ 612.00)", "sg amount", 2)
+
+
+def test_a_nine_column_file_still_treats_a_remitted_date_as_full_credit(tmp_path):
+    path = write_csv(tmp_path, "E1,2026-07-09,600.00,2026-07-14,,no,no,,no")
+    line = parse_rows(path, *load_mapping(None))[0]
+    assert line.remitted == date(2026, 7, 14)
+    assert line.remitted_amount is None
+
+
+def test_remitted_amount_is_read_from_an_appended_column(tmp_path):
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,"
+        "defined_benefit,remitted_amount\n"
+        "E1,2026-07-09,1000.00,2026-07-14,,no,no,,no,999.99\n",
+        encoding="utf-8",
+    )
+    line = parse_rows(path, *load_mapping(None))[0]
+    assert line.sg_amount == Decimal("1000.00")
+    assert line.remitted_amount == Decimal("999.99")
+    assert line.matched_amount is None
+
+
+def test_matched_amount_is_read_without_a_vendor_remittance_date(tmp_path):
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,"
+        "defined_benefit,remitted_amount,matched_amount\n"
+        "E1,2026-07-09,1000.00,,,no,no,,no,,600.00\n",
+        encoding="utf-8",
+    )
+    line = parse_rows(path, *load_mapping(None))[0]
+    assert line.remitted is None
+    assert line.remitted_amount is None
+    assert line.matched_amount == Decimal("600.00")
+
+
+def test_remitted_amount_without_a_date_is_refused_as_ambiguous(tmp_path):
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,"
+        "defined_benefit,remitted_amount\n"
+        "E1,2026-07-09,1000.00,,,no,no,,no,600.00\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CsvError, match="remitted_amount requires remitted_date"):
+        parse_rows(path, *load_mapping(None))
+
+
+def test_remitted_amount_greater_than_sg_amount_is_refused(tmp_path):
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,"
+        "defined_benefit,remitted_amount\n"
+        "E1,2026-07-09,1000.00,2026-07-14,,no,no,,no,1000.01\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CsvError, match="greater than sg_amount"):
+        parse_rows(path, *load_mapping(None))
+
+
+def test_matched_amount_greater_than_sg_amount_is_refused(tmp_path):
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,"
+        "defined_benefit,remitted_amount,matched_amount\n"
+        "E1,2026-07-09,1000.00,,,no,no,,no,,1000.01\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CsvError, match="matched_amount .* greater than sg_amount"):
+        parse_rows(path, *load_mapping(None))
+
+
+def test_remitted_amount_greater_than_matched_amount_is_refused(tmp_path):
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,"
+        "defined_benefit,remitted_amount,matched_amount\n"
+        "E1,2026-07-09,1000.00,2026-07-14,,no,no,,no,600.01,600.00\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        CsvError, match="remitted_amount .* greater than matched_amount"
+    ):
+        parse_rows(path, *load_mapping(None))
+
+
+@pytest.mark.parametrize("matched_amount", ["0.00", "600.00"])
+def test_partial_matched_amount_with_a_date_requires_remitted_amount(
+    tmp_path, matched_amount
+):
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,"
+        "defined_benefit,remitted_amount,matched_amount\n"
+        f"E1,2026-07-09,1000.00,2026-07-14,,no,no,,no,,{matched_amount}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        CsvError, match="matched_amount below sg_amount requires remitted_amount"
+    ):
+        parse_rows(path, *load_mapping(None))
