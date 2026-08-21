@@ -420,6 +420,7 @@ class MatchOutcome:
     flag: str
     last_known_paid_date: date | None
     remitted_amount: Decimal | None = None
+    matched_amount: Decimal | None = None
 
 
 # Why a super payment ended up unused. An orphan is surfaced either way,
@@ -850,13 +851,27 @@ def join(
     for row in payroll_rows:
         if row.sg_amount == 0:
             outcomes.append(
-                MatchOutcome(row, None, "no super guarantee owed for this payday", None)
+                MatchOutcome(
+                    row,
+                    None,
+                    "no super guarantee owed for this payday",
+                    None,
+                    matched_amount=Decimal("0"),
+                )
             )
             continue
 
         entries = contributions.get(id(row), [])
         if not entries:
-            outcomes.append(MatchOutcome(row, None, "no super payment found", None))
+            outcomes.append(
+                MatchOutcome(
+                    row,
+                    None,
+                    "no super payment found",
+                    None,
+                    matched_amount=Decimal("0"),
+                )
+            )
             continue
 
         total = sum((amount for _, amount, _ in entries), Decimal("0"))
@@ -884,6 +899,7 @@ def join(
         # what the two files say.
         paid_to_cents = cents(total)
         owed_to_cents = cents(row.sg_amount)
+        matched_amount = min(paid_to_cents, owed_to_cents)
         if paid_to_cents < owed_to_cents:
             flag_parts.append(f"partial: {total} of {row.sg_amount} matched")
         elif paid_to_cents > owed_to_cents:
@@ -899,11 +915,13 @@ def join(
 
         # The deadline tests receipt: a matched row without a paid date is
         # not evidence the fund got the money. This applies even when only
-        # part of a split contribution is undated. `remitted_amount` now
-        # prevents the known date from reading as full settlement: keep the
-        # latest known date for the dated subtotal and expose the undated
-        # remainder. This is conservative between several known instalment
-        # dates because a single canonical row cannot represent each tranche.
+        # part of a split contribution is undated. `remitted_amount` prevents
+        # the known date from reading as full operational settlement, while
+        # `matched_amount` preserves the total association independently and
+        # caps any receipt date later supplied by the operator. Keep the latest
+        # known date for the dated subtotal and expose the undated remainder.
+        # This is conservative between several known instalment dates because
+        # a single canonical row cannot represent each tranche.
         dated = [s for s, _, _ in entries if s.paid_date is not None]
         undated = [s for s, _, _ in entries if s.paid_date is None]
         last_known_paid_date = max(s.paid_date for s in dated) if dated else None
@@ -931,7 +949,12 @@ def join(
 
         outcomes.append(
             MatchOutcome(
-                row, remitted, "; ".join(flag_parts), last_known_paid_date, remitted_amount
+                row,
+                remitted,
+                "; ".join(flag_parts),
+                last_known_paid_date,
+                remitted_amount,
+                matched_amount,
             )
         )
 
@@ -959,6 +982,7 @@ CANONICAL_HEADER = [
     "next_standard_payday",
     "defined_benefit",
     "remitted_amount",
+    "matched_amount",
 ]
 
 
@@ -1023,13 +1047,16 @@ def write_canonical(result: JoinResult, path: str | Path) -> None:
     `csv_io.DEFAULT_MAPPING`, in the same field order.
 
     `sg_amount` is what was OWED, never shrunk to what arrived. A dated
-    part payment writes `remitted_date` and `remitted_amount` so the
-    checker can expose the unpaid remainder instead of the full liability.
+    part payment writes `remitted_date` and `remitted_amount` so operational
+    reporting can distinguish the dated subtotal from the full liability.
     For a mixed dated/undated match, `remitted_date` is the latest known date
     for the dated subtotal and `remitted_amount` is that subtotal only. The
-    checker therefore takes no credit before that date and exposes the
-    undated remainder afterwards. An entirely undated match still writes
-    both remittance fields blank.
+    checker therefore takes no operational credit before that date and shows
+    the undated remainder afterwards. `matched_amount` separately preserves
+    the total contribution amount associated with the payday, even when the
+    vendor supplied no date. It caps any receipt credit an operator later
+    adds. An importer-generated unmatched row writes zero; blank retains the
+    whole-liability meaning of older canonical files.
 
     The employee label is the key `join` matched on, not `employee_id or
     employee_name`: under name matching a file where only some rows carry
@@ -1067,6 +1094,9 @@ def write_canonical(result: JoinResult, path: str | Path) -> None:
             credited = outcome.remitted_amount
             if credited is not None and cents(credited) > cents(row.sg_amount):
                 credited = row.sg_amount
+            matched = outcome.matched_amount
+            if matched is not None and cents(matched) > cents(row.sg_amount):
+                matched = row.sg_amount
             values = [
                 label,
                 _iso(row.payday),
@@ -1078,6 +1108,7 @@ def write_canonical(result: JoinResult, path: str | Path) -> None:
                 "",  # next_standard_payday
                 "",  # defined_benefit
                 money(credited) if credited is not None else "",
+                money(matched) if matched is not None else "",
             ]
             writer.writerow(csv_safe(v) for v in values)
 

@@ -24,6 +24,7 @@ from .deadlines import (
     apply_item4,
     compute_due,
     earliest_prepayment_day,
+    receipt_amount_cap,
 )
 from .rates import GicTable
 from .sgc import exposure_range, notional_earnings, uplift_scenarios
@@ -83,9 +84,10 @@ class Result:
     caveats: list[str] = field(default_factory=list)
     # Set where a material deadline fact cannot be pinned down: either the
     # holiday calendar ends before the deadline or an unevidenced earlier
-    # contribution could trigger item 4. Holds the two candidate verdicts,
-    # attention-driving outcome first. The historical attribute name is
-    # retained for report-CSV and API compatibility.
+    # contribution could trigger item 4. Holds the conservative outer
+    # verdicts, attention-driving outcome first; a caveat may retain an
+    # intermediate third outcome for a partial receipt. The historical
+    # attribute name is retained for report-CSV and API compatibility.
     horizon_verdicts: tuple[str, str] | None = None
 
     @property
@@ -105,23 +107,44 @@ def _date_problem(line: ContribLine) -> str | None:
 def _received_credit(line: ContribLine, received_as_at: date | None) -> Decimal:
     """Amount tied to an evidenced fund receipt on this as-at date.
 
-    ``remitted_amount`` is the dated slice of the liability. When a user later
-    supplies ``fund_received_date`` on that canonical row, the receipt can
-    evidence no more than that slice. A legacy row with no appended amount
+    ``matched_amount`` preserves the contribution amount associated by an
+    importer even where no vendor date exists. A ten-column partial row falls
+    back to ``remitted_amount``; a legacy row with neither appended amount
     continues to mean the whole SG amount. Eligibility and timing are applied
     separately when base and final shortfalls are calculated.
     """
     if received_as_at is None:
         return Decimal("0")
     owed = cents(line.sg_amount)
-    if line.remitted_amount is None:
-        return owed
-    if line.remitted is None:
-        # The canonical CSV parser rejects this shape. Keep the assessment
-        # helper fail closed for direct library callers too: an amount that is
-        # not tied to a remittance date cannot be tied to a later fund receipt.
-        return Decimal("0")
-    return min(cents(line.remitted_amount), owed)
+    return min(cents(receipt_amount_cap(line)), owed)
+
+
+def _amount_problem(line: ContribLine) -> str | None:
+    """Apply the canonical amount invariants before item 4 can consume a row."""
+    if line.sg_amount < 0:
+        return f"row {line.row}: sg_amount cannot be negative"
+    if line.remitted_amount is not None:
+        if line.remitted_amount < 0 or line.remitted_amount > line.sg_amount:
+            return (
+                f"row {line.row}: remitted_amount must be between zero and "
+                "sg_amount"
+            )
+        if line.remitted is None:
+            return f"row {line.row}: remitted_amount requires remitted_date"
+    if line.matched_amount is not None:
+        if line.matched_amount < 0 or line.matched_amount > line.sg_amount:
+            return (
+                f"row {line.row}: matched_amount must be between zero and "
+                "sg_amount"
+            )
+        if (
+            line.remitted_amount is not None
+            and line.remitted_amount > line.matched_amount
+        ):
+            return (
+                f"row {line.row}: remitted_amount cannot exceed matched_amount"
+            )
+    return None
 
 
 def _flag_duplicates(lines: list[ContribLine]) -> None:
@@ -130,21 +153,25 @@ def _flag_duplicates(lines: list[ContribLine]) -> None:
     across two funds), so this warns rather than refuses."""
     groups: dict[tuple, list[ContribLine]] = {}
     for line in lines:
-        # The appended remitted_amount column preserves nine-column files:
-        # a dated legacy row with no explicit amount means the whole SG
-        # amount was remitted. Normalise that representation before grouping
-        # so mixing old and new canonical exports cannot hide a doubled row.
+        # The appended amount columns preserve nine- and ten-column files:
+        # a dated legacy row with no explicit remitted amount means the whole
+        # SG amount was remitted, while a blank matched amount falls back to
+        # that dated subtotal and then to the whole legacy liability. Normalise
+        # those representations before grouping so mixing old and new
+        # canonical exports cannot hide a doubled row.
         effective_remitted_amount = (
             remitted_credit(line, line.remitted)
             if line.remitted is not None
             else None
         )
+        effective_matched_amount = cents(receipt_amount_cap(line))
         key = (
             line.employee_id,
             line.qe_day,
             line.sg_amount,
             line.remitted,
             effective_remitted_amount,
+            effective_matched_amount,
             line.received,
             line.first_to_fund,
             line.out_of_cycle,
@@ -400,13 +427,24 @@ def _assess_line(
             and dl.due < settled <= possible_item4_due
         ):
             result.verdict = UNKNOWN
+            partial_better = (
+                "NOT_YET_DUE" if as_at <= possible_item4_due else UNPAID
+            )
             result.horizon_verdicts = (
                 LATE,
-                ON_TIME if receipt_covers_all else "NOT_YET_DUE",
+                ON_TIME if receipt_covers_all else partial_better,
             )
             result.caveats.append(item4_unknown)
             if not receipt_covers_all:
-                result.caveats.append(item4_partial_unknown)
+                if partial_better == "NOT_YET_DUE":
+                    result.caveats.append(item4_partial_unknown)
+                else:
+                    result.caveats.append(
+                        "the possible item 4 deadline has now passed. Because "
+                        "the evidenced fund receipt covers only part of the SG "
+                        "amount, the later-deadline outcome is UNPAID rather than "
+                        "NOT_YET_DUE"
+                    )
             return result
         elif past_horizon and settled > dl.due:
             result.verdict = UNKNOWN
@@ -707,10 +745,10 @@ def assess(
     """Assess each contribution line.
 
     `assessment_date` is the day the ATO made (or is assumed to make) an SG
-    charge assessment for these QE days. Late contributions received before
-    then reduce the final shortfall to nil (s 18D). Left as None, the tool
-    assumes no assessment has issued, which is the usual case for an
-    employer checking their own records.
+    charge assessment for these QE days. Eligible late contributions received
+    before then reduce the final shortfall by their credited amount (s 18D).
+    Left as None, the tool assumes no assessment has issued, which is the usual
+    case for an employer checking their own records.
 
     `transition_allocation_confirmed` is deliberately false by default.
     LCR 2026/1 requires contributions made from 1 to 28 July 2026 to be
@@ -721,7 +759,12 @@ def assess(
     operator reconciling it first."""
     # Collect every date problem before stopping, so the operator can fix
     # the whole file in one pass rather than one row per run.
-    problems = [p for p in (_date_problem(line) for line in lines) if p]
+    problems = [
+        problem
+        for line in lines
+        for problem in (_amount_problem(line), _date_problem(line))
+        if problem
+    ]
     if problems:
         raise ValueError("; ".join(problems))
 
@@ -750,6 +793,7 @@ def assess(
         if (
             not line.db_interest
             and line.sg_amount > 0
+            and receipt_amount_cap(line) > 0
             and contribution_date is not None
             and contribution_date <= TRANSITION_END
         ):
@@ -842,7 +886,9 @@ CSV_HEADER = [
     "notes",
     # Appended, never inserted: a positional consumer keeps its column
     # numbers. Blank on every row except the ones the calendar cannot settle,
-    # where it holds the two candidate verdicts as "WORSE or BETTER". Without
+    # where it holds conservative outer verdicts as "WORSE or BETTER". A
+    # caveat may retain an intermediate third outcome for a partial receipt.
+    # Without
     # it the CSV wrote UNKNOWN for a 9,000 contribution nobody can assess and
     # UNKNOWN for a nil row with nothing to assess, with the same blank
     # shortfall on both, so anyone reading the file rather than the console or

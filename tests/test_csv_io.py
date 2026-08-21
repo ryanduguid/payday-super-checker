@@ -518,6 +518,22 @@ def test_remitted_amount_is_read_from_an_appended_column(tmp_path):
     line = parse_rows(path, *load_mapping(None))[0]
     assert line.sg_amount == Decimal("1000.00")
     assert line.remitted_amount == Decimal("999.99")
+    assert line.matched_amount is None
+
+
+def test_matched_amount_is_read_without_a_vendor_remittance_date(tmp_path):
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,"
+        "defined_benefit,remitted_amount,matched_amount\n"
+        "E1,2026-07-09,1000.00,,,no,no,,no,,600.00\n",
+        encoding="utf-8",
+    )
+    line = parse_rows(path, *load_mapping(None))[0]
+    assert line.remitted is None
+    assert line.remitted_amount is None
+    assert line.matched_amount == Decimal("600.00")
 
 
 def test_remitted_amount_without_a_date_is_refused_as_ambiguous(tmp_path):
@@ -543,4 +559,32 @@ def test_remitted_amount_greater_than_sg_amount_is_refused(tmp_path):
         encoding="utf-8",
     )
     with pytest.raises(CsvError, match="greater than sg_amount"):
+        parse_rows(path, *load_mapping(None))
+
+
+def test_matched_amount_greater_than_sg_amount_is_refused(tmp_path):
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,"
+        "defined_benefit,remitted_amount,matched_amount\n"
+        "E1,2026-07-09,1000.00,,,no,no,,no,,1000.01\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CsvError, match="matched_amount .* greater than sg_amount"):
+        parse_rows(path, *load_mapping(None))
+
+
+def test_remitted_amount_greater_than_matched_amount_is_refused(tmp_path):
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,"
+        "defined_benefit,remitted_amount,matched_amount\n"
+        "E1,2026-07-09,1000.00,2026-07-14,,no,no,,no,600.01,600.00\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        CsvError, match="remitted_amount .* greater than matched_amount"
+    ):
         parse_rows(path, *load_mapping(None))

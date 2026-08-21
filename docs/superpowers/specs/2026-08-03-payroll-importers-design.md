@@ -59,7 +59,7 @@ Out of scope: clearing-house confirmation files, API integrations, automatic fun
 
 ## Architecture
 
-The importer is a front end that writes the canonical CSV. **Corrected:** the appended `remitted_amount` field is parsed in `csv_io.py`, stored on `deadlines.ContribLine`, and consumed by `report.py`. It changes no deadline formula in `deadlines.py` and no rate arithmetic in `sgc.py`; it prevents a dated subtotal from being mistaken for the whole liability and keeps remittance status separate from statutory fund-receipt credit. The CSV it writes is also the workpaper: an accountant can read it, add an evidenced receipt date, and run the check on the corrected file.
+The importer is a front end that writes the canonical CSV. **Corrected:** the appended `remitted_amount` and `matched_amount` fields are parsed in `csv_io.py`, stored on `deadlines.ContribLine`, and consumed by `report.py`. They change no deadline formula in `deadlines.py` and no rate arithmetic in `sgc.py`; together they prevent a dated subtotal or an undated short match from being mistaken for the whole liability while keeping vendor association and remittance status separate from statutory fund-receipt credit. The CSV it writes is also the workpaper: an accountant can read it, add an evidenced receipt date, and run the check on the corrected file.
 
 ```
 payroll export --+
@@ -104,21 +104,21 @@ Reads both files through their profiles, filters to super guarantee, joins, and 
 
 **Period match.** A super row matches a payroll row when the super row's Period From to Period To brackets the payroll row's pay period end. Where a payroll export gives no period end, the payday stands in for it.
 
-**Remittance date.** Where several super rows match one payroll row, `remitted` takes the latest known paid date among the dated rows. A contribution split across two dated payments is not evidenced to the full dated subtotal until the last date, so the earliest date would flatter an as-at result. `remitted_amount` limits that date to the dated subtotal. If every matching row is undated, both remittance fields are blank.
+**Remittance date and matched amount.** Where several super rows match one payroll row, `remitted` takes the latest known paid date among the dated rows. A contribution split across two dated payments is not evidenced to the full dated subtotal until the last date, so the earliest date would flatter an as-at result. `remitted_amount` limits that date to the dated subtotal. If every matching row is undated, both remittance fields are blank. The independently appended `matched_amount` still records the total associated contribution, capped at the SG liability, so adding a later fund-receipt date cannot turn a known short match into full credit. It is an association cap, not evidence of payment or receipt.
 
 **Amount reconciliation.** Matched super amounts are summed and compared to the payroll SG amount to the cent.
 
-**Corrected** in the last three rows of the table below: a short payment writes `remitted_date` for the latest known date plus `remitted_amount` for the dated money. The checker uses those fields only for operational remittance status until a fund receipt is supplied. Without `fund_received_date`, the statutory base and final shortfalls remain unreduced; with a receipt, the amount caps the contribution that can be tested under ss 18C and 18D.
+**Corrected** in the last three rows of the table below: a short payment writes `remitted_date` for the latest known date plus `remitted_amount` for the dated money, and always writes the full associated subtotal to `matched_amount`. The checker uses the remittance fields only for operational status until a fund receipt is supplied. Without `fund_received_date`, the statutory base and final shortfalls remain unreduced; with a receipt, `matched_amount` caps the contribution that can be tested under ss 18C and 18D. Blank `matched_amount` retains compatibility with older canonical files: the checker falls back to `remitted_amount`, then to the full liability for legacy rows with neither field.
 
 | Case | Emitted | Flag |
 | --- | --- | --- |
-| sum equals payroll SG, every match dated | `remitted` set, `remitted_amount` = owed | none |
-| sum equals payroll SG, some matches undated | `remitted` = latest known date, `remitted_amount` = dated subtotal | `N of M matched has no payment date on record` |
-| sum equals payroll SG, all matches undated | both remittance fields blank | `matched super rows carry no payment date` |
-| sum is short, every match dated | `remitted` set, `remitted_amount` = paid | `partial: $X of $Y matched` |
-| sum is short, some matches undated | `remitted` = latest known date, `remitted_amount` = dated subtotal | `partial: $X of $Y matched` |
-| sum exceeds payroll SG | `remitted` set, `remitted_amount` capped at owed | `over: $X against $Y, check for salary sacrifice` |
-| no super row matches | `remitted` blank | `no super payment found` |
+| sum equals payroll SG, every match dated | `remitted` set, both amounts = owed | none |
+| sum equals payroll SG, some matches undated | `remitted` = latest known date, `remitted_amount` = dated subtotal, `matched_amount` = owed | `N of M matched has no payment date on record` |
+| sum equals payroll SG, all matches undated | both remittance fields blank, `matched_amount` = owed | `matched super rows carry no payment date` |
+| sum is short, every match dated | `remitted` set, both amounts = paid | `partial: $X of $Y matched` |
+| sum is short, some matches undated | `remitted` = latest known date, `remitted_amount` = dated subtotal, `matched_amount` = paid | `partial: $X of $Y matched` |
+| sum exceeds payroll SG | `remitted` set, both amounts capped at owed | `over: $X against $Y, check for salary sacrifice` |
+| no super row matches | `remitted` blank, `matched_amount` = zero | `no super payment found` |
 | super row matches nothing | not emitted | one of four `ORPHAN_*` messages: `matched no payday`, `matched only paydays that were already settled by other payments`, `matched only paydays that owe no super guarantee`, `matched paydays but carries no amount to allocate` |
 
 Sums are compared to the cent on both sides, at the precision the canonical file is written and read at, so a payroll figure of 540.004 against 540.00 paid is settled rather than short.
@@ -127,7 +127,7 @@ Sums are compared to the cent on both sides, at the precision the canonical file
 
 ### Canonical output
 
-The ten columns: `employee_id`, `payment_date`, `sg_amount`, `remitted_date`, `fund_received_date`, `first_contribution_to_fund`, `out_of_cycle`, `next_standard_payday`, `defined_benefit`, `remitted_amount`. `remitted_amount` is appended so a nine-column file still parses.
+The eleven columns: `employee_id`, `payment_date`, `sg_amount`, `remitted_date`, `fund_received_date`, `first_contribution_to_fund`, `out_of_cycle`, `next_standard_payday`, `defined_benefit`, `remitted_amount`, `matched_amount`. Both amount fields were appended in order, so nine- and ten-column files still parse.
 
 `fund_received_date` is always blank. The importer cannot know it. The report already handles an unknown receipt, and the run prints one line saying so.
 

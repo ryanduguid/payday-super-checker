@@ -55,6 +55,11 @@ class ContribLine:
     sg_amount: Decimal  # dollars
     remitted: date | None = None
     remitted_amount: Decimal | None = None
+    # Amount from the contribution record associated with this payday,
+    # whether or not that record carries a remittance date. Importers write
+    # it explicitly so an undated partial cannot later become indistinguishable
+    # from a legacy full row when an operator adds fund_received_date.
+    matched_amount: Decimal | None = None
     received: date | None = None
     first_to_fund: bool = False
     out_of_cycle: bool = False
@@ -62,6 +67,21 @@ class ContribLine:
     db_interest: bool = False
     row: int = 0
     duplicate_note: str = ""
+
+
+def receipt_amount_cap(line: ContribLine) -> Decimal:
+    """Maximum contribution amount a receipt date on this row can evidence.
+
+    ``matched_amount`` is the preferred explicit association. Ten-column
+    part-payment rows fall back to ``remitted_amount``. A legacy row with
+    neither appended amount keeps its historical whole-liability meaning.
+    Assessment validates the explicit amounts before this helper is used.
+    """
+    if line.matched_amount is not None:
+        return line.matched_amount
+    if line.remitted_amount is not None:
+        return line.remitted_amount
+    return line.sg_amount
 
 
 @dataclass
@@ -261,7 +281,11 @@ def _item4_evidence(
     pre-payment/on-time window proves the contribution. A remittance never
     does. Missing or future receipt facts remain possible unless a known
     receipt/remittance makes an eligible receipt impossible."""
-    if line.sg_amount <= 0 or line.db_interest:
+    if (
+        line.sg_amount <= 0
+        or line.db_interest
+        or receipt_amount_cap(line) <= 0
+    ):
         return "impossible"
 
     receipt = line.received

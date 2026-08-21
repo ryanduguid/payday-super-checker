@@ -1582,7 +1582,19 @@ def test_write_canonical_writes_the_exact_header_and_blank_flag_columns(tmp_path
         header = next(reader)
         row = next(reader)
     assert header == CANONICAL_HEADER
-    assert row == ["A", "2026-07-09", "612.00", "2026-07-14", "", "", "", "", "", "612.00"]
+    assert row == [
+        "A",
+        "2026-07-09",
+        "612.00",
+        "2026-07-14",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "612.00",
+        "612.00",
+    ]
 
 
 def test_write_canonical_rounds_sg_amount_half_up_like_the_rest_of_the_tool(tmp_path):
@@ -1693,6 +1705,7 @@ def test_a_partial_payment_is_not_written_as_fully_remitted(tmp_path):
     assert rows[0]["sg_amount"] == "1000.00"
     assert rows[0]["remitted_date"] == "2026-07-14"
     assert rows[0]["remitted_amount"] == "1.00"
+    assert rows[0]["matched_amount"] == "1.00"
 
     report_out = tmp_path / "report.csv"
     code = cli_main(
@@ -2358,6 +2371,7 @@ def test_import_prints_the_partial_warning_and_writes_remitted_amount(
     assert rows[0]["sg_amount"] == "1000.00"
     assert rows[0]["remitted_date"] == "2026-07-14"
     assert rows[0]["remitted_amount"] == "999.99"
+    assert rows[0]["matched_amount"] == "999.99"
 
     report_out = tmp_path / "report.csv"
     check_code = cli_main(
@@ -2523,14 +2537,12 @@ def test_import_never_truncates_an_undated_warning_however_many_there_are(
     tmp_path, capsys
 ):
     # PART 3(b) REGRESSION. An OUTCOME_UNDATED row -- every dollar owed was
-    # matched, but no part of the match carries a payment date -- carries a
-    # figure the canonical CSV cannot hold, for the identical reason a
-    # partial payment does: join() sets remitted=None the moment any part of
-    # the match is undated, so write_canonical's remitted_date comes out
-    # blank and the checker reads a fully-funded payday as unfunded. Before
-    # this fix these warnings were sliced by the ordinary MAX_WARNINGS_SHOWN
-    # cap like any other row-level warning, so a file with more than the cap
-    # silently lost the only record that the money actually arrived.
+    # matched, but no part of the match carries a payment date -- needs a
+    # per-row reconciliation warning even though matched_amount now preserves
+    # the amount in the canonical file. Before this fix these warnings were
+    # sliced by the ordinary MAX_WARNINGS_SHOWN cap like any other row-level
+    # warning, so a file with more than the cap silently hid which rows still
+    # needed payment and receipt evidence.
     # Reproduction: 25 employees, each owed 500.00 and paid exactly 500.00,
     # but every super row's Paid Date is blank.
     n = 25
@@ -2577,15 +2589,71 @@ def test_import_never_truncates_an_undated_warning_however_many_there_are(
     # the cap, no "... and N more" line has anything left to summarise.
     assert "... and" not in printed
 
-    # The canonical CSV still hides the fact from the checker (the
-    # documented, accepted limitation) for a spot-checked row -- proving the
-    # warning list is genuinely the only place a reader learns the money
-    # actually arrived.
+    # The canonical CSV preserves the association but does not convert it to
+    # payment or receipt evidence. The uncapped warning still identifies the
+    # row that needs those dates reconciled.
     with open(out, newline="", encoding="utf-8-sig") as f:
         rows = list(_csv.DictReader(f))
     assert rows[0]["employee_id"] == "Employee00"
     assert rows[0]["sg_amount"] == "500.00"
     assert rows[0]["remitted_date"] == ""
+    assert rows[0]["matched_amount"] == "500.00"
+
+
+def test_undated_partial_survives_receipt_date_enrichment_without_full_credit(
+    tmp_path,
+):
+    """A known 600/1000 match must not collapse into legacy full credit.
+
+    The supported workflow writes an import workpaper and later adds the fund
+    receipt date. The amount known at import therefore has to survive in a
+    machine-readable column even when the vendor supplied no remittance date.
+    """
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
+        "A,09/07/2026,09/07/2026,1000.00\n",
+        encoding="utf-8",
+    )
+    super_path = tmp_path / "super.csv"
+    super_path.write_text(
+        "Employee Name,Superannuation Category,Period From,Period To,Paid Date,Amount\n"
+        "A,Superannuation Guarantee,01/07/2026,09/07/2026,,600.00\n",
+        encoding="utf-8",
+    )
+    contributions = tmp_path / "contributions.csv"
+    import_files(payroll_path, super_path, contributions, vendor="myob-ar")
+
+    with open(contributions, newline="", encoding="utf-8-sig") as source:
+        reader = _csv.DictReader(source)
+        rows = list(reader)
+        fieldnames = reader.fieldnames
+    assert rows[0]["remitted_date"] == ""
+    assert rows[0]["remitted_amount"] == ""
+    assert rows[0]["matched_amount"] == "600.00"
+
+    rows[0]["fund_received_date"] = "2026-07-15"
+    with open(contributions, "w", newline="", encoding="utf-8-sig") as target:
+        writer = _csv.DictWriter(target, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    report = tmp_path / "report.csv"
+    code = cli_main(
+        [
+            str(contributions),
+            "-o",
+            str(report),
+            "--as-at",
+            "2026-08-10",
+            "--confirm-transition-allocation",
+        ]
+    )
+    assert code == EXIT_LATE_FOUND
+    with open(report, newline="", encoding="utf-8") as source:
+        result = next(_csv.DictReader(source))
+    assert result["verdict"] == "UNPAID"
+    assert Decimal(result["final_shortfall"]) == Decimal("400.00")
 
 
 def test_structural_warnings_print_before_the_per_row_block(tmp_path, capsys):

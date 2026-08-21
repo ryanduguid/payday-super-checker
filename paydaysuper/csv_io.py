@@ -85,6 +85,7 @@ CANONICAL = {
     "next_standard_qe_day": False,
     "db_interest": False,
     "remitted_amount": False,
+    "matched_amount": False,
 }
 
 DEFAULT_MAPPING = {
@@ -101,6 +102,10 @@ DEFAULT_MAPPING = {
     # still parses. The heading sits last so a positional reader keeps its
     # column numbers.
     "remitted_amount": "remitted_amount",
+    # Appended after remitted_amount. An explicit value preserves the amount
+    # matched to a payday even when the vendor supplied no remittance date.
+    # Blank keeps legacy whole-liability receipt semantics.
+    "matched_amount": "matched_amount",
 }
 
 TRUE_WORDS = {"y", "yes", "true", "1", "t"}
@@ -511,12 +516,18 @@ def _parse_rows(
             received_raw = optional("received").strip()
             next_raw = optional("next_standard_qe_day").strip()
             remitted_amount_raw = optional("remitted_amount").strip()
+            matched_amount_raw = optional("matched_amount").strip()
 
             try:
                 sg_amount = _parse_amount(row[mapping["sg_amount"]], "sg_amount", i)
                 remitted_amount = (
                     _parse_amount(remitted_amount_raw, "remitted_amount", i)
                     if remitted_amount_raw
+                    else None
+                )
+                matched_amount = (
+                    _parse_amount(matched_amount_raw, "matched_amount", i)
+                    if matched_amount_raw
                     else None
                 )
                 if remitted_amount is not None and not remitted_raw:
@@ -529,6 +540,20 @@ def _parse_rows(
                         f"row {i}: remitted_amount {money(remitted_amount)} is greater "
                         f"than sg_amount {money(sg_amount)}"
                     )
+                if matched_amount is not None and matched_amount > sg_amount:
+                    raise CsvError(
+                        f"row {i}: matched_amount {money(matched_amount)} is greater "
+                        f"than sg_amount {money(sg_amount)}"
+                    )
+                if (
+                    matched_amount is not None
+                    and remitted_amount is not None
+                    and remitted_amount > matched_amount
+                ):
+                    raise CsvError(
+                        f"row {i}: remitted_amount {money(remitted_amount)} is greater "
+                        f"than matched_amount {money(matched_amount)}"
+                    )
                 line = ContribLine(
                     employee_id=employee,
                     qe_day=_parse_date(row[mapping["qe_day"]], "qe_day", i),
@@ -537,6 +562,7 @@ def _parse_rows(
                         _parse_date(remitted_raw, "remitted", i) if remitted_raw else None
                     ),
                     remitted_amount=remitted_amount,
+                    matched_amount=matched_amount,
                     received=(
                         _parse_date(received_raw, "received", i) if received_raw else None
                     ),
