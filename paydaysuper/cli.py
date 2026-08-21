@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from datetime import date
@@ -169,6 +170,19 @@ def build_review_pack_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _same_local_path(left: str | Path, right: str | Path) -> bool:
+    """Compare operator-selected local paths without dereferencing them here.
+
+    ``realpath`` normalises relative components and follows existing symlinks,
+    so an output alias cannot replace the report used as input.  This CLI is a
+    single-user local-file tool; the comparison deliberately imposes no
+    artificial safe root on the operator's selected workpaper location.
+    """
+    return os.path.normcase(os.path.realpath(left)) == os.path.normcase(
+        os.path.realpath(right)
+    )
+
+
 def review_pack_main(argv: list[str]) -> int:
     from .practitioner_pack import (
         PractitionerPackError,
@@ -180,7 +194,7 @@ def review_pack_main(argv: list[str]) -> int:
     requested_output = Path(args.output)
     output = requested_output
     try:
-        if Path(args.report_csv).resolve() == requested_output.resolve():
+        if _same_local_path(args.report_csv, requested_output):
             raise PractitionerPackError(
                 f"the review pack would overwrite the input report {args.report_csv}. "
                 "Choose a different path with -o."

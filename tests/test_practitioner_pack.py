@@ -1,6 +1,5 @@
 import csv
 import hashlib
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -181,14 +180,10 @@ def test_duplicate_or_changed_headers_fail_closed(tmp_path):
 
 
 def test_default_practitioner_workpaper_is_ignored():
-    repository = Path(__file__).resolve().parents[1]
-    result = subprocess.run(
-        ["git", "check-ignore", "-q", "--no-index", "practitioner-review.md"],
-        cwd=repository,
-        check=False,
-    )
+    root = Path(__file__).resolve().parents[1]
+    rules = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
 
-    assert result.returncode == 0
+    assert "/practitioner-review.md" in rules
 
 
 def test_output_is_atomic_and_replaces_the_link_not_its_target(tmp_path):
@@ -227,3 +222,15 @@ def test_cli_refuses_input_output_collision_and_wrong_suffix(tmp_path, capsys):
 
     assert cli.main(["review-pack", str(source), "-o", str(tmp_path / "review.txt")]) == 1
     assert ".md filename" in capsys.readouterr().err
+
+
+def test_cli_refuses_input_output_collision_through_a_symlink(tmp_path, capsys):
+    source = _write_report(tmp_path / "report.csv")
+    output = tmp_path / "review.md"
+    try:
+        output.symlink_to(source)
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+
+    assert cli.main(["review-pack", str(source), "-o", str(output)]) == cli.EXIT_ERROR
+    assert "overwrite the input report" in capsys.readouterr().err
