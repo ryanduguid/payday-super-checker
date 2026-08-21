@@ -1,8 +1,10 @@
-# payday-super-checker
+# Charles Henry Wickens
 > High-density context for LLM agents, code generators, and statutory compliance tooling.
 
 ## Package Overview
-- **Repository**: https://github.com/ryanduguid/payday-super-checker
+- **Repository**: https://github.com/ryanduguid/CharlesHenryWickens
+- **Distribution**: `payday-super-checker`
+- **Import Package**: `paydaysuper`
 - **CLI Command**: `payday-super-check`
 - **Domain**: Experimental evaluation of Australian superannuation contribution timelines against Payday Super 2026 deadlines and estimation of potential Superannuation Guarantee (SG) charge exposure.
 - **Primary Legislation**: *Superannuation Guarantee (Administration) Act 1992 (Cth)* (*SGAA 1992*), Treasury Laws Amendment (Payday Superannuation) reforms.
