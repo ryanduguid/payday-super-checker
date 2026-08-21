@@ -53,13 +53,13 @@ Two consequences follow.
 
 ## Scope
 
-In scope: reading a payroll export and a super payments export, joining them, writing the canonical contributions CSV, and reporting what did not join.
+In scope: reading a payroll export and a super payments export, joining them, writing the canonical contributions CSV, reporting what did not join, and carrying a dated remittance subtotal into the check path without treating remittance as fund receipt.
 
-Out of scope: clearing-house confirmation files, API integrations, and any change to the deadline or charge calculation.
+Out of scope: clearing-house confirmation files, API integrations, automatic fund-receipt inference, and changes to the statutory deadline rules. **Corrected:** the appended amount field necessarily extends the report calculation path so operational remittance credit stays separate from receipt-based base and final shortfalls.
 
 ## Architecture
 
-The importer is a front end that writes the existing canonical CSV. It does not touch `csv_io.py`, `deadlines.py`, `sgc.py` or `report.py`, so the audited calculation path stays as it is. The CSV it writes is also the workpaper: an accountant can read it, correct a receipt date, and run the check on the corrected file.
+The importer is a front end that writes the canonical CSV. **Corrected:** the appended `remitted_amount` field is parsed in `csv_io.py`, stored on `deadlines.ContribLine`, and consumed by `report.py`. It changes no deadline formula in `deadlines.py` and no rate arithmetic in `sgc.py`; it prevents a dated subtotal from being mistaken for the whole liability and keeps remittance status separate from statutory fund-receipt credit. The CSV it writes is also the workpaper: an accountant can read it, add an evidenced receipt date, and run the check on the corrected file.
 
 ```
 payroll export --+
@@ -108,7 +108,7 @@ Reads both files through their profiles, filters to super guarantee, joins, and 
 
 **Amount reconciliation.** Matched super amounts are summed and compared to the payroll SG amount to the cent.
 
-**Corrected** in the last three rows of the table below: a short payment writes `remitted_date` for the latest known date plus `remitted_amount` for the dated money. The checker takes no credit before that date and exposes the unpaid or undated remainder afterwards.
+**Corrected** in the last three rows of the table below: a short payment writes `remitted_date` for the latest known date plus `remitted_amount` for the dated money. The checker uses those fields only for operational remittance status until a fund receipt is supplied. Without `fund_received_date`, the statutory base and final shortfalls remain unreduced; with a receipt, the amount caps the contribution that can be tested under ss 18C and 18D.
 
 | Case | Emitted | Flag |
 | --- | --- | --- |

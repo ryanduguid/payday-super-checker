@@ -6,7 +6,7 @@
   "signature": ["Employee Name", "Paid Date", "Amount"],
   "columns": {
     "employee_name": ["Employee Name", "Employee"],
-    "employee_id": ["Card ID", "Employee ID", "Employee Membership #"],
+    "employee_id": ["Card ID", "Employee ID"],
     "period_start": ["Period From"],
     "period_end": ["Period To"],
     "paid_date": ["Paid Date"],

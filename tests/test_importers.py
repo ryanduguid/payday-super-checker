@@ -236,18 +236,31 @@ def test_employment_hero_uses_super_guarantee_not_qualifying_earnings(tmp_path):
     assert rows[0].sg_amount == Decimal("1.00")
 
 
-def test_myob_ar_super_accepts_employee_membership_number(tmp_path):
-    path = tmp_path / "membership.csv"
-    path.write_text(
+def test_myob_ar_membership_number_is_not_compared_with_payroll_card_id(tmp_path):
+    super_path = tmp_path / "membership.csv"
+    super_path.write_text(
         "Employee Name,Employee Membership #,Superannuation Category,Period From,"
         "Period To,Paid Date,Amount\n"
         "Alice,M-9,Superannuation Guarantee,01/07/2026,09/07/2026,14/07/2026,612.00\n",
         encoding="utf-8",
     )
-    rows, profile, resolved = read_super(path)
+    rows, profile, resolved = read_super(super_path)
     assert profile.key == "myob-ar-super"
-    assert resolved["employee_id"] == "Employee Membership #"
-    assert rows[0].employee_id == "M-9"
+    assert "employee_id" not in resolved
+    assert rows[0].employee_id is None
+
+    payroll_path = tmp_path / "payroll.csv"
+    payroll_path.write_text(
+        "Employee Name,Card ID,Date,Pay Period End,Superannuation Guarantee\n"
+        "Alice,C-1,09/07/2026,09/07/2026,612.00\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "contributions.csv"
+    report = import_files(payroll_path, super_path, out, vendor="myob-ar")
+    assert report.key_mode == "name"
+    assert report.matched == 1
+    assert report.unmatched == 0
+    assert any("name" in warning for warning in report.warnings)
 
 
 def test_read_payroll_resolved_columns_omit_an_absent_period_end(tmp_path):
@@ -1656,9 +1669,9 @@ def test_a_partial_payment_is_not_written_as_fully_remitted(tmp_path):
     # CRITICAL regression. A dated part payment used to write remitted_date
     # beside the FULL sg_amount with no remitted_amount column, so the
     # checker read a short-paid payday as settled in full. sg_amount stays
-    # the liability; remitted_amount is the dated money; the checker must
-    # expose the unpaid remainder, not treat the payday as AT_RISK with a
-    # nil shortfall.
+    # the liability and remitted_amount is the dated money. With no fund
+    # receipt, the checker must expose the whole statutory shortfall while
+    # separately reporting the operationally unremitted remainder.
     payroll_path = tmp_path / "payroll.csv"
     payroll_path.write_text(
         "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
@@ -1697,7 +1710,7 @@ def test_a_partial_payment_is_not_written_as_fully_remitted(tmp_path):
         checker_rows = list(_csv.DictReader(f))
     checker_row = next(r for r in checker_rows if r["employee_id"] == "A")
     assert checker_row["verdict"] in ("UNPAID", "LATE")
-    assert Decimal(checker_row["final_shortfall"]) == Decimal("999.00")
+    assert Decimal(checker_row["final_shortfall"]) == Decimal("1000.00")
 
 
 def test_an_absurdly_large_sg_amount_is_refused_with_csverror(tmp_path):
@@ -2305,8 +2318,9 @@ def test_import_prints_the_partial_warning_and_writes_remitted_amount(
     tmp_path, capsys
 ):
     # A dated 999.99 of 1000.00 match must keep the per-row warning AND
-    # write remitted_amount so the checker sees a 0.01 remainder, not a
-    # full shortfall.
+    # write remitted_amount so the checker reports the 0.01 operationally
+    # unremitted remainder. With no fund receipt, the statutory shortfall
+    # remains the full 1000.00.
     payroll_path = tmp_path / "payroll.csv"
     payroll_path.write_text(
         "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
@@ -2360,7 +2374,7 @@ def test_import_prints_the_partial_warning_and_writes_remitted_amount(
     with open(report_out, newline="", encoding="utf-8") as f:
         checker_row = next(r for r in _csv.DictReader(f) if r["employee_id"] == "A")
     assert checker_row["verdict"] == "UNPAID"
-    assert Decimal(checker_row["final_shortfall"]) == Decimal("0.01")
+    assert Decimal(checker_row["final_shortfall"]) == Decimal("1000.00")
 
 
 def test_mixed_dated_and_undated_match_uses_the_latest_known_date_conservatively(
@@ -2368,8 +2382,9 @@ def test_mixed_dated_and_undated_match_uses_the_latest_known_date_conservatively
 ):
     # A single canonical row cannot represent several dated instalments.
     # Use the latest known date for the dated subtotal: before that date no
-    # credit is taken; on or after it only that subtotal is credited. This is
-    # conservative without treating a known future remittance as immediate.
+    # operational credit is taken; on or after it only that subtotal is shown
+    # as remitted. With no fund receipt, neither date reduces the statutory
+    # shortfall.
     payroll_path = tmp_path / "payroll.csv"
     payroll_path.write_text(
         "Employee Name,Date,Pay Period End,Superannuation Guarantee\n"
@@ -2431,7 +2446,7 @@ def test_mixed_dated_and_undated_match_uses_the_latest_known_date_conservatively
     assert after_code == EXIT_LATE_FOUND
     with open(after_report, newline="", encoding="utf-8") as f:
         after = next(r for r in _csv.DictReader(f) if r["employee_id"] == "A")
-    assert Decimal(after["final_shortfall"]) == Decimal("400.00")
+    assert Decimal(after["final_shortfall"]) == Decimal("1000.00")
 
 
 def test_import_never_truncates_a_partial_warning_however_many_there_are(

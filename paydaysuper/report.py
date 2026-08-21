@@ -102,18 +102,49 @@ def _date_problem(line: ContribLine) -> str | None:
     return None
 
 
+def _received_credit(line: ContribLine, received_as_at: date | None) -> Decimal:
+    """Amount tied to an evidenced fund receipt on this as-at date.
+
+    ``remitted_amount`` is the dated slice of the liability. When a user later
+    supplies ``fund_received_date`` on that canonical row, the receipt can
+    evidence no more than that slice. A legacy row with no appended amount
+    continues to mean the whole SG amount. Eligibility and timing are applied
+    separately when base and final shortfalls are calculated.
+    """
+    if received_as_at is None:
+        return Decimal("0")
+    owed = cents(line.sg_amount)
+    if line.remitted_amount is None:
+        return owed
+    if line.remitted is None:
+        # The canonical CSV parser rejects this shape. Keep the assessment
+        # helper fail closed for direct library callers too: an amount that is
+        # not tied to a remittance date cannot be tied to a later fund receipt.
+        return Decimal("0")
+    return min(cents(line.remitted_amount), owed)
+
+
 def _flag_duplicates(lines: list[ContribLine]) -> None:
     """Two identical rows are double-counted, and a re-exported pay run is a
     common way to get them. They can also be legitimate (one payday split
     across two funds), so this warns rather than refuses."""
     groups: dict[tuple, list[ContribLine]] = {}
     for line in lines:
+        # The appended remitted_amount column preserves nine-column files:
+        # a dated legacy row with no explicit amount means the whole SG
+        # amount was remitted. Normalise that representation before grouping
+        # so mixing old and new canonical exports cannot hide a doubled row.
+        effective_remitted_amount = (
+            remitted_credit(line, line.remitted)
+            if line.remitted is not None
+            else None
+        )
         key = (
             line.employee_id,
             line.qe_day,
             line.sg_amount,
             line.remitted,
-            line.remitted_amount,
+            effective_remitted_amount,
             line.received,
             line.first_to_fund,
             line.out_of_cycle,
@@ -213,14 +244,18 @@ def _assess_line(
             result.caveats.append(NO_RECEIPT_CAVEAT)
 
     credit = remitted_credit(line, remitted)
-    unpaid = cents(line.sg_amount) - credit
-    if unpaid < 0:
-        unpaid = Decimal("0")
-    fully_remitted = unpaid == 0
-    if credit > 0 and unpaid > 0:
+    operational_unremitted = cents(line.sg_amount) - credit
+    if operational_unremitted < 0:
+        operational_unremitted = Decimal("0")
+    fully_remitted = operational_unremitted == 0
+    receipt_credit = _received_credit(line, settled)
+    receipt_covers_all = receipt_credit >= cents(line.sg_amount)
+    if credit > 0 and operational_unremitted > 0:
         result.notes.append(
             f"part-paid: ${money(credit)} of ${money(line.sg_amount)} is evidenced "
-            f"as remitted, leaving ${money(unpaid)} unpaid"
+            f"as remitted, leaving ${money(operational_unremitted)} unremitted. "
+            "Remittance does not establish statutory credit until the fund receipt "
+            "and its timing are evidenced"
         )
 
     # Past the calendar's coverage the holiday table is empty, so every
@@ -264,20 +299,63 @@ def _assess_line(
         if item4_uncertain
         else ""
     )
+    item4_partial_unknown = (
+        "because the evidenced fund receipt covers only part of the SG amount, "
+        "the unresolved item 4 deadline also leaves UNPAID possible: that is "
+        "the outcome if the actual deadline falls on or after the receipt date "
+        "but on or before the as-at date"
+    )
+    horizon_partial_unknown = (
+        "because the evidenced fund receipt covers only part of the SG amount, "
+        "a missing holiday also leaves UNPAID possible: that is the outcome if "
+        "the actual deadline falls on or after the receipt date but on or before "
+        "the as-at date"
+    )
 
     stale_prepayment = False
-    receipt_covers_all = line.remitted_amount is None or fully_remitted
-    if settled is not None and receipt_covers_all:
+    on_time_receipt_credit = Decimal("0")
+    if settled is not None:
         if settled < line.qe_day:
             # Pre-payments count only inside the 12-month window ending
             # the day before the QE day (s 18C(1)(c)(ii)).
             earliest = earliest_prepayment_day(line.qe_day)
             if settled >= earliest:
-                result.verdict = ON_TIME
+                on_time_receipt_credit = receipt_credit
                 result.notes.append(
-                    "received before the QE day: counted as an on-time pre-payment "
-                    "under s 18C(1)(c)(ii)"
+                    f"${money(receipt_credit)} received before the QE day: counted "
+                    "as an on-time pre-payment under s 18C(1)(c)(ii)"
                 )
+                if receipt_covers_all:
+                    result.verdict = ON_TIME
+                elif dl.due >= as_at:
+                    result.caveats.append(
+                        "the eligible pre-payment covers only part of the SG amount, "
+                        "but the deadline has not passed, so there is nothing to "
+                        "assess yet"
+                    )
+                    return result
+                elif (
+                    past_horizon
+                    or (
+                        item4_uncertain
+                        and possible_item4_due is not None
+                        and as_at <= possible_item4_due
+                    )
+                ):
+                    result.verdict = UNKNOWN
+                    result.horizon_verdicts = (UNPAID, "NOT_YET_DUE")
+                    if past_horizon:
+                        result.caveats.append(
+                            "the eligible pre-payment covers only part of the SG "
+                            "amount, but the deadline runs past the calendar's "
+                            "coverage and may not have passed. No exposure is "
+                            "calculated until the missing holiday facts are supplied"
+                        )
+                    if item4_uncertain:
+                        result.caveats.append(item4_unknown)
+                    return result
+                else:
+                    result.verdict = UNPAID
             else:
                 stale_prepayment = True
                 result.caveats.append(
@@ -322,16 +400,58 @@ def _assess_line(
             and dl.due < settled <= possible_item4_due
         ):
             result.verdict = UNKNOWN
-            result.horizon_verdicts = (LATE, ON_TIME)
+            result.horizon_verdicts = (
+                LATE,
+                ON_TIME if receipt_covers_all else "NOT_YET_DUE",
+            )
             result.caveats.append(item4_unknown)
+            if not receipt_covers_all:
+                result.caveats.append(item4_partial_unknown)
             return result
         elif past_horizon and settled > dl.due:
             result.verdict = UNKNOWN
-            result.horizon_verdicts = (LATE, ON_TIME)
+            result.horizon_verdicts = (
+                LATE,
+                ON_TIME if receipt_covers_all else "NOT_YET_DUE",
+            )
             result.caveats.append(horizon_unknown)
+            if not receipt_covers_all:
+                result.caveats.append(horizon_partial_unknown)
             return result
+        elif settled <= dl.due:
+            on_time_receipt_credit = receipt_credit
+            if receipt_covers_all:
+                result.verdict = ON_TIME
+            elif (
+                past_horizon
+                or (
+                    item4_uncertain
+                    and possible_item4_due is not None
+                    and as_at <= possible_item4_due
+                )
+            ):
+                result.verdict = UNKNOWN
+                result.horizon_verdicts = (UNPAID, "NOT_YET_DUE")
+                if past_horizon:
+                    result.caveats.append(
+                        "the fund receipt covers only part of the SG amount, but "
+                        "the deadline runs past the calendar's coverage and may "
+                        "not have passed. No exposure is calculated until the "
+                        "missing holiday facts are supplied"
+                    )
+                if item4_uncertain:
+                    result.caveats.append(item4_unknown)
+                return result
+            elif dl.due < as_at:
+                result.verdict = UNPAID
+            else:
+                result.caveats.append(
+                    "the fund receipt covers only part of the SG amount, but the "
+                    "deadline has not passed, so there is nothing to assess yet"
+                )
+                return result
         else:
-            result.verdict = ON_TIME if settled <= dl.due else LATE
+            result.verdict = LATE
     elif remitted is not None and fully_remitted:
         if (
             item4_uncertain
@@ -388,7 +508,8 @@ def _assess_line(
         if credit > 0:
             _none_recorded = (
                 f"${money(credit)} is evidenced as remitted, leaving "
-                f"${money(unpaid)} unpaid, and no fund-receipt date is recorded "
+                f"${money(operational_unremitted)} unremitted, and no "
+                "fund-receipt date is recorded "
                 "for the remainder"
             )
         elif not _ignored:
@@ -430,18 +551,77 @@ def _assess_line(
         return result
 
     if result.verdict in EXPOSED:
-        base_shortfall = unpaid if unpaid > 0 else line.sg_amount
+        owed = cents(line.sg_amount)
+        base_shortfall = max(owed - on_time_receipt_credit, Decimal("0"))
         landed = settled if settled is not None else remitted
 
-        # Notional earnings compound on the base shortfall until the fund
-        # receives money that counts for this payday (s 19A). Where none
-        # has, they run to the as-at date, and they stop the day before an
-        # assessment, after which GIC on the assessment takes over.
-        if settled is not None and not stale_prepayment:
-            nec_end = settled
+        if on_time_receipt_credit > 0 and base_shortfall > 0:
+            result.notes.append(
+                f"an eligible on-time fund receipt of "
+                f"${money(on_time_receipt_credit)} reduces the base shortfall to "
+                f"${money(base_shortfall)}; the remaining amount is unfunded"
+            )
+
+        # s 18D reduces the final shortfall only by an eligible contribution
+        # received during the late period and before assessment. A remittance
+        # date is operational evidence only; it cannot reduce either statutory
+        # shortfall without a fund receipt.
+        offset_credit = Decimal("0")
+        if (
+            settled is not None
+            and not stale_prepayment
+            and settled > dl.due
+            and (assessment_date is None or settled < assessment_date)
+        ):
+            offset_credit = min(receipt_credit, base_shortfall)
+        final_shortfall = max(base_shortfall - offset_credit, Decimal("0"))
+        offset = offset_credit > 0
+
+        if offset:
+            assumption = (
+                f"before the assessment on {assessment_date.isoformat()}"
+                if assessment_date is not None
+                else "and no SG charge assessment had issued for this payday by then"
+            )
+            if final_shortfall == 0:
+                result.notes.append(
+                    f"contribution received {settled.isoformat()} {assumption}: "
+                    "the final shortfall is nil under s 18D, leaving notional "
+                    "earnings and uplift"
+                )
+            else:
+                result.notes.append(
+                    f"contribution received {settled.isoformat()} {assumption}: "
+                    f"s 18D reduces the final shortfall by "
+                    f"${money(offset_credit)} to ${money(final_shortfall)}; it "
+                    "does not clear the remaining shortfall"
+                )
+
+        # Section 19A compounds on the base shortfall for every late-period
+        # day on which the final shortfall remains positive. A full eligible
+        # late receipt ends that period; a part receipt does not. Assessment
+        # still caps this estimate at the preceding day, after which GIC on
+        # the assessed charge is outside this tool.
+        if (
+            settled is not None
+            and not stale_prepayment
+            and receipt_covers_all
+        ):
+            outstanding_to = settled
             result.lateness_basis = "fund receipt"
+            nec_end = settled if final_shortfall == 0 else as_at
+        elif settled is not None and not stale_prepayment:
+            nec_end = as_at
+            outstanding_to = as_at
+            result.lateness_basis = "as-at date (shortfall remains after part receipt)"
+            result.notes.append(
+                "the fund received only part of the liability: notional earnings "
+                "continue on the base shortfall while the final shortfall remains "
+                "greater than nil"
+            )
         elif landed is not None and not stale_prepayment:
             nec_end = as_at
+            outstanding_to = as_at
             result.lateness_basis = "as-at date (no fund receipt recorded)"
             result.notes.append(
                 "treated as still unpaid at the as-at date: notional earnings keep "
@@ -449,9 +629,9 @@ def _assess_line(
             )
         else:
             nec_end = as_at
+            outstanding_to = as_at
             result.lateness_basis = "as-at date (nothing applied to this payday)"
 
-        outstanding_to = nec_end
         if assessment_date is not None and nec_end >= assessment_date:
             nec_end = assessment_date - timedelta(days=1)
             result.caveats.append(
@@ -477,36 +657,9 @@ def _assess_line(
             else Decimal("0")
         )
 
-        # s 18D: a late contribution received in the late period, before
-        # the ATO assesses the charge, reduces the final shortfall. A
-        # payment made before the deadline is not a late-period payment,
-        # so a stale pre-payment cannot offset anything.
-        offset = (
-            settled is not None
-            and settled > dl.due
-            and (assessment_date is None or settled < assessment_date)
-        )
-        if offset:
-            # s 18D clears the credited slice. A legacy row with no
-            # remitted_amount treats a qualifying receipt as covering the
-            # whole sg_amount. A part-paid row keeps the unpaid remainder.
-            result.final_shortfall = (
-                Decimal("0") if receipt_covers_all else unpaid
-            )
-            assumption = (
-                f"before the assessment on {assessment_date.isoformat()}"
-                if assessment_date is not None
-                else "and no SG charge assessment had issued for this payday by then"
-            )
-            result.notes.append(
-                f"contribution received {settled.isoformat()} {assumption}: the final "
-                "shortfall is nil under s 18D, leaving notional earnings and uplift"
-            )
-        else:
-            result.final_shortfall = base_shortfall
-
         result.offset_s18d = offset
         result.base_shortfall = base_shortfall
+        result.final_shortfall = final_shortfall
         result.uplift = uplift_scenarios(result.final_shortfall, result.nec)
         result.sgc_low, result.sgc_high = exposure_range(
             result.final_shortfall, result.nec
@@ -830,8 +983,13 @@ def console_summary(
             )
             shortfall_text = (
                 f"super ${money(r.line.sg_amount)} (received, so the shortfall is nil)"
-                if r.offset_s18d
-                else f"shortfall ${money(figures['shortfall'])}"
+                if r.offset_s18d and figures["shortfall"] == 0
+                else (
+                    f"shortfall ${money(figures['shortfall'])} "
+                    "(partially reduced by a late fund receipt under s 18D)"
+                    if r.offset_s18d
+                    else f"shortfall ${money(figures['shortfall'])}"
+                )
             )
             at_most = "" if r.days_late is not None else "at most "
             lines.append(
