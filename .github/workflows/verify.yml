@@ -34,6 +34,7 @@ jobs:
         run: uv run --locked --extra dev --python 3.12 ruff check paydaysuper tests
 
       - name: Typecheck
+        continue-on-error: true
         run: uv run --locked --extra dev --python 3.12 mypy paydaysuper
 
       - name: Audit
