@@ -41,6 +41,10 @@ paydaysuper = ["data/*.json", "data/profiles/*.json", "py.typed"]
 testpaths = ["tests"]
 
 [tool.ruff]
+[tool.ruff.lint]
+# First-enablement set: syntax/undefined-name errors only. Keep Decimal("10.00")
+# money literals; do not import-sort the existing test corpus in this change.
+select = ["E4", "E7", "E9", "F"]
 line-length = 100
 src = ["paydaysuper", "tests"]
 
