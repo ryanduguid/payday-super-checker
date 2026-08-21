@@ -84,6 +84,260 @@ def test_late_but_received_line_has_no_shortfall():
     assert any("s 18D" in w for w in r.warnings)
 
 
+def test_partial_late_receipt_keeps_the_statutory_base_and_nec_running():
+    lines = [
+        ContribLine(
+            employee_id="E1",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("1000.00"),
+            remitted=date(2026, 7, 14),
+            remitted_amount=Decimal("999.99"),
+            received=date(2026, 8, 1),
+            row=2,
+        )
+    ]
+    results = assess(
+        lines,
+        load_calendar(),
+        load_gic(),
+        AS_AT,
+        transition_allocation_confirmed=True,
+    )
+    r = results[0]
+    assert r.verdict == "LATE"
+    assert r.final_shortfall == Decimal("0.01")
+    assert r.base_shortfall == Decimal("1000.00")
+    assert r.nec == notional_earnings(
+        Decimal("1000.00"), r.deadline.due, AS_AT, load_gic()
+    )
+    assert r.offset_s18d is True
+    text = console_summary([r], AS_AT, "report.csv", "2026-08-15", load_rates())
+    assert "partially reduced" in text
+    assert "shortfall is nil" not in text
+
+
+def test_near_full_and_full_late_receipts_keep_the_same_base_shortfall():
+    def line(amount):
+        return ContribLine(
+            employee_id=f"E-{amount}",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("1000.00"),
+            remitted=date(2026, 7, 14),
+            remitted_amount=amount,
+            received=date(2026, 8, 1),
+            row=2,
+        )
+
+    partial, full = assess(
+        [line(Decimal("999.99")), line(Decimal("1000.00"))],
+        load_calendar(),
+        load_gic(),
+        AS_AT,
+    )
+    assert partial.base_shortfall == full.base_shortfall == Decimal("1000.00")
+    assert partial.final_shortfall == Decimal("0.01")
+    assert full.final_shortfall == Decimal("0")
+    assert partial.nec == notional_earnings(
+        Decimal("1000.00"), partial.deadline.due, AS_AT, load_gic()
+    )
+    assert full.nec == notional_earnings(
+        Decimal("1000.00"), full.deadline.due, date(2026, 8, 1), load_gic()
+    )
+
+
+def test_partial_on_time_receipt_reduces_only_the_base_shortfall():
+    line = ContribLine(
+        employee_id="E-PART-ON-TIME",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("1000.00"),
+        remitted=date(2026, 7, 14),
+        remitted_amount=Decimal("600.00"),
+        received=date(2026, 7, 15),
+        row=2,
+    )
+    r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
+    assert r.verdict == "UNPAID"
+    assert r.base_shortfall == Decimal("400.00")
+    assert r.final_shortfall == Decimal("400.00")
+    assert r.offset_s18d is False
+    assert r.nec == notional_earnings(
+        Decimal("400.00"), r.deadline.due, AS_AT, load_gic()
+    )
+
+
+def test_partial_stale_prepayment_receives_no_statutory_credit():
+    line = ContribLine(
+        employee_id="E-STALE-PART",
+        qe_day=date(2027, 7, 9),
+        sg_amount=Decimal("1000.00"),
+        remitted=date(2026, 7, 1),
+        remitted_amount=Decimal("999.99"),
+        received=date(2026, 7, 1),
+        row=2,
+    )
+    as_at = date(2027, 8, 1)
+    r = assess([line], load_calendar(), load_gic(), as_at)[0]
+    assert r.verdict == "LATE"
+    assert r.base_shortfall == Decimal("1000.00")
+    assert r.final_shortfall == Decimal("1000.00")
+    assert r.offset_s18d is False
+    assert r.nec == notional_earnings(
+        Decimal("1000.00"), r.deadline.due, as_at, load_gic()
+    )
+
+
+def test_partial_late_receipt_after_assessment_does_not_reduce_shortfall():
+    line = ContribLine(
+        employee_id="E-PART-AFTER-ASSESSMENT",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("1000.00"),
+        remitted=date(2026, 7, 14),
+        remitted_amount=Decimal("600.00"),
+        received=date(2026, 8, 1),
+        row=2,
+    )
+    assessment_date = date(2026, 7, 25)
+    r = assess(
+        [line], load_calendar(), load_gic(), AS_AT,
+        assessment_date=assessment_date,
+    )[0]
+    assert r.verdict == "LATE"
+    assert r.base_shortfall == Decimal("1000.00")
+    assert r.final_shortfall == Decimal("1000.00")
+    assert r.offset_s18d is False
+    assert r.nec == notional_earnings(
+        Decimal("1000.00"), r.deadline.due,
+        assessment_date - timedelta(days=1), load_gic()
+    )
+
+
+def test_partial_receipt_before_assessment_keeps_nec_running_to_assessment():
+    line = ContribLine(
+        employee_id="E-PART-BEFORE-ASSESSMENT",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("1000.00"),
+        remitted=date(2026, 7, 14),
+        remitted_amount=Decimal("600.00"),
+        received=date(2026, 8, 1),
+        row=2,
+    )
+    assessment_date = date(2026, 8, 5)
+    r = assess(
+        [line], load_calendar(), load_gic(), AS_AT,
+        assessment_date=assessment_date,
+    )[0]
+    assert r.base_shortfall == Decimal("1000.00")
+    assert r.final_shortfall == Decimal("400.00")
+    assert r.offset_s18d is True
+    assert r.nec == notional_earnings(
+        Decimal("1000.00"), r.deadline.due,
+        assessment_date - timedelta(days=1), load_gic()
+    )
+
+
+def test_explicit_remitted_amount_without_remittance_date_is_refused():
+    line = ContribLine(
+        employee_id="E-MALFORMED-PART",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("1000.00"),
+        remitted_amount=Decimal("600.00"),
+        received=date(2026, 8, 1),
+        row=2,
+    )
+    with pytest.raises(ValueError, match="remitted_amount requires remitted_date"):
+        assess([line], load_calendar(), load_gic(), AS_AT)
+
+
+@pytest.mark.parametrize(
+    ("sg_amount", "remitted_amount", "matched_amount", "message"),
+    [
+        (Decimal("-0.01"), None, None, "sg_amount cannot be negative"),
+        (
+            Decimal("1000.00"),
+            Decimal("-0.01"),
+            None,
+            "remitted_amount must be between zero and sg_amount",
+        ),
+        (
+            Decimal("1000.00"),
+            Decimal("1000.01"),
+            None,
+            "remitted_amount must be between zero and sg_amount",
+        ),
+        (
+            Decimal("1000.00"),
+            None,
+            Decimal("-0.01"),
+            "matched_amount must be between zero and sg_amount",
+        ),
+        (
+            Decimal("1000.00"),
+            None,
+            Decimal("1000.01"),
+            "matched_amount must be between zero and sg_amount",
+        ),
+        (
+            Decimal("1000.00"),
+            Decimal("600.01"),
+            Decimal("600.00"),
+            "remitted_amount cannot exceed matched_amount",
+        ),
+    ],
+)
+def test_direct_assessment_refuses_invalid_amount_shapes(
+    sg_amount, remitted_amount, matched_amount, message
+):
+    line = ContribLine(
+        employee_id="E-BAD-AMOUNT",
+        qe_day=date(2026, 7, 9),
+        sg_amount=sg_amount,
+        remitted=date(2026, 7, 14) if remitted_amount is not None else None,
+        remitted_amount=remitted_amount,
+        matched_amount=matched_amount,
+        received=date(2026, 7, 15),
+        first_to_fund=True,
+        row=2,
+    )
+    with pytest.raises(ValueError, match=message):
+        assess([line], load_calendar(), load_gic(), AS_AT)
+
+
+@pytest.mark.parametrize("matched_amount", [Decimal("0"), Decimal("600")])
+def test_direct_assessment_refuses_partial_match_with_unbounded_remittance(
+    matched_amount,
+):
+    line = ContribLine(
+        employee_id="E-AMBIGUOUS-REMITTANCE",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("1000.00"),
+        remitted=date(2026, 7, 14),
+        matched_amount=matched_amount,
+        row=2,
+    )
+    with pytest.raises(
+        ValueError, match="matched_amount below sg_amount requires remitted_amount"
+    ):
+        assess([line], load_calendar(), load_gic(), AS_AT)
+
+
+def test_duplicate_warning_normalises_legacy_and_explicit_full_remittance():
+    common = dict(
+        employee_id="E-DUP",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("1000.00"),
+        remitted=date(2026, 7, 14),
+    )
+    legacy = ContribLine(**common, row=2)
+    explicit = ContribLine(
+        **common, remitted_amount=Decimal("1000.00"), row=3
+    )
+    results = assess([legacy, explicit], load_calendar(), load_gic(), AS_AT)
+    for result in results:
+        assert any(
+            "rows 2, 3 are identical" in caveat for caveat in result.caveats
+        )
+
+
 def test_assessment_before_receipt_keeps_the_shortfall():
     """The offset needs receipt to beat the assessment. Assess earlier and
     the whole SG amount stays in the charge."""
@@ -1102,6 +1356,34 @@ def test_receipt_before_a_past_horizon_deadline_is_on_time():
     assert r.horizon_verdicts is None
 
 
+def test_partial_receipt_before_a_past_horizon_deadline_leaves_due_date_unknown():
+    line = _past_horizon_line(
+        remitted=date(2029, 3, 1),
+        remitted_amount=Decimal("50.00"),
+        received=date(2029, 3, 2),
+    )
+    r = assess([line], load_calendar(), load_gic(), date(2029, 4, 1))[0]
+    assert r.deadline.due == date(2029, 3, 12)
+    assert r.verdict == "UNKNOWN"
+    assert r.horizon_verdicts == ("UNPAID", "NOT_YET_DUE")
+    assert r.base_shortfall is None
+    assert r.final_shortfall is None
+
+
+def test_partial_receipt_after_a_past_horizon_deadline_keeps_all_three_states_visible():
+    line = _past_horizon_line(
+        remitted=date(2029, 3, 13),
+        remitted_amount=Decimal("50.00"),
+        received=date(2029, 3, 14),
+    )
+    r = assess([line], load_calendar(), load_gic(), date(2029, 4, 1))[0]
+    assert r.verdict == "UNKNOWN"
+    assert r.horizon_verdicts == ("LATE", "NOT_YET_DUE")
+    assert any("UNPAID" in caveat for caveat in r.caveats)
+    assert r.base_shortfall is None
+    assert r.final_shortfall is None
+
+
 def test_remittance_before_a_past_horizon_deadline_is_at_risk():
     line = _past_horizon_line(remitted=date(2029, 3, 2))
     r = assess([line], load_calendar(), load_gic(), date(2029, 4, 1))[0]
@@ -1439,6 +1721,119 @@ def test_item4_inherited_from_an_unrecorded_payday_is_flagged():
     assert later.horizon_verdicts == ("LATE", "ON_TIME")
     assert needs_attention([later])
     assert any("does not evidence an eligible contribution" in c for c in later.caveats)
+
+
+def test_partial_on_time_receipt_respects_an_unresolved_item4_deadline():
+    rows = [
+        ContribLine(
+            employee_id="E-PART-ITEM4",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("100.00"),
+            first_to_fund=True,
+            row=2,
+        ),
+        ContribLine(
+            employee_id="E-PART-ITEM4",
+            qe_day=date(2026, 7, 23),
+            sg_amount=Decimal("100.00"),
+            remitted=date(2026, 8, 3),
+            remitted_amount=Decimal("60.00"),
+            received=date(2026, 8, 4),
+            row=3,
+        ),
+    ]
+    later = assess(
+        rows, load_calendar(), load_gic(), date(2026, 8, 5)
+    )[1]
+    assert later.deadline.due == date(2026, 8, 4)
+    assert later.deadline.possible_item4_due == date(2026, 8, 7)
+    assert later.verdict == "UNKNOWN"
+    assert later.horizon_verdicts == ("UNPAID", "NOT_YET_DUE")
+    assert later.base_shortfall is None
+    assert later.final_shortfall is None
+
+
+def test_partial_receipt_inside_an_unresolved_item4_window_keeps_outer_bounds():
+    rows = [
+        ContribLine(
+            employee_id="E-PART-ITEM4-LATE",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("100.00"),
+            first_to_fund=True,
+            row=2,
+        ),
+        ContribLine(
+            employee_id="E-PART-ITEM4-LATE",
+            qe_day=date(2026, 7, 23),
+            sg_amount=Decimal("100.00"),
+            remitted=date(2026, 8, 5),
+            remitted_amount=Decimal("60.00"),
+            received=date(2026, 8, 6),
+            row=3,
+        ),
+    ]
+    later = assess(
+        rows, load_calendar(), load_gic(), date(2026, 8, 6)
+    )[1]
+    assert later.deadline.due == date(2026, 8, 4)
+    assert later.deadline.possible_item4_due == date(2026, 8, 7)
+    assert later.verdict == "UNKNOWN"
+    assert later.horizon_verdicts == ("LATE", "NOT_YET_DUE")
+    assert any("UNPAID" in caveat for caveat in later.caveats)
+
+
+def test_partial_item4_receipt_after_the_upper_deadline_has_no_not_yet_due_state():
+    rows = [
+        ContribLine(
+            employee_id="E-PART-ITEM4-PAST",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("100.00"),
+            first_to_fund=True,
+            row=2,
+        ),
+        ContribLine(
+            employee_id="E-PART-ITEM4-PAST",
+            qe_day=date(2026, 7, 23),
+            sg_amount=Decimal("100.00"),
+            remitted=date(2026, 8, 5),
+            remitted_amount=Decimal("60.00"),
+            received=date(2026, 8, 6),
+            row=3,
+        ),
+    ]
+    later = assess(rows, load_calendar(), load_gic(), date(2026, 8, 10))[1]
+    assert later.deadline.due == date(2026, 8, 4)
+    assert later.deadline.possible_item4_due == date(2026, 8, 7)
+    assert later.verdict == "UNKNOWN"
+    assert later.horizon_verdicts == ("LATE", "UNPAID")
+    assert later.base_shortfall is None
+    assert later.final_shortfall is None
+    assert needs_attention([later])
+
+
+def test_zero_amount_receipt_cannot_seed_item4_but_positive_partial_can(tmp_path):
+    def later_result(amount: str):
+        path = tmp_path / f"item4-{amount}.csv"
+        path.write_text(
+            "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+            "first_contribution_to_fund,out_of_cycle,next_standard_payday,"
+            "defined_benefit,remitted_amount\n"
+            f"E-ZERO-ITEM4,2026-07-09,100.00,2026-07-14,2026-07-15,yes,no,,no,{amount}\n"
+            "E-ZERO-ITEM4,2026-07-23,100.00,2026-08-05,2026-08-06,no,no,,no,100.00\n",
+            encoding="utf-8",
+        )
+        lines = parse_rows(path, *load_mapping(None))
+        return assess(lines, load_calendar(), load_gic(), date(2026, 8, 10))[1]
+
+    zero = later_result("0.00")
+    assert zero.deadline.due == date(2026, 8, 4)
+    assert zero.deadline.pathway == "USUAL_7BD"
+    assert zero.verdict == "LATE"
+
+    positive = later_result("1.00")
+    assert positive.deadline.due == date(2026, 8, 7)
+    assert positive.deadline.pathway == "ITEM4_ALIGNED"
+    assert positive.verdict == "ON_TIME"
 
 
 def test_item4_inherited_caveat_survives_a_post_as_at_donor_payment():

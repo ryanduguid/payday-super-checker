@@ -8,10 +8,10 @@ Design, 3 August 2026.
 > rather than left to mislead a reader of the installed package. The
 > corrections are marked **Corrected** where they sit:
 >
-> - **Remittance date** and the amount-reconciliation table said `remitted`
->   is set on a short payment and takes the latest known paid date on a
->   split one. The code blanks `remitted` in both cases, which is the known
->   limitation the README documents; the spec had it backwards.
+> - **Remittance date** and the amount-reconciliation table originally had
+>   no way to represent a dated subtotal. The appended `remitted_amount`
+>   field now keeps `sg_amount` as the liability and lets the latest known
+>   payment date apply only to the dated subtotal.
 > - **Ambiguity** no longer stops the run. Two owner rulings during Task 5
 >   replaced the refusal with oldest-first apportionment, keeping a hard
 >   refusal only for payroll rows indistinguishable in payday, pay period
@@ -53,13 +53,13 @@ Two consequences follow.
 
 ## Scope
 
-In scope: reading a payroll export and a super payments export, joining them, writing the canonical contributions CSV, and reporting what did not join.
+In scope: reading a payroll export and a super payments export, joining them, writing the canonical contributions CSV, reporting what did not join, and carrying a dated remittance subtotal into the check path without treating remittance as fund receipt.
 
-Out of scope: clearing-house confirmation files, API integrations, and any change to the deadline or charge calculation.
+Out of scope: clearing-house confirmation files, API integrations, automatic fund-receipt inference, and changes to the statutory deadline rules. **Corrected:** the appended amount field necessarily extends the report calculation path so operational remittance credit stays separate from receipt-based base and final shortfalls.
 
 ## Architecture
 
-The importer is a front end that writes the existing canonical CSV. It does not touch `csv_io.py`, `deadlines.py`, `sgc.py` or `report.py`, so the audited calculation path stays as it is. The CSV it writes is also the workpaper: an accountant can read it, correct a receipt date, and run the check on the corrected file.
+The importer is a front end that writes the canonical CSV. **Corrected:** the appended `remitted_amount` and `matched_amount` fields are parsed in `csv_io.py`, stored on `deadlines.ContribLine`, and consumed by `report.py`. They change no deadline formula in `deadlines.py` and no rate arithmetic in `sgc.py`; together they prevent a dated subtotal or an undated short match from being mistaken for the whole liability while keeping vendor association and remittance status separate from statutory fund-receipt credit. The CSV it writes is also the workpaper: an accountant can read it, add an evidenced receipt date, and run the check on the corrected file.
 
 ```
 payroll export --+
@@ -104,19 +104,21 @@ Reads both files through their profiles, filters to super guarantee, joins, and 
 
 **Period match.** A super row matches a payroll row when the super row's Period From to Period To brackets the payroll row's pay period end. Where a payroll export gives no period end, the payday stands in for it.
 
-**Remittance date.** Where several super rows match one payroll row, `remitted` takes the latest paid date among them. A contribution split across two payments is not complete until the last part goes, so the earliest date would flatter the result. **Corrected:** that holds only where every matching super row carries a date. If any of them does not, `remitted` is blank -- reporting the date of the part that is dated would read as proof the whole amount went. The latest known date is kept in the flag instead, for anyone chasing the fund.
+**Remittance date and matched amount.** Where several super rows match one payroll row, `remitted` takes the latest known paid date among the dated rows. A contribution split across two dated payments is not evidenced to the full dated subtotal until the last date, so the earliest date would flatter an as-at result. `remitted_amount` limits that date to the dated subtotal. If every matching row is undated, both remittance fields are blank. The independently appended `matched_amount` still records the total associated contribution, capped at the SG liability, so adding a later fund-receipt date cannot turn a known short match into full credit. It is an association cap, not evidence of payment or receipt.
 
 **Amount reconciliation.** Matched super amounts are summed and compared to the payroll SG amount to the cent.
 
-**Corrected** in the last three rows of the table below: a short payment is written with `remitted` BLANK, not set. The canonical CSV has no column for a part payment, so a real paid date beside the full liability tells the checker the payday settled in full. The same blanking applies to a payday matched in full where any matching super row carries no date. Both keep their true figures in the flag and in the console warning, and the README documents the limitation.
+**Corrected** in the last three rows of the table below: a short payment writes `remitted_date` for the latest known date plus `remitted_amount` for the dated money, and always writes the full associated subtotal to `matched_amount`. The checker uses the remittance fields only for operational status until a fund receipt is supplied. Without `fund_received_date`, the statutory base and final shortfalls remain unreduced; with a receipt, `matched_amount` caps the contribution that can be tested under ss 18C and 18D. Blank `matched_amount` retains compatibility with older canonical files: the checker falls back to `remitted_amount`, then to the full liability for legacy rows with neither field. An explicit partial `matched_amount` plus `remitted_date` must also carry `remitted_amount`; otherwise the legacy fallback would contradict the new field and over-credit the remittance.
 
 | Case | Emitted | Flag |
 | --- | --- | --- |
-| sum equals payroll SG, every match dated | `remitted` set | none |
-| sum equals payroll SG, any match undated | `remitted` blank | `N of M matched has no payment date on record` |
-| sum is short | `remitted` blank | `partial: $X of $Y matched` |
-| sum exceeds payroll SG | `remitted` set | `over: $X against $Y, check for salary sacrifice` |
-| no super row matches | `remitted` blank | `no super payment found` |
+| sum equals payroll SG, every match dated | `remitted` set, both amounts = owed | none |
+| sum equals payroll SG, some matches undated | `remitted` = latest known date, `remitted_amount` = dated subtotal, `matched_amount` = owed | `N of M matched has no payment date on record` |
+| sum equals payroll SG, all matches undated | both remittance fields blank, `matched_amount` = owed | `matched super rows carry no payment date` |
+| sum is short, every match dated | `remitted` set, both amounts = paid | `partial: $X of $Y matched` |
+| sum is short, some matches undated | `remitted` = latest known date, `remitted_amount` = dated subtotal, `matched_amount` = paid | `partial: $X of $Y matched` |
+| sum exceeds payroll SG | `remitted` set, both amounts capped at owed | `over: $X against $Y, check for salary sacrifice` |
+| no super row matches | `remitted` blank, `matched_amount` = zero | `no super payment found` |
 | super row matches nothing | not emitted | one of four `ORPHAN_*` messages: `matched no payday`, `matched only paydays that were already settled by other payments`, `matched only paydays that owe no super guarantee`, `matched paydays but carries no amount to allocate` |
 
 Sums are compared to the cent on both sides, at the precision the canonical file is written and read at, so a payroll figure of 540.004 against 540.00 paid is settled rather than short.
@@ -125,7 +127,7 @@ Sums are compared to the cent on both sides, at the precision the canonical file
 
 ### Canonical output
 
-The nine existing columns: `employee_id`, `payment_date`, `sg_amount`, `remitted_date`, `fund_received_date`, `first_contribution_to_fund`, `out_of_cycle`, `next_standard_payday`, `defined_benefit`.
+The eleven columns: `employee_id`, `payment_date`, `sg_amount`, `remitted_date`, `fund_received_date`, `first_contribution_to_fund`, `out_of_cycle`, `next_standard_payday`, `defined_benefit`, `remitted_amount`, `matched_amount`. Both amount fields were appended in order, so nine- and ten-column files still parse.
 
 `fund_received_date` is always blank. The importer cannot know it. The report already handles an unknown receipt, and the run prints one line saying so.
 

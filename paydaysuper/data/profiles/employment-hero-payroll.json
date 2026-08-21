@@ -12,5 +12,5 @@
     "amount": ["Super Guarantee", "Superannuation", "Employer Contributions"]
   },
   "date_formats": ["%d/%m/%Y", "%Y-%m-%d"],
-  "notes": "From 1 July 2026 Employment Hero renames its OTE report to OTE/QE and adds a QE column, because qualifying earnings replace ordinary time earnings as the SG base."
+  "notes": "From 1 July 2026 Employment Hero may include Qualifying Earnings or OTE/QE columns. Those are calculation bases, not the operator-determined SG liability, so this profile selects only an explicit employer-super contribution column."
 }
