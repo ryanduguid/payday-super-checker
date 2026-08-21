@@ -1,5 +1,6 @@
 import csv
 import hashlib
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ NOTE_TEXT = (
     "as at 2026-09-10. Legal content current at 2026-08-15. "
     "EXPERIMENTAL ESTIMATES: the ATO assesses the charge."
 )
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _row(**overrides):
@@ -180,10 +182,21 @@ def test_duplicate_or_changed_headers_fail_closed(tmp_path):
 
 
 def test_default_practitioner_workpaper_is_ignored():
-    root = Path(__file__).resolve().parents[1]
-    rules = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+    rules = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8").splitlines()
 
     assert "/practitioner-review.md" in rules
+    assert "include .gitignore" in manifest
+
+    if (ROOT / ".git").exists():
+        result = subprocess.run(
+            ["git", "check-ignore", "--no-index", "--quiet", "--", "practitioner-review.md"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 def test_output_is_atomic_and_replaces_the_link_not_its_target(tmp_path):
