@@ -22,18 +22,25 @@ with elevated privileges or pass path arguments from a less-trusted user, web
 request, queue, or other tenant without first enforcing a caller-specific safe
 root.
 
-A generated report must be given a `.csv` filename. That constrains the name
-only; it is not a path boundary and does not confine the write to any
+A generated contribution or report file must be given a `.csv` filename, and a
+generated practitioner pack must be given a `.md` filename. That constrains the
+name only; it is not a path boundary and does not confine the write to any
 directory. Writes use a random staging file beside the selected destination,
 owner-only on POSIX and inheriting the destination directory's ACL on
 Windows, and atomically replace the destination entry, so an existing destination
 symlink is replaced rather than followed and a failed write preserves the
 previous complete file. Input and
-override paths are read-only. Before either command does any work it resolves
+override paths are read-only. Before a command does any work it resolves
 its selected output path with `Path.resolve()` and compares it against every
 path it will read: for the check, the contribution CSV, `--mapping-file` and
-`--holidays-override`; for the import, `--payroll` and `--super`. It refuses
-the run if any of them is the same file. Resolving follows a symlink for the
-purpose of that comparison and does not itself mutate anything. The `.csv`
-filename rule is not part of this check: it constrains the output name only,
-and a mapping or override file may carry that suffix.
+`--holidays-override`; for the import, `--payroll` and `--super`; and for the
+review pack, its source report. It refuses the run if any of them is the same
+file. Resolving follows a symlink for the purpose of that comparison and does
+not itself mutate anything. The filename-suffix rule is not part of this check:
+it constrains the output name only, and an input may carry the same suffix.
+
+The practitioner Markdown omits employee identifiers and refers to original
+CSV row numbers. It is still a private workpaper: it retains the producer's
+provenance note, dates, verdicts, caveats and displayed exposure figures. Keep
+both files in the same access-controlled location and do not commit client
+outputs to this repository.

@@ -1,4 +1,4 @@
-"""Atomic output helpers for generated payroll CSV files.
+"""Atomic output helpers for generated CSV and Markdown workpapers.
 
 The command deliberately lets its interactive caller choose the files it
 reads and the name of the CSV it writes.  Generated outputs still must not
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TextIO
@@ -27,16 +27,29 @@ def csv_destination(path: str | Path) -> Path:
     return destination
 
 
+def markdown_destination(path: str | Path) -> Path:
+    """Validate a generated Markdown workpaper destination."""
+    destination = Path(path)
+    if destination.suffix.lower() != ".md":
+        raise ValueError(f"generated output must use a .md filename: {destination}")
+    return destination
+
+
 @contextmanager
-def atomic_text_output(path: str | Path, *, encoding: str) -> Iterator[TextIO]:
-    """Yield a text stream staged beside ``path``, then replace ``path``.
+def atomic_text_output(
+    path: str | Path,
+    *,
+    encoding: str,
+    destination_validator: Callable[[str | Path], Path] = csv_destination,
+) -> Iterator[TextIO]:
+    """Yield a validated text stream staged beside ``path``, then replace it.
 
     The temporary file lives in the requested output directory, so
     ``os.replace`` stays on one filesystem and replaces an existing symlink
     itself rather than opening its target.  ``mkstemp`` also creates the
     staging file with owner-only permissions on platforms that support them.
     """
-    destination = csv_destination(path)
+    destination = destination_validator(path)
     fd: int | None = None
     temporary_path: str | None = None
     try:
