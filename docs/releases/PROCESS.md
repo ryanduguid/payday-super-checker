@@ -19,7 +19,7 @@ Keep the release human-approved and stop on any mismatch.
    gh api \
      -H "Accept: application/vnd.github+json" \
      -H "X-GitHub-Api-Version: 2026-03-10" \
-     repos/ryanduguid/payday-super-checker/immutable-releases
+     repos/ryanduguid/CharlesHenryWickens/immutable-releases
    ```
 
    Continue only when the response contains `{"enabled":true}`. The
@@ -82,25 +82,30 @@ After the run succeeds, download the release assets and verify the immutable
 release record, checksums, exact source commit, signer workflow, SLSA provenance
 and SPDX predicate:
 
+The commands below name the current repository. Releases published before the
+repository was renamed were signed under the previous identity, so verifying
+those tags requires `ryanduguid/payday-super-checker` in the `--repo` and
+`--signer-workflow` arguments instead.
+
 ```bash
 tag_sha=$(git ls-remote \
-  https://github.com/ryanduguid/payday-super-checker.git \
+  https://github.com/ryanduguid/CharlesHenryWickens.git \
   'refs/tags/v0.1.1^{}' | cut -f1)
 test "${#tag_sha}" -eq 40
 sha256sum --check SHA256SUMS
-gh release verify v0.1.1 --repo ryanduguid/payday-super-checker
+gh release verify v0.1.1 --repo ryanduguid/CharlesHenryWickens
 gh attestation verify payday_super_checker-0.1.1-py3-none-any.whl \
-  --repo ryanduguid/payday-super-checker \
+  --repo ryanduguid/CharlesHenryWickens \
   --source-digest "$tag_sha" \
   --source-ref refs/heads/main \
   --signer-workflow \
-    ryanduguid/payday-super-checker/.github/workflows/release.yml
+    ryanduguid/CharlesHenryWickens/.github/workflows/release.yml
 gh attestation verify payday_super_checker-0.1.1-py3-none-any.whl \
-  --repo ryanduguid/payday-super-checker \
+  --repo ryanduguid/CharlesHenryWickens \
   --source-digest "$tag_sha" \
   --source-ref refs/heads/main \
   --signer-workflow \
-    ryanduguid/payday-super-checker/.github/workflows/release.yml \
+    ryanduguid/CharlesHenryWickens/.github/workflows/release.yml \
   --predicate-type https://spdx.dev/Document/v2.3
 ```
 

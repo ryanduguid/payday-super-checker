@@ -23,7 +23,7 @@ Publishing settings once it does) with exactly these values:
 | --- | --- |
 | PyPI project name | `payday-super-checker` |
 | Owner | `ryanduguid` |
-| Repository name | `payday-super-checker` |
+| Repository name | `CharlesHenryWickens` |
 | Workflow filename | `publish-pypi.yml` |
 | Environment name | `pypi` |
 

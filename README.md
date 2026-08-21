@@ -1,8 +1,8 @@
-# payday-super-checker
+# Charles Henry Wickens
 
-![payday-super-checker](assets/banner.svg)
+![CharlesHenryWickens](assets/banner.svg)
 
-[![tests](https://github.com/ryanduguid/payday-super-checker/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/payday-super-checker/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![tests](https://github.com/ryanduguid/CharlesHenryWickens/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/CharlesHenryWickens/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
 **Experimental review aid. Not a compliance determination.** Check Australian
 super contributions against the payday-super deadlines and produce an
@@ -15,6 +15,10 @@ earnings and administrative uplift; the ATO makes the assessment. This tool
 reviews a CSV from payroll, clearing-house and fund records. It refuses or marks
 `UNKNOWN` where those records do not establish the statutory facts.
 
+The repository name is the public project identity; the `payday-super-checker` distribution, `payday-super-check` command and `paydaysuper` import package remain compatibility identifiers.
+
+Charles Henry Wickens (1872 to 1939) was Commonwealth Statistician from 1922, a title expanded in 1924 to Commonwealth Statistician and Actuary. His work as a government adviser began with the formulation of the Commonwealth superannuation scheme in 1923.
+
 Built by Ryan Duguid, a provisional member of Chartered Accountants ANZ. Written independently, in his own time and on his own equipment.
 
 ## Install
@@ -22,15 +26,15 @@ Built by Ryan Duguid, a provisional member of Chartered Accountants ANZ. Written
 Python 3.10 or later. No runtime dependencies.
 
 ```bash
-git clone https://github.com/ryanduguid/payday-super-checker.git
+git clone https://github.com/ryanduguid/CharlesHenryWickens.git
 ```
 
 ```bash
-cd payday-super-checker && pip install .
+cd CharlesHenryWickens && pip install .
 ```
 
 Cloning first means you have the sample file the next command uses. To skip
-the clone, `pip install git+https://github.com/ryanduguid/payday-super-checker.git`
+the clone, `pip install git+https://github.com/ryanduguid/CharlesHenryWickens.git`
 installs the tool alone; point it at your own CSV.
 
 ## Before you run
