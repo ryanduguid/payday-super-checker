@@ -54,6 +54,7 @@ class ContribLine:
     qe_day: date
     sg_amount: Decimal  # dollars
     remitted: date | None = None
+    remitted_amount: Decimal | None = None
     received: date | None = None
     first_to_fund: bool = False
     out_of_cycle: bool = False

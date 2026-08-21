@@ -84,6 +84,31 @@ def test_late_but_received_line_has_no_shortfall():
     assert any("s 18D" in w for w in r.warnings)
 
 
+def test_s18d_does_not_clear_an_unpaid_remainder():
+    lines = [
+        ContribLine(
+            employee_id="E1",
+            qe_day=date(2026, 7, 9),
+            sg_amount=Decimal("1000.00"),
+            remitted=date(2026, 7, 14),
+            remitted_amount=Decimal("999.99"),
+            received=date(2026, 8, 1),
+            row=2,
+        )
+    ]
+    results = assess(
+        lines,
+        load_calendar(),
+        load_gic(),
+        AS_AT,
+        transition_allocation_confirmed=True,
+    )
+    r = results[0]
+    assert r.verdict == "UNPAID"
+    assert r.final_shortfall == Decimal("0.01")
+    assert r.base_shortfall == Decimal("0.01")
+
+
 def test_assessment_before_receipt_keeps_the_shortfall():
     """The offset needs receipt to beat the assessment. Assess earlier and
     the whole SG amount stays in the charge."""

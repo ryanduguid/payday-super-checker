@@ -10,7 +10,7 @@ from pathlib import Path
 from . import __version__
 from .atomic_io import atomic_text_output
 from .calendar import BusinessCalendar
-from .csv_io import CENTS, FORMULA_LEAD, cents, csv_safe, money
+from .csv_io import CENTS, FORMULA_LEAD, cents, csv_safe, money, remitted_credit
 from .deadlines import (
     ITEM4_ALIGNED,
     REGIME_START,
@@ -113,6 +113,7 @@ def _flag_duplicates(lines: list[ContribLine]) -> None:
             line.qe_day,
             line.sg_amount,
             line.remitted,
+            line.remitted_amount,
             line.received,
             line.first_to_fund,
             line.out_of_cycle,
@@ -211,6 +212,17 @@ def _assess_line(
         else:
             result.caveats.append(NO_RECEIPT_CAVEAT)
 
+    credit = remitted_credit(line, remitted)
+    unpaid = cents(line.sg_amount) - credit
+    if unpaid < 0:
+        unpaid = Decimal("0")
+    fully_remitted = unpaid == 0
+    if credit > 0 and unpaid > 0:
+        result.notes.append(
+            f"part-paid: ${money(credit)} of ${money(line.sg_amount)} is evidenced "
+            f"as remitted, leaving ${money(unpaid)} unpaid"
+        )
+
     # Past the calendar's coverage the holiday table is empty, so every
     # weekday counts as a business day and the deadline computed here can
     # only be too EARLY. That asymmetry decides which verdicts survive.
@@ -254,7 +266,8 @@ def _assess_line(
     )
 
     stale_prepayment = False
-    if settled is not None:
+    receipt_covers_all = line.remitted_amount is None or fully_remitted
+    if settled is not None and receipt_covers_all:
         if settled < line.qe_day:
             # Pre-payments count only inside the 12-month window ending
             # the day before the QE day (s 18C(1)(c)(ii)).
@@ -319,7 +332,7 @@ def _assess_line(
             return result
         else:
             result.verdict = ON_TIME if settled <= dl.due else LATE
-    elif remitted is not None:
+    elif remitted is not None and fully_remitted:
         if (
             item4_uncertain
             and possible_item4_due is not None
@@ -372,13 +385,20 @@ def _assess_line(
             d for d in (line.remitted, line.received)
             if d is not None and d > as_at
         )
-        _none_recorded = (
-            "no remittance or fund-receipt date is recorded"
-            if not _ignored
-            else "the only remittance or fund-receipt date on record ("
-            + ", ".join(d.isoformat() for d in _ignored)
-            + ") is after the as-at date and is ignored here"
-        )
+        if credit > 0:
+            _none_recorded = (
+                f"${money(credit)} is evidenced as remitted, leaving "
+                f"${money(unpaid)} unpaid, and no fund-receipt date is recorded "
+                "for the remainder"
+            )
+        elif not _ignored:
+            _none_recorded = "no remittance or fund-receipt date is recorded"
+        else:
+            _none_recorded = (
+                "the only remittance or fund-receipt date on record ("
+                + ", ".join(d.isoformat() for d in _ignored)
+                + ") is after the as-at date and is ignored here"
+            )
         if past_horizon:
             result.caveats.append(
                 f"{_none_recorded}, and the deadline "
@@ -410,7 +430,7 @@ def _assess_line(
         return result
 
     if result.verdict in EXPOSED:
-        base_shortfall = line.sg_amount
+        base_shortfall = unpaid if unpaid > 0 else line.sg_amount
         landed = settled if settled is not None else remitted
 
         # Notional earnings compound on the base shortfall until the fund
@@ -467,7 +487,12 @@ def _assess_line(
             and (assessment_date is None or settled < assessment_date)
         )
         if offset:
-            result.final_shortfall = Decimal("0")
+            # s 18D clears the credited slice. A legacy row with no
+            # remitted_amount treats a qualifying receipt as covering the
+            # whole sg_amount. A part-paid row keeps the unpaid remainder.
+            result.final_shortfall = (
+                Decimal("0") if receipt_covers_all else unpaid
+            )
             assumption = (
                 f"before the assessment on {assessment_date.isoformat()}"
                 if assessment_date is not None

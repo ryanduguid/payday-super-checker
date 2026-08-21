@@ -169,22 +169,11 @@ MAX_WARNINGS_SHOWN = 20
 _ROW_LEVEL_WARNING = re.compile(r"^(row|super row) \d+: ")
 
 # A partial, over-payment or missing-remittance-date warning carries the
-# ONLY surviving record of a figure the canonical CSV cannot hold:
-# write_canonical leaves remitted_date blank for an OUTCOME_PARTIAL row
-# regardless, and an OUTCOME_UNDATED row's remitted_date is blank for the
-# identical reason (join() sets `remitted=None` the moment any part of the
-# match is undated) -- both read to the checker as unfunded, and the one
-# thing that shows otherwise is this warning line. Truncating either under
-# the warning cap would make the caveat printed above the warnings block
-# ("the amount that actually arrived is not lost -- it is in the warning
-# lines below") false for exactly the rows it matters most for. These are
-# therefore exempt from the cap entirely, however many there are; only the
-# remaining, less urgent row-level warnings (a plain "no super payment
-# found", an orphan message) are capped. Matched by literal text built in
-# importers.join -- "partial: "/"over: " prefix the flag, "carry no payment
-# date" and "matched has no payment date on record" are the two undated
-# phrasings -- the same coupling _classify_outcome documents on itself, and
-# equally invisible from here if either wording changes; a test guards it.
+# figure the operator still has to see: write_canonical now writes
+# remitted_amount for dated part payments. An OUTCOME_UNDATED row still has
+# no usable payment date, while a mixed row keeps the latest known date for
+# its dated subtotal. Truncating either warning would hide the per-row record
+# of the undated remainder. These are therefore exempt from the cap entirely.
 _UNCAPPABLE_WARNING = re.compile(
     r"^row \d+: (partial|over): "
     r"|carry no payment date"
@@ -274,22 +263,19 @@ def import_main(argv: list[str]) -> int:
         "deadline tests receipt by the fund, not remittance -- fill that "
         "column in from your fund or clearing house before relying on any "
         "verdict it produces.",
-        # The second load-bearing caveat: a partial payment and a missed one
-        # look identical in the canonical CSV, because the file has no
-        # column for a part payment. Silence here is how a 999.99-of-1000.00
-        # payday turns into a checker report calling it a full 1000.00
-        # shortfall, with an SG-charge estimate to match, and the only place
-        # the true 999.99 survives is the warning line below.
-        "Two kinds of payday are written the same as a completely unpaid "
-        "one, with remitted_date left blank, and the checker treats both as "
-        "a full shortfall. A partly paid payday, because the canonical file "
-        "has no column for a part payment. And a payday matched IN FULL "
-        "where any of the super rows behind the match carries no payment "
-        "date, because a date covering only part of the money would read as "
-        "proof the whole of it went. Neither figure is lost -- both are in "
-        "the warning lines below, written as \"partial: <received> of "
-        "<owed> matched\" and as \"... has no payment date on record\" -- "
-        "apply them by hand until the file format can carry them directly.",
+        # The second load-bearing caveat: remitted_amount distinguishes a
+        # dated subtotal from the full liability. A mixed dated/undated match
+        # keeps the latest known date for that subtotal, which prevents an
+        # as-at report from crediting it early and leaves the rest exposed.
+        "A dated part payment writes remitted_date and remitted_amount; "
+        "sg_amount stays the amount owed. Where a match contains dated and "
+        "undated super rows, remitted_date is conservatively the latest "
+        "known date for the dated subtotal: the checker credits none of the "
+        "subtotal before that date and only remitted_amount afterwards. An "
+        "entirely undated match leaves both remittance fields blank. The "
+        "warning lines below still name every "
+        "partial: <received> of <owed> matched and every \"... has no "
+        "payment date on record\" figure.",
     ]
 
     if report.warnings:

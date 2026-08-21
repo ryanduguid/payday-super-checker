@@ -35,6 +35,26 @@ def cents(value: Decimal | None) -> Decimal:
     return Decimal("0") if value is None else value.quantize(CENTS, rounding=ROUND_HALF_UP)
 
 
+def remitted_credit(line: ContribLine, remitted_as_at: date | None) -> Decimal:
+    """How much of ``sg_amount`` is evidenced as remitted on this as-at date.
+
+    A remitted date with no remitted_amount is a full remittance, which is
+    how files written before this column existed are still read. A
+    remitted_amount credits only that figure, and only on or after its
+    remitted date. A remitted amount without a date is ambiguous and the CSV
+    reader refuses it; direct callers receive no credit for that shape.
+    """
+    owed = cents(line.sg_amount)
+    if line.remitted_amount is not None:
+        credited = cents(line.remitted_amount)
+        if line.remitted is not None and remitted_as_at is not None:
+            return min(credited, owed)
+        return Decimal("0")
+    if remitted_as_at is not None:
+        return owed
+    return Decimal("0")
+
+
 def csv_safe(text: str) -> str:
     """Stop a spreadsheet treating a cell as a formula.
 
@@ -64,6 +84,7 @@ CANONICAL = {
     "out_of_cycle": False,
     "next_standard_qe_day": False,
     "db_interest": False,
+    "remitted_amount": False,
 }
 
 DEFAULT_MAPPING = {
@@ -76,6 +97,10 @@ DEFAULT_MAPPING = {
     "out_of_cycle": "out_of_cycle",
     "next_standard_qe_day": "next_standard_payday",
     "db_interest": "defined_benefit",
+    # Appended, never inserted: a nine-column file from before this field
+    # still parses. The heading sits last so a positional reader keeps its
+    # column numbers.
+    "remitted_amount": "remitted_amount",
 }
 
 TRUE_WORDS = {"y", "yes", "true", "1", "t"}
@@ -485,15 +510,33 @@ def _parse_rows(
             remitted_raw = optional("remitted").strip()
             received_raw = optional("received").strip()
             next_raw = optional("next_standard_qe_day").strip()
+            remitted_amount_raw = optional("remitted_amount").strip()
 
             try:
+                sg_amount = _parse_amount(row[mapping["sg_amount"]], "sg_amount", i)
+                remitted_amount = (
+                    _parse_amount(remitted_amount_raw, "remitted_amount", i)
+                    if remitted_amount_raw
+                    else None
+                )
+                if remitted_amount is not None and not remitted_raw:
+                    raise CsvError(
+                        f"row {i}: remitted_amount requires remitted_date so an "
+                        "as-at report cannot credit the payment before it occurred"
+                    )
+                if remitted_amount is not None and remitted_amount > sg_amount:
+                    raise CsvError(
+                        f"row {i}: remitted_amount {money(remitted_amount)} is greater "
+                        f"than sg_amount {money(sg_amount)}"
+                    )
                 line = ContribLine(
                     employee_id=employee,
                     qe_day=_parse_date(row[mapping["qe_day"]], "qe_day", i),
-                    sg_amount=_parse_amount(row[mapping["sg_amount"]], "sg_amount", i),
+                    sg_amount=sg_amount,
                     remitted=(
                         _parse_date(remitted_raw, "remitted", i) if remitted_raw else None
                     ),
+                    remitted_amount=remitted_amount,
                     received=(
                         _parse_date(received_raw, "received", i) if received_raw else None
                     ),
