@@ -36,6 +36,34 @@ def due_for(lines, cal):
     return pairs
 
 
+def test_contrib_line_keeps_the_pre_matched_amount_positional_signature():
+    remitted = date(2026, 7, 14)
+    received = date(2026, 7, 15)
+    next_payday = date(2026, 7, 23)
+    line = ContribLine(
+        "E-POSITIONAL",
+        date(2026, 7, 9),
+        Decimal("100.00"),
+        remitted,
+        Decimal("60.00"),
+        received,
+        True,
+        False,
+        next_payday,
+        False,
+        7,
+        "duplicate note",
+    )
+    assert line.remitted == remitted
+    assert line.remitted_amount == Decimal("60.00")
+    assert line.received == received
+    assert line.first_to_fund is True
+    assert line.next_standard_qe_day == next_payday
+    assert line.row == 7
+    assert line.duplicate_note == "duplicate note"
+    assert line.matched_amount is None
+
+
 def line(**kwargs) -> ContribLine:
     base = dict(
         employee_id="E1",

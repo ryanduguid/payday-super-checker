@@ -154,8 +154,8 @@ def build_import_parser() -> argparse.ArgumentParser:
 # the rest as a count. A file with thousands of orphaned or row-level
 # warnings must not scroll the whole terminal history away. Never applied to
 # a structural warning (there are at most a handful of those) or to a
-# warning that carries a figure the canonical CSV cannot hold -- see
-# _UNCAPPABLE_WARNING.
+# warning whose per-row amount or missing-date fact requires explicit
+# reconciliation -- see _UNCAPPABLE_WARNING.
 MAX_WARNINGS_SHOWN = 20
 
 # import_files builds every row-level warning as f"row {n}: {flag}" or
@@ -168,23 +168,11 @@ MAX_WARNINGS_SHOWN = 20
 # are never capped either.
 _ROW_LEVEL_WARNING = re.compile(r"^(row|super row) \d+: ")
 
-# A partial, over-payment or missing-remittance-date warning carries the
-# ONLY surviving record of a figure the canonical CSV cannot hold:
-# write_canonical leaves remitted_date blank for an OUTCOME_PARTIAL row
-# regardless, and an OUTCOME_UNDATED row's remitted_date is blank for the
-# identical reason (join() sets `remitted=None` the moment any part of the
-# match is undated) -- both read to the checker as unfunded, and the one
-# thing that shows otherwise is this warning line. Truncating either under
-# the warning cap would make the caveat printed above the warnings block
-# ("the amount that actually arrived is not lost -- it is in the warning
-# lines below") false for exactly the rows it matters most for. These are
-# therefore exempt from the cap entirely, however many there are; only the
-# remaining, less urgent row-level warnings (a plain "no super payment
-# found", an orphan message) are capped. Matched by literal text built in
-# importers.join -- "partial: "/"over: " prefix the flag, "carry no payment
-# date" and "matched has no payment date on record" are the two undated
-# phrasings -- the same coupling _classify_outcome documents on itself, and
-# equally invisible from here if either wording changes; a test guards it.
+# A partial, over-payment or missing-remittance-date warning carries a figure
+# the operator still has to reconcile. The canonical CSV now preserves the
+# matched total as well as the dated subtotal, but neither amount proves that
+# the fund received it. Truncating these warnings would hide which rows need
+# that evidence, so they remain exempt from the cap.
 _UNCAPPABLE_WARNING = re.compile(
     r"^row \d+: (partial|over): "
     r"|carry no payment date"
@@ -274,22 +262,21 @@ def import_main(argv: list[str]) -> int:
         "deadline tests receipt by the fund, not remittance -- fill that "
         "column in from your fund or clearing house before relying on any "
         "verdict it produces.",
-        # The second load-bearing caveat: a partial payment and a missed one
-        # look identical in the canonical CSV, because the file has no
-        # column for a part payment. Silence here is how a 999.99-of-1000.00
-        # payday turns into a checker report calling it a full 1000.00
-        # shortfall, with an SG-charge estimate to match, and the only place
-        # the true 999.99 survives is the warning line below.
-        "Two kinds of payday are written the same as a completely unpaid "
-        "one, with remitted_date left blank, and the checker treats both as "
-        "a full shortfall. A partly paid payday, because the canonical file "
-        "has no column for a part payment. And a payday matched IN FULL "
-        "where any of the super rows behind the match carries no payment "
-        "date, because a date covering only part of the money would read as "
-        "proof the whole of it went. Neither figure is lost -- both are in "
-        "the warning lines below, written as \"partial: <received> of "
-        "<owed> matched\" and as \"... has no payment date on record\" -- "
-        "apply them by hand until the file format can carry them directly.",
+        # The second load-bearing caveat separates operational remittance from
+        # the amount associated with the payday. matched_amount survives even
+        # where the vendor supplied no payment date and caps any later receipt.
+        "A dated part payment writes remitted_date and remitted_amount; "
+        "sg_amount stays the amount owed. matched_amount separately records "
+        "the total associated with the payday, even when the vendor supplied "
+        "no payment date, and caps any fund receipt later added to the row. "
+        "Where a match contains dated and undated super rows, remitted_date is "
+        "conservatively the latest known date for the dated subtotal: the "
+        "checker credits none of the subtotal before that date and only "
+        "remitted_amount afterwards. An entirely undated match leaves both "
+        "remittance fields blank but keeps matched_amount. The warning lines "
+        "below still name every "
+        "partial: <received> of <owed> matched and every \"... has no "
+        "payment date on record\" figure.",
     ]
 
     if report.warnings:
