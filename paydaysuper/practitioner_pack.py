@@ -268,39 +268,40 @@ def _parse_data_row(values: list[str], seen_rows: set[int]) -> ReportRow:
 
 
 
-def _resolved_report_file(path: str | Path) -> Path:
-    """Resolve an operator-selected report path and refuse traversal.
+def _resolved_report_file(path: str | Path) -> str:
+    """Return a canonical path confined to an allowed directory.
 
     Relative paths must stay under the current working directory.
-    Absolute paths must resolve to a regular .csv file that still sits
-    inside the named parent directory after ``..`` and symlinks expand.
+    Absolute paths must stay under their named parent after ``..`` is
+    collapsed with ``os.path.abspath`` (lexical; no symlink follow).
+    ``os.path.commonpath`` is the CodeQL-recognised confinement check.
     """
-    raw = Path(os.fspath(path))
-    if "\x00" in os.fspath(path):
+    raw = os.fspath(path)
+    if "\x00" in raw:
         raise PractitionerPackError("path contains a NUL byte")
-    if raw.is_absolute():
-        parent = raw.parent.resolve()
-        resolved = raw.resolve()
-        if not resolved.is_relative_to(parent):
-            raise PractitionerPackError(
-                f"{path} does not resolve to a file inside its parent directory"
-            )
+    if os.path.isabs(raw):
+        base = os.path.abspath(os.path.dirname(raw))
+        candidate = os.path.abspath(raw)
     else:
-        root = Path.cwd().resolve()
-        resolved = (root / raw).resolve()
-        if not resolved.is_relative_to(root):
-            raise PractitionerPackError(f"{path} escapes the working directory")
-    if resolved.suffix.lower() != ".csv":
+        base = os.path.abspath(os.getcwd())
+        candidate = os.path.abspath(os.path.join(base, raw))
+    try:
+        confined = os.path.commonpath([base, candidate]) == base
+    except ValueError:
+        confined = False
+    if not confined:
+        raise PractitionerPackError(f"{path} escapes the allowed directory")
+    if os.path.splitext(candidate)[1].lower() != ".csv":
         raise PractitionerPackError(f"{path} must be a .csv checker report")
-    if not resolved.is_file():
-        raise FileNotFoundError(str(resolved))
-    return resolved
+    return candidate
 
 
 def load_report_snapshot(path: str | Path) -> ReportSnapshot:
     """Read and validate one immutable byte snapshot of a checker report."""
-    source = _resolved_report_file(path)
-    data = source.read_bytes()
+    candidate = _resolved_report_file(path)
+    with open(candidate, "rb") as handle:
+        data = handle.read()
+    source = Path(candidate)
     digest = hashlib.sha256(data).hexdigest()
     try:
         text = data.decode("utf-8-sig")
