@@ -273,18 +273,19 @@ def load_report_snapshot(path: str | Path) -> ReportSnapshot:
     raw = os.fspath(path)
     if "\x00" in raw:
         raise PractitionerPackError("path contains a NUL byte")
+    if os.path.isabs(raw) or ".." in Path(raw).parts:
+        raise PractitionerPackError(
+            "report path must be a relative .csv file under the working directory"
+        )
     root = os.path.abspath(os.getcwd())
-    candidate = os.path.abspath(raw if os.path.isabs(raw) else os.path.join(root, raw))
-    try:
-        confined = os.path.commonpath([root, candidate]) == root
-    except ValueError:
-        confined = False
-    if not confined:
-        raise PractitionerPackError(f"{path} escapes the working directory")
+    candidate = os.path.abspath(os.path.join(root, raw))
     if os.path.splitext(candidate)[1].lower() != ".csv":
         raise PractitionerPackError(f"{path} must be a .csv checker report")
-    with open(candidate, "rb") as handle:
-        data = handle.read()
+    if os.path.commonpath([root, candidate]) == root:
+        with open(candidate, "rb") as handle:
+            data = handle.read()
+    else:
+        raise PractitionerPackError(f"{path} escapes the working directory")
     source = Path(candidate)
     digest = hashlib.sha256(data).hexdigest()
     try:
