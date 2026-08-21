@@ -144,6 +144,15 @@ def _amount_problem(line: ContribLine) -> str | None:
             return (
                 f"row {line.row}: remitted_amount cannot exceed matched_amount"
             )
+        if (
+            line.matched_amount < line.sg_amount
+            and line.remitted is not None
+            and line.remitted_amount is None
+        ):
+            return (
+                f"row {line.row}: matched_amount below sg_amount requires "
+                "remitted_amount when remitted_date is present"
+            )
     return None
 
 

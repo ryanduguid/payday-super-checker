@@ -588,3 +588,21 @@ def test_remitted_amount_greater_than_matched_amount_is_refused(tmp_path):
         CsvError, match="remitted_amount .* greater than matched_amount"
     ):
         parse_rows(path, *load_mapping(None))
+
+
+@pytest.mark.parametrize("matched_amount", ["0.00", "600.00"])
+def test_partial_matched_amount_with_a_date_requires_remitted_amount(
+    tmp_path, matched_amount
+):
+    path = tmp_path / "pay.csv"
+    path.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,"
+        "defined_benefit,remitted_amount,matched_amount\n"
+        f"E1,2026-07-09,1000.00,2026-07-14,,no,no,,no,,{matched_amount}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        CsvError, match="matched_amount below sg_amount requires remitted_amount"
+    ):
+        parse_rows(path, *load_mapping(None))

@@ -55,11 +55,6 @@ class ContribLine:
     sg_amount: Decimal  # dollars
     remitted: date | None = None
     remitted_amount: Decimal | None = None
-    # Amount from the contribution record associated with this payday,
-    # whether or not that record carries a remittance date. Importers write
-    # it explicitly so an undated partial cannot later become indistinguishable
-    # from a legacy full row when an operator adds fund_received_date.
-    matched_amount: Decimal | None = None
     received: date | None = None
     first_to_fund: bool = False
     out_of_cycle: bool = False
@@ -67,6 +62,11 @@ class ContribLine:
     db_interest: bool = False
     row: int = 0
     duplicate_note: str = ""
+    # Appended after every pre-existing field to preserve positional callers.
+    # This is the amount associated with the payday whether or not the vendor
+    # supplied a remittance date. Importers write it explicitly so an undated
+    # partial cannot later look like a legacy full row when receipt is added.
+    matched_amount: Decimal | None = None
 
 
 def receipt_amount_cap(line: ContribLine) -> Decimal:

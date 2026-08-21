@@ -302,6 +302,24 @@ def test_direct_assessment_refuses_invalid_amount_shapes(
         assess([line], load_calendar(), load_gic(), AS_AT)
 
 
+@pytest.mark.parametrize("matched_amount", [Decimal("0"), Decimal("600")])
+def test_direct_assessment_refuses_partial_match_with_unbounded_remittance(
+    matched_amount,
+):
+    line = ContribLine(
+        employee_id="E-AMBIGUOUS-REMITTANCE",
+        qe_day=date(2026, 7, 9),
+        sg_amount=Decimal("1000.00"),
+        remitted=date(2026, 7, 14),
+        matched_amount=matched_amount,
+        row=2,
+    )
+    with pytest.raises(
+        ValueError, match="matched_amount below sg_amount requires remitted_amount"
+    ):
+        assess([line], load_calendar(), load_gic(), AS_AT)
+
+
 def test_duplicate_warning_normalises_legacy_and_explicit_full_remittance():
     common = dict(
         employee_id="E-DUP",

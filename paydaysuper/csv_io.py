@@ -41,8 +41,8 @@ def remitted_credit(line: ContribLine, remitted_as_at: date | None) -> Decimal:
     A remitted date with no remitted_amount is a full remittance, which is
     how files written before this column existed are still read. A
     remitted_amount credits only that figure, and only on or after its
-    remitted date. A remitted amount without a date is ambiguous and the CSV
-    reader refuses it; direct callers receive no credit for that shape.
+    remitted date. A remitted amount without a date is ambiguous and both the
+    CSV reader and direct assessment entry point refuse that shape.
     """
     owed = cents(line.sg_amount)
     if line.remitted_amount is not None:
@@ -553,6 +553,18 @@ def _parse_rows(
                     raise CsvError(
                         f"row {i}: remitted_amount {money(remitted_amount)} is greater "
                         f"than matched_amount {money(matched_amount)}"
+                    )
+                if (
+                    matched_amount is not None
+                    and matched_amount < sg_amount
+                    and remitted_raw
+                    and remitted_amount is None
+                ):
+                    raise CsvError(
+                        f"row {i}: matched_amount below sg_amount requires "
+                        "remitted_amount when remitted_date is present; otherwise "
+                        "the legacy blank-amount fallback would treat the whole "
+                        "liability as remitted"
                     )
                 line = ContribLine(
                     employee_id=employee,
