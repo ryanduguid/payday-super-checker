@@ -8,7 +8,7 @@ from datetime import date
 from pathlib import Path
 
 from . import LAW_CONTENT_DATE, __version__
-from .atomic_io import csv_destination
+from .atomic_io import csv_destination, markdown_destination
 from .calendar import CalendarError, load_calendar
 from .csv_io import (
     LATEST_SANE_YEAR,
@@ -148,6 +148,61 @@ def build_import_parser() -> argparse.ArgumentParser:
         ),
     )
     return parser
+
+
+def build_review_pack_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="payday-super-check review-pack",
+        description=(
+            "Build a deterministic, privacy-conscious practitioner checklist from "
+            "a payday-super-checker report CSV. The source CSV remains the row-level "
+            "workpaper and every professional judgement remains human-only."
+        ),
+    )
+    parser.add_argument("report_csv", help="report CSV produced by payday-super-check")
+    parser.add_argument(
+        "-o",
+        "--output",
+        default="practitioner-review.md",
+        help="Markdown review pack to write (default: practitioner-review.md)",
+    )
+    return parser
+
+
+def review_pack_main(argv: list[str]) -> int:
+    from .practitioner_pack import (
+        PractitionerPackError,
+        load_report_snapshot,
+        write_practitioner_pack,
+    )
+
+    args = build_review_pack_parser().parse_args(argv)
+    requested_output = Path(args.output)
+    output = requested_output
+    try:
+        if Path(args.report_csv).resolve() == requested_output.resolve():
+            raise PractitionerPackError(
+                f"the review pack would overwrite the input report {args.report_csv}. "
+                "Choose a different path with -o."
+            )
+        output = markdown_destination(requested_output)
+        snapshot = load_report_snapshot(args.report_csv)
+        write_practitioner_pack(snapshot, output)
+    except (PractitionerPackError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except FileNotFoundError as exc:
+        print(f"error: file not found: {exc.filename}", file=sys.stderr)
+        return EXIT_ERROR
+    except OSError as exc:
+        target = exc.filename or args.report_csv
+        verb = "cannot write" if exc.filename == str(output) else "cannot read"
+        print(f"error: {verb} {target}: {exc.strerror or exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    _reconfigure_stdout_for_unicode()
+    print(f"wrote {output}")
+    return EXIT_LATE_FOUND if snapshot.needs_attention else EXIT_OK
 
 
 # How many warning lines the console output shows in full before summarising
@@ -336,6 +391,8 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "import":
         return import_main(argv[1:])
+    if argv and argv[0] == "review-pack":
+        return review_pack_main(argv[1:])
     args = build_parser().parse_args(argv)
 
     try:

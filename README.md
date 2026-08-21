@@ -112,6 +112,29 @@ identifiers in process logs. Use that row number to find the full record in
 
 Full detail goes to `report.csv`: due date, which deadline rule applied, days late, the final shortfall after any offset, notional earnings, best and worst case uplift, and every warning that applies to that line.
 
+### Build a practitioner review pack
+
+Turn the completed checker report into a deterministic Markdown index and
+sign-off checklist:
+
+```bash
+payday-super-check review-pack report.csv -o practitioner-review.md
+```
+
+The pack binds itself to the exact report bytes with SHA-256, recounts every
+verdict, reconciles the displayed experimental range and puts each non-`ON_TIME`
+row into a human review queue. It refers to the source CSV's `row` value rather
+than copying employee identifiers into Markdown. Keep the source report beside
+the pack in the same access-controlled workpaper location: the CSV remains the
+row-level evidence.
+
+The consumer fails closed unless the report has the exact current 18-column
+contract, valid displayed arithmetic and one final full-width `NOTE` row. Exit
+code 2 means the pack contains at least one non-`ON_TIME` row; exit code 1 means
+the source or output was invalid. A pack with no exception indicators still
+requires practitioner sign-off. The command does not advise, correct, pay,
+lodge, disclose or turn the checker output into a compliance determination.
+
 Verdicts are `ON_TIME`, `AT_RISK` (remitted in time but no fund receipt recorded), `LATE`, `UNPAID` (a supported deadline has passed and a full eligible fund receipt is not established, including where there is no receipt or only a partial receipt), `UNKNOWN` (the verdict is not available) and `SKIPPED` (defined-benefit interests). `LATE` and `UNPAID` both carry experimental exposure figures.
 
 Some `UNKNOWN` rows are quiet because there is nothing to assess yet: a
@@ -233,7 +256,15 @@ The importer still prints `row N: partial: 999.99 of 1000.00 matched` and `row N
 
 This is a single-user command-line tool. Its positional input, importer input, mapping, calendar override and output arguments designate files the invoking operating-system account has chosen to read or write; they are not a sandbox. Do not expose the command as a web endpoint, multi-user service, or automation that accepts path values from a less-trusted caller without adding an appropriate safe-root boundary.
 
-Generated outputs must have an explicit `.csv` filename. They are staged in the selected output directory and atomically replace the selected output name. This means an existing output symlink is replaced rather than followed, and a failed write does not leave a partial report at that name. Both commands still refuse an output path that resolves to any file they read: for the check, the contribution CSV, a `--mapping-file` and a `--holidays-override`; for the import, both exports. The `.csv` rule does not cover this on its own, because a mapping or override file is free to be named `.csv` too.
+Contribution and report outputs must have an explicit `.csv` filename; the
+practitioner pack must have an explicit `.md` filename. They are staged in the
+selected output directory and atomically replace the selected output name. This
+means an existing output symlink is replaced rather than followed, and a failed
+write does not leave a partial output at that name. Each command refuses an
+output path that resolves to a file it reads: for the check, the contribution
+CSV, a `--mapping-file` and a `--holidays-override`; for the import, both
+exports; and for `review-pack`, the report CSV. A suffix rule does not cover
+this on its own, because an input is free to carry the same suffix.
 
 ## The rules it applies
 
