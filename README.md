@@ -17,7 +17,7 @@ reviews a CSV from payroll, clearing-house and fund records. It refuses or marks
 
 The repository name is the public project identity; the `payday-super-checker` distribution, `payday-super-check` command and `paydaysuper` import package remain compatibility identifiers.
 
-Charles Henry Wickens (1872 to 1939) was Commonwealth Statistician from 1922, a title expanded in 1924 to Commonwealth Statistician and Actuary. His work as a government adviser began with the formulation of the Commonwealth superannuation scheme in 1923.
+Charles Henry Wickens (1872 to 1939) was Commonwealth Statistician from 1922, a title expanded in 1924 to Commonwealth Statistician and Actuary. His work as a government adviser began with the formulation of the Commonwealth superannuation scheme in 1923. Those facts, and that last sentence close to word for word, come from his [Australian Dictionary of Biography entry](https://adb.anu.edu.au/biography/wickens-charles-henry-9091). The name is a tribute only: this independent project is not associated with or endorsed by the Australian Bureau of Statistics or the Australian Taxation Office.
 
 Built by Ryan Duguid, a provisional member of Chartered Accountants ANZ. Written independently, in his own time and on his own equipment.
 
