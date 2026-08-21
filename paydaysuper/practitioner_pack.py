@@ -268,13 +268,8 @@ def _parse_data_row(values: list[str], seen_rows: set[int]) -> ReportRow:
 
 
 
-def _resolved_report_file(path: str | Path) -> str:
-    """Return a canonical path confined to the current working directory.
-
-    ``os.getcwd()`` is the trusted root. Absolute paths are allowed only
-    when they still sit under that root after ``os.path.abspath``.
-    ``os.path.commonpath`` is the CodeQL-recognised confinement check.
-    """
+def load_report_snapshot(path: str | Path) -> ReportSnapshot:
+    """Read and validate one immutable byte snapshot of a checker report."""
     raw = os.fspath(path)
     if "\x00" in raw:
         raise PractitionerPackError("path contains a NUL byte")
@@ -288,12 +283,6 @@ def _resolved_report_file(path: str | Path) -> str:
         raise PractitionerPackError(f"{path} escapes the working directory")
     if os.path.splitext(candidate)[1].lower() != ".csv":
         raise PractitionerPackError(f"{path} must be a .csv checker report")
-    return candidate
-
-
-def load_report_snapshot(path: str | Path) -> ReportSnapshot:
-    """Read and validate one immutable byte snapshot of a checker report."""
-    candidate = _resolved_report_file(path)
     with open(candidate, "rb") as handle:
         data = handle.read()
     source = Path(candidate)
