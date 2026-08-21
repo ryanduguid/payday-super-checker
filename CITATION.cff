@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software in research or industry applications, please cite it as below."
+authors:
+  - family-names: Duguid
+    given-names: Ryan
+title: "payday-super-checker: Deterministic CLI Engine for Australian Payday Superannuation Compliance"
+version: 0.1.0
+date-released: 2026-08-22
+url: "https://github.com/ryanduguid/CharlesHenryWickens"
+repository-code: "https://github.com/ryanduguid/CharlesHenryWickens"
+license: MIT
+keywords:
+  - superannuation
+  - payday-super
+  - australian-payroll
+  - sgaa-1992
+  - sgc-calculator
