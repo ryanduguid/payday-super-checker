@@ -19,6 +19,7 @@ concurrency:
 
 jobs:
   publish:
+    timeout-minutes: 15
     name: publish the exact release assets to PyPI
     runs-on: ubuntu-latest
     environment: pypi
