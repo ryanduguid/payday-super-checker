@@ -1,0 +1,19 @@
+# payday-super-checker
+> High-density context for LLM agents, code generators, and statutory compliance tooling.
+
+## Package Overview
+- **Repository**: https://github.com/ryanduguid/payday-super-checker
+- **CLI Command**: `payday-super-check`
+- **Domain**: Automated evaluation of Australian superannuation contribution timelines against Payday Super 2026 statutory deadlines and estimation of potential Superannuation Guarantee (SG) charge exposure.
+- **Primary Legislation**: *Superannuation Guarantee (Administration) Act 1992 (Cth)* (*SGAA 1992*), Treasury Laws Amendment (Payday Superannuation) reforms.
+
+## Core Modules & APIs
+- `paydaysuper.deadlines`: Calculates 7-day contribution statutory windows and public holiday boundary shifts.
+- `paydaysuper.calendar`: Ingestion of state/territory gazetted public holidays and banking clearance calendars.
+- `paydaysuper.rates`: Historical and forward General Interest Charge (GIC) tables and statutory SG percentage schedules (12.0%+).
+- `paydaysuper.sgc`: Deterministic Superannuation Guarantee Charge exposure calculator (nominal interest + administration component).
+- `paydaysuper.csv_io`: Strict CSV schema parsing with atomic IO validation.
+
+## Architectural Boundaries
+1. **Deterministic Execution**: All statutory date math and SGC exposure calculations are 100% deterministic and grounded in primary source legislation.
+2. **Review Aid Policy**: Software operates as an experimental compliance audit tool and does not constitute formal tax advice, binding ATO assessment, or legal determination.
