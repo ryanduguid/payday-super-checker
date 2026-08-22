@@ -6,8 +6,8 @@ authors:
 title: "payday-super-checker: experimental Payday Super review CLI. Not a compliance determination."
 version: 0.1.1
 date-released: 2026-08-22
-url: "https://github.com/ryanduguid/CharlesHenryWickens"
-repository-code: "https://github.com/ryanduguid/CharlesHenryWickens"
+url: "https://github.com/ryanduguid/payday-super-checker"
+repository-code: "https://github.com/ryanduguid/payday-super-checker"
 license: MIT
 keywords:
   - superannuation

@@ -19,9 +19,9 @@ classifiers = [
   "Topic :: Office/Business :: Financial :: Accounting",
 ]
 [project.urls]
-Homepage = "https://github.com/ryanduguid/CharlesHenryWickens"
-Repository = "https://github.com/ryanduguid/CharlesHenryWickens.git"
-Issues = "https://github.com/ryanduguid/CharlesHenryWickens/issues"
+Homepage = "https://github.com/ryanduguid/payday-super-checker"
+Repository = "https://github.com/ryanduguid/payday-super-checker.git"
+Issues = "https://github.com/ryanduguid/payday-super-checker/issues"
 
 [project.optional-dependencies]
 dev = [

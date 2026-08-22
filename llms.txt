@@ -2,7 +2,7 @@
 > High-density context for LLM agents. Experimental Payday Super review aid — not a compliance determination.
 
 ## Package Overview
-- **Repository**: https://github.com/ryanduguid/CharlesHenryWickens
+- **Repository**: https://github.com/ryanduguid/payday-super-checker
 - **Distribution**: `payday-super-checker`
 - **Import Package**: `paydaysuper`
 - **CLI Command**: `payday-super-check`
