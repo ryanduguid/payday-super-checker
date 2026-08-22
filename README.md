@@ -1,8 +1,8 @@
 # Charles Henry Wickens
 
-![CharlesHenryWickens](assets/banner.svg)
+![payday-super-checker](assets/banner.svg)
 
-[![tests](https://github.com/ryanduguid/CharlesHenryWickens/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/CharlesHenryWickens/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![tests](https://github.com/ryanduguid/payday-super-checker/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/payday-super-checker/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
 **Experimental review aid. Not a compliance determination.** Check Australian
 super contributions against the payday-super deadlines and produce an
@@ -26,15 +26,15 @@ Built by Ryan Duguid, a provisional member of Chartered Accountants ANZ. Written
 Python 3.10 or later. No runtime dependencies.
 
 ```bash
-git clone https://github.com/ryanduguid/CharlesHenryWickens.git
+git clone https://github.com/ryanduguid/payday-super-checker.git
 ```
 
 ```bash
-cd CharlesHenryWickens && pip install .
+cd payday-super-checker && pip install .
 ```
 
 Cloning first means you have the sample file the next command uses. To skip
-the clone, `pip install git+https://github.com/ryanduguid/CharlesHenryWickens.git`
+the clone, `pip install git+https://github.com/ryanduguid/payday-super-checker.git`
 installs the tool alone; point it at your own CSV.
 
 ## Before you run
