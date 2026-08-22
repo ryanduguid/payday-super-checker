@@ -3,8 +3,8 @@ message: "If you use this software in research or industry applications, please 
 authors:
   - family-names: Duguid
     given-names: Ryan
-title: "payday-super-checker: Deterministic CLI Engine for Australian Payday Superannuation Compliance"
-version: 0.1.0
+title: "payday-super-checker: experimental Payday Super review CLI. Not a compliance determination."
+version: 0.1.1
 date-released: 2026-08-22
 url: "https://github.com/ryanduguid/CharlesHenryWickens"
 repository-code: "https://github.com/ryanduguid/CharlesHenryWickens"
@@ -14,4 +14,4 @@ keywords:
   - payday-super
   - australian-payroll
   - sgaa-1992
-  - sgc-calculator
+  - sgc-review

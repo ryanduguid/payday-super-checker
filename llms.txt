@@ -1,5 +1,5 @@
 # Charles Henry Wickens
-> High-density context for LLM agents, code generators, and statutory compliance tooling.
+> High-density context for LLM agents. Experimental Payday Super review aid — not a compliance determination.
 
 ## Package Overview
 - **Repository**: https://github.com/ryanduguid/CharlesHenryWickens

@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Ryan Duguid" }]
-keywords = ["australia", "superannuation", "payday-super", "compliance", "accounting", "ato"]
+keywords = ["australia", "superannuation", "payday-super", "accounting", "ato"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Financial and Insurance Industry",
