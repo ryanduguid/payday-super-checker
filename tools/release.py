@@ -36,7 +36,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by the 3.10 CI job
 
 PROJECT_NAME = "payday-super-checker"
 NORMALISED_NAME = "payday_super_checker"
-REPOSITORY = "ryanduguid/CharlesHenryWickens"
+REPOSITORY = "ryanduguid/payday-super-checker"
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 FORBIDDEN_RELEASE_LANGUAGE = (
     re.compile(r"\bcompliance[- ]ready\b", re.IGNORECASE),
