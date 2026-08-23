@@ -6,4 +6,4 @@
 ## 2. No Statutory Representation
 - Outputs and calculation logs do not constitute formal rulings or lodgement confirmations from the Australian Taxation Office (ATO).
 - Late payment assessments and Superannuation Guarantee Charge (SGC) estimates require independent reconciliation against employer bank statements, clearing house transmission receipts, and superannuation fund acknowledgment logs.
-- Ultimate employer liability and statutory returns must be signed off by an authorized payroll manager or registered tax/BAS agent.
+- Ultimate employer liability and statutory returns must be signed off by an authorised payroll manager or registered tax/BAS agent.
