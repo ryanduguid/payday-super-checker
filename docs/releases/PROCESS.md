@@ -19,7 +19,7 @@ Keep the release human-approved and stop on any mismatch.
    gh api \
      -H "Accept: application/vnd.github+json" \
      -H "X-GitHub-Api-Version: 2026-03-10" \
-     repos/ryanduguid/CharlesHenryWickens/immutable-releases
+     repos/ryanduguid/payday-super-checker/immutable-releases
    ```
 
    Continue only when the response contains `{"enabled":true}`. The
@@ -89,23 +89,23 @@ those tags requires `ryanduguid/payday-super-checker` in the `--repo` and
 
 ```bash
 tag_sha=$(git ls-remote \
-  https://github.com/ryanduguid/CharlesHenryWickens.git \
+  https://github.com/ryanduguid/payday-super-checker.git \
   'refs/tags/v0.1.1^{}' | cut -f1)
 test "${#tag_sha}" -eq 40
 sha256sum --check SHA256SUMS
-gh release verify v0.1.1 --repo ryanduguid/CharlesHenryWickens
+gh release verify v0.1.1 --repo ryanduguid/payday-super-checker
 gh attestation verify payday_super_checker-0.1.1-py3-none-any.whl \
-  --repo ryanduguid/CharlesHenryWickens \
+  --repo ryanduguid/payday-super-checker \
   --source-digest "$tag_sha" \
   --source-ref refs/heads/main \
   --signer-workflow \
-    ryanduguid/CharlesHenryWickens/.github/workflows/release.yml
+    ryanduguid/payday-super-checker/.github/workflows/release.yml
 gh attestation verify payday_super_checker-0.1.1-py3-none-any.whl \
-  --repo ryanduguid/CharlesHenryWickens \
+  --repo ryanduguid/payday-super-checker \
   --source-digest "$tag_sha" \
   --source-ref refs/heads/main \
   --signer-workflow \
-    ryanduguid/CharlesHenryWickens/.github/workflows/release.yml \
+    ryanduguid/payday-super-checker/.github/workflows/release.yml \
   --predicate-type https://spdx.dev/Document/v2.3
 ```
 
