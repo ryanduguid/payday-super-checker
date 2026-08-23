@@ -1,4 +1,4 @@
-# VHS Tape Configuration for CharlesHenryWickens (payday-super-checker)
+# VHS Tape Configuration for payday-super-checker
 # Run `vhs tools/demo.tape` to generate assets/demo.gif
 
 Output assets/demo.gif
