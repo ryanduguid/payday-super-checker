@@ -653,7 +653,7 @@ def test_cli_writes_report_and_flags_late(tmp_path, capsys):
     assert "2026-08-15" in note["notes"]
     assert "EXPERIMENTAL ESTIMATES" in note["notes"]
     assert "not advice" in note["notes"]
-    assert "payday-super-checker 0.1.1" in note["notes"]
+    assert "payday-super-checker 0.1.2" in note["notes"]
     assert "sample_payrun.csv" in note["notes"]
     assert "GIC table covers" in note["notes"]
 
