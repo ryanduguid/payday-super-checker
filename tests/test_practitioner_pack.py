@@ -17,7 +17,7 @@ from paydaysuper.report import CSV_HEADER
 
 
 NOTE_TEXT = (
-    "payday-super-checker 0.1.1, source C:\\Private\\Client A\\pay.csv, "
+    "payday-super-checker 0.1.2, source C:\\Private\\Client A\\pay.csv, "
     "as at 2026-09-10. Legal content current at 2026-08-15. "
     "EXPERIMENTAL ESTIMATES: the ATO assesses the charge."
 )
