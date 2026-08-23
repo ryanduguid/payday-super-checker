@@ -24,7 +24,7 @@ release = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = release
 SPEC.loader.exec_module(release)
 
-TAG = "v0.1.1"
+TAG = "v0.1.2"
 SHA = "1" * 40
 EPOCH = 1_786_752_000  # 2026-08-15T00:00:00Z
 
@@ -83,12 +83,12 @@ def _regular_member(name: str, data: bytes = b"safe\n") -> tuple[tarfile.TarInfo
 def test_release_metadata_is_exactly_v011_and_explicitly_experimental():
     metadata = release.load_metadata(ROOT)
 
-    assert metadata.version == "0.1.1"
+    assert metadata.version == "0.1.2"
     assert metadata.tag == TAG
     assert metadata.prerelease is True
     notes = metadata.notes_path.read_text(encoding="utf-8")
     release.validate_release_notes(notes, metadata)
-    assert notes.startswith("# v0.1.1 - experimental prerelease\n")
+    assert notes.startswith("# v0.1.2 - experimental prerelease\n")
     assert "not a compliance determination" in notes.lower()
     assert "same locked release job" in notes
     assert "not a cross-platform" in notes
@@ -97,7 +97,7 @@ def test_release_metadata_is_exactly_v011_and_explicitly_experimental():
 @pytest.mark.parametrize(
     ("changed", "message"),
     [
-        ({"tag": "v0.1.2"}, "tag"),
+        ({"tag": "v0.1.3"}, "tag"),
         ({"tag_sha": "2" * 40}, "default branch"),
         ({"workflow_sha": "3" * 40}, "workflow"),
         ({"immutable_confirmed": False}, "immutable"),
@@ -129,9 +129,9 @@ def test_release_preflight_rejects_every_missing_publication_gate(changed, messa
     ],
 )
 def test_release_notes_gate_rejects_compliance_readiness_claims(claim):
-    metadata = release.ReleaseMetadata.for_version(ROOT, "0.1.1")
+    metadata = release.ReleaseMetadata.for_version(ROOT, "0.1.2")
     notes = (
-        "# v0.1.1 - experimental prerelease\n\n"
+        "# v0.1.2 - experimental prerelease\n\n"
         "Release classification: **experimental prerelease**\n\n"
         "This is not a compliance determination. A human reviews every result.\n\n"
         f"{claim}\n"
