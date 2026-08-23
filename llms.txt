@@ -1,4 +1,4 @@
-# Charles Henry Wickens
+# payday-super-checker
 > High-density context for LLM agents. Experimental Payday Super review aid — not a compliance determination.
 
 ## Package Overview
