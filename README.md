@@ -1,5 +1,19 @@
 # payday-super-checker
 
+```
++----------------------------------------------------------------------+
+|                         payday-super-checker                         |
++----------------------------------------------------------------------+
+|              SG charge and due dates since 1 July 2026               |
++----------------------------------+-----------------------------------+
+| DR  what it gives you            | CR  what it needs                 |
++----------------------------------+-----------------------------------+
+| due date per payday event        | payroll export CSV                |
+| notional earnings and uplift     | fund receipt dates                |
+| audit trail per employee         | national holiday calendar         |
++----------------------------------+-----------------------------------+
+```
+
 ![payday-super-checker](assets/banner.svg)
 
 [![tests](https://github.com/ryanduguid/payday-super-checker/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/payday-super-checker/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/payday-super-checker.svg?color=5C2D91&labelColor=04001F)](https://pypi.org/project/payday-super-checker/) [![License: MIT](https://img.shields.io/badge/License-MIT-4F485E.svg?labelColor=04001F)](LICENSE) [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-5C2D91.svg?logo=python&logoColor=white&labelColor=04001F)](https://www.python.org/downloads/)
