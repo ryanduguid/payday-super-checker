@@ -48,7 +48,17 @@ jobs:
           mkdir assets dist
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets
           (cd assets && sha256sum --check SHA256SUMS)
-          mv assets/*.whl assets/*.tar.gz dist/
+          # The release also carries a source archive named with hyphens and a
+          # leading v (payday-super-checker-v1.2.3.tar.gz), which is NOT a Python
+          # distribution and which twine rejects for having no PKG-INFO. Select
+          # the sdist and wheel by their exact PEP 625 / PEP 427 names instead of
+          # globbing every .tar.gz.
+          version="${TAG#v}"
+          mv "assets/payday_super_checker-${version}.tar.gz" dist/
+          mv "assets/payday_super_checker-${version}-py3-none-any.whl" dist/
+          test "$(find dist -name '*.whl' | wc -l)" = "1"
+          test "$(find dist -name '*.tar.gz' | wc -l)" = "1"
+          ls -l dist
 
       - name: Publish to PyPI via trusted publishing
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
