@@ -1,7 +1,6 @@
 # Primary-source implementation review, 15 August 2026
 
-This review supersedes the unresolved-source status in
-[`archive/research-notes-2026-08-02.md`](archive/research-notes-2026-08-02.md). It checks the shipped rules against current
+This review supersedes the earlier working notes of 2 August 2026. It checks the shipped rules against current
 Commonwealth legislation, final ATO legal-database material and official
 jurisdiction holiday publications. Secondary commentary was not used to settle
 any rule.
