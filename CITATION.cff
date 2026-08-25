@@ -4,8 +4,8 @@ authors:
   - family-names: Duguid
     given-names: Ryan
 title: "payday-super-checker: experimental Payday Super review CLI. Not a compliance determination."
-version: 0.1.1
-date-released: 2026-08-22
+version: 0.1.2
+date-released: 2026-08-24
 url: "https://ryanduguid.github.io/tools/payday-super/"
 repository-code: "https://github.com/ryanduguid/payday-super-checker"
 license: MIT
