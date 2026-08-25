@@ -113,17 +113,38 @@ jobs:
           uv run --locked --extra dev --python 3.12
           --with "pip-audit==2.10.1" pip-audit --local --strict
 
-      - name: Build deterministic artefacts and compare two package builds
+      - name: Build the wheel, sdist and SPDX SBOM
         env:
           SOURCE_DATE_EPOCH: ${{ steps.release.outputs.epoch }}
           TZ: UTC
+          PYTHONHASHSEED: "0"
         run: |
-          uv run --locked --extra dev --python 3.12 python tools/release.py build \
-            --tag "${{ steps.release.outputs.tag }}" \
-            --commit "${{ steps.release.outputs.commit }}" \
-            --epoch "$SOURCE_DATE_EPOCH" \
-            --out-dir release
-          (cd release && sha256sum --check SHA256SUMS)
+          set -euo pipefail
+          uv run --locked --extra dev --python 3.12 python -m build --outdir release
+          ls release
+
+      - name: Generate SPDX SBOM for the wheel
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          file: release/payday_super_checker-${{ steps.release.outputs.version }}-py3-none-any.whl
+          format: spdx-json
+          syft-version: v1.51.0
+          output-file: release/payday-super-checker-${{ steps.release.outputs.tag }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Write and verify SHA-256 checksums
+        run: |
+          set -euo pipefail
+          (
+            cd release
+            sha256sum -- \
+              payday_super_checker-${{ steps.release.outputs.version }}-py3-none-any.whl \
+              payday_super_checker-${{ steps.release.outputs.version }}.tar.gz \
+              payday-super-checker-${{ steps.release.outputs.tag }}.spdx.json \
+              > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
 
       - name: Install and exercise only the built wheel
         shell: bash

@@ -63,11 +63,10 @@ Run `Publish experimental prerelease` by `workflow_dispatch` from `main`, with
 tag `v0.1.1` and both confirmations set to true. The workflow independently
 requires its own commit, the current default-branch commit and the tag commit to
 be identical; validates the committed release notes; builds the wheel and sdist
-twice in the same locked release job and byte-compares them; constructs the
-deterministic UTC/LF source archives, SPDX SBOM and checksums; creates GitHub
-attestations; and publishes with `--prerelease --latest=false`. The two-build
-check is a same-job repeatability gate, not a cross-platform or future-toolchain
-byte-identity claim.
+with `python -m build`; generates an SPDX SBOM with `anchore/sbom-action`;
+writes checksums; creates GitHub attestations; and publishes with
+`--prerelease --latest=false`. Domain gates stay in `tools/release.py`
+(`metadata` and `verify`).
 
 The equivalent CLI dispatch is:
 

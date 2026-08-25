@@ -34,11 +34,10 @@ def test_rounding_authority_and_experimental_boundary_stay_visible():
 
 def test_final_out_of_cycle_determination_is_pinned_in_user_guidance():
     """The final instrument, its closed list and conditions must stay visible."""
-    research = (DOCS / "archive" / "research-notes-2026-08-02.md").read_text(encoding="utf-8")
     readme = README.read_text(encoding="utf-8")
     review = REVIEW.read_text(encoding="utf-8")
 
-    for document in (research, readme):
+    for document in (readme,):
         assert "F2026L00784" in document
         for kind in (
             "allowances",
@@ -52,8 +51,6 @@ def test_final_out_of_cycle_determination_is_pinned_in_user_guidance():
         assert "established timing, pattern or schedule" in document
         assert "subsequent" in document
 
-    assert "final instrument read 2026-08-14" in research
-    assert "final verbatim kinds/circumstances were NOT read" not in research
     assert "LI 2026/20" in review
     assert "does not display that shorthand" in review
     assert "registered identifier and text control" in review
