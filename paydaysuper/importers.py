@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Any, cast
 
 from .atomic_io import atomic_text_output
 from .csv_io import (
@@ -128,7 +129,7 @@ def _check_duplicate_headers(headers: list[str], path: str | Path) -> None:
 def _read_dicts(path: str | Path) -> tuple[list[str], list[dict[str, str]]]:
     try:
         with open(path, newline="", encoding="utf-8-sig") as f:
-            reader = csv.DictReader(f, restval=MISSING)
+            reader = csv.DictReader(f, restval=cast(Any, MISSING))
             if reader.fieldnames is None:
                 raise CsvError(f"{path} has no header row")
             headers = [h for h in reader.fieldnames if h and h.strip()]

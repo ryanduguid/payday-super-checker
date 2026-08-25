@@ -11,6 +11,7 @@ from paydaysuper.deadlines import (
     SKIP_DB,
     USUAL_7BD,
     ContribLine,
+    Deadline,
     PreRegimeError,
     annotate_calendar_risk,
     annotate_missing_flag,
@@ -124,6 +125,20 @@ def test_next_payday_without_the_flag_names_the_item_2_deadline(cal):
     caveat = [c for c in dl.caveats if "out_of_cycle=yes" in c]
     assert caveat, dl.caveats
     assert cal.add_business_days(date(2026, 7, 23), 7).isoformat() in caveat[0]
+
+
+def test_missing_flag_does_not_invent_an_absent_next_qe_day():
+    """An inconsistent caller cannot produce a caveat naming a made-up date."""
+    contribution = line(next_standard_qe_day=None)
+    deadline = Deadline(
+        due=date(2026, 7, 20),
+        pathway=USUAL_7BD,
+        item2_due=date(2026, 7, 30),
+    )
+
+    annotate_missing_flag([(contribution, deadline)])
+
+    assert deadline.caveats == []
 
 
 def test_next_payday_caveat_names_the_deadline_the_row_actually_got(cal):

@@ -12,6 +12,7 @@ import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
+from typing import Any, cast
 
 from .deadlines import ContribLine
 
@@ -454,7 +455,7 @@ def _parse_rows(
     path: str | Path, mapping: dict[str, str], explicit: set[str]
 ) -> list[ContribLine]:
     with open(path, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f, restval=MISSING)
+        reader = csv.DictReader(f, restval=cast(Any, MISSING))
         if reader.fieldnames is None:
             raise CsvError(f"{path} has no header row")
 

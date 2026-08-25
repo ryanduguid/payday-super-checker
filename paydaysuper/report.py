@@ -228,6 +228,54 @@ def _rounded_figures(r: Result) -> dict[str, Decimal | None]:
     }
 
 
+def _exposure_figures(r: Result) -> dict[str, Decimal]:
+    """Return display figures for a result already classified as exposed."""
+    final_shortfall = r.final_shortfall
+    nec = r.nec
+    uplift = r.uplift
+    assert (
+        final_shortfall is not None and nec is not None and uplift is not None
+    ), "exposed result has incomplete exposure figures"
+
+    figures = _rounded_figures(r)
+    shortfall = figures["shortfall"]
+    rounded_nec = figures["nec"]
+    uplift_low = figures["up_low"]
+    uplift_high = figures["up_high"]
+    estimate_low = figures["low"]
+    estimate_high = figures["high"]
+    assert (
+        shortfall is not None
+        and rounded_nec is not None
+        and uplift_low is not None
+        and uplift_high is not None
+        and estimate_low is not None
+        and estimate_high is not None
+    ), "exposed result has incomplete exposure figures"
+    return {
+        "shortfall": shortfall,
+        "nec": rounded_nec,
+        "up_low": uplift_low,
+        "up_high": uplift_high,
+        "low": estimate_low,
+        "high": estimate_high,
+    }
+
+
+def _exposure_high(r: Result) -> Decimal:
+    """Return the unrounded high estimate used for exposure ordering."""
+    high = r.sgc_high
+    assert high is not None, "exposed result has incomplete exposure figures"
+    return high
+
+
+def _supported_due(r: Result) -> date:
+    """Return the deadline required by every result listed in the console."""
+    due = r.deadline.due
+    assert due is not None, "listed result has no supported deadline"
+    return due
+
+
 def write_csv(
     results: list[Result],
     path: str | Path,
@@ -320,10 +368,11 @@ def console_summary(
 
     exposed = [r for r in results if r.verdict in EXPOSED]
     if exposed:
-        exposed.sort(key=lambda r: r.sgc_high or Decimal(0), reverse=True)
+        exposed.sort(key=_exposure_high, reverse=True)
         lines.append("Lines with exposure (experimental estimates, largest first):")
         for r in exposed[:10]:
-            figures = _rounded_figures(r)
+            figures = _exposure_figures(r)
+            due = _supported_due(r)
             # Standard output is commonly retained by task runners and CI logs.
             # The report CSV is the private, row-level artefact; retain the source
             # row here so an operator can locate the result without leaking an
@@ -337,7 +386,7 @@ def console_summary(
             )
             lines.append(
                 f"  row {r.line.row}  QE day {r.line.qe_day.isoformat()}"
-                f"  due {r.deadline.due.isoformat()}  {r.verdict}, {lateness}"
+                f"  due {due.isoformat()}  {r.verdict}, {lateness}"
             )
             shortfall_text = (
                 f"super ${money(r.line.sg_amount)} (received, so the shortfall is nil)"
@@ -360,10 +409,10 @@ def console_summary(
         if len(exposed) > 10:
             lines.append(f"  ... and {len(exposed) - 10} more (see {csv_path})")
 
-        total_shortfall = sum((_rounded_figures(r)["shortfall"] for r in exposed), Decimal("0"))
-        total_nec = sum((_rounded_figures(r)["nec"] for r in exposed), Decimal("0"))
-        total_low = sum((_rounded_figures(r)["low"] for r in exposed), Decimal("0"))
-        total_high = sum((_rounded_figures(r)["high"] for r in exposed), Decimal("0"))
+        total_shortfall = sum((_exposure_figures(r)["shortfall"] for r in exposed), Decimal("0"))
+        total_nec = sum((_exposure_figures(r)["nec"] for r in exposed), Decimal("0"))
+        total_low = sum((_exposure_figures(r)["low"] for r in exposed), Decimal("0"))
+        total_high = sum((_exposure_figures(r)["high"] for r in exposed), Decimal("0"))
         lines += [
             "",
             f"  Total across {len(exposed)} line(s): shortfall ${money(total_shortfall)}, "
@@ -412,9 +461,10 @@ def console_summary(
         ]
         flagged = [(r, others) for r, others in flagged if others]
         for r, others in flagged[:10]:
+            due = _supported_due(r)
             lines.append(
                 f"  row {r.line.row}  QE day {r.line.qe_day.isoformat()}  "
-                f"due {r.deadline.due.isoformat()}"
+                f"due {due.isoformat()}"
             )
             for caveat in others:
                 lines.append(f"      note: {caveat}")
@@ -436,10 +486,15 @@ def console_summary(
             "reconciliation before it can be treated as clear."
         )
         for r in indeterminate[:10]:
-            worse, better = r.horizon_verdicts
+            horizon_verdicts = r.horizon_verdicts
+            assert horizon_verdicts is not None, (
+                "indeterminate result has no candidate verdicts"
+            )
+            worse, better = horizon_verdicts
+            due = _supported_due(r)
             lines.append(
                 f"  row {r.line.row}  QE day {r.line.qe_day.isoformat()}  "
-                f"due {r.deadline.due.isoformat()}"
+                f"due {due.isoformat()}"
                 f"  super ${money(r.line.sg_amount)}  {worse} or {better}"
             )
             for caveat in r.caveats:
@@ -472,10 +527,13 @@ def console_summary(
     fy_label = fy_labels[0] if fy_labels else financial_year(as_at)
     entry = fy.get(fy_label)
     mcb = (entry or {}).get("max_contributions_base")
-    try:
-        mcb_text = f"${int(mcb):,} for {fy_label}"
-    except (TypeError, ValueError):
+    if mcb is None:
         mcb_text = "the annual cap"
+    else:
+        try:
+            mcb_text = f"${int(mcb):,} for {fy_label}"
+        except (TypeError, ValueError):
+            mcb_text = "the annual cap"
     if len(fy_labels) > 1:
         mcb_text += f" (this file spans {', '.join(fy_labels)})"
 

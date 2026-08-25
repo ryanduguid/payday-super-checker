@@ -225,12 +225,13 @@ def annotate_missing_flag(pairs: list[tuple[ContribLine, Deadline]]) -> None:
     nothing and a caveat urging it would send the operator after a deadline
     that does not move."""
     for line, dl in pairs:
-        if dl.item2_due is None or dl.due is None:
+        next_standard_qe_day = line.next_standard_qe_day
+        if dl.item2_due is None or dl.due is None or next_standard_qe_day is None:
             continue
         pathway_words = PATHWAY_WORDS.get(dl.pathway, dl.pathway)
         if dl.item2_due > dl.due:
             dl.caveats.append(
-                f"a next standard QE day {line.next_standard_qe_day.isoformat()} is "
+                f"a next standard QE day {next_standard_qe_day.isoformat()} is "
                 "supplied but the out-of-cycle flag is not set, so the "
                 f"{pathway_words} deadline {dl.due.isoformat()} was used. If this payday "
                 "is out of cycle, set out_of_cycle=yes and the deadline becomes "
@@ -238,7 +239,7 @@ def annotate_missing_flag(pairs: list[tuple[ContribLine, Deadline]]) -> None:
             )
         else:
             dl.caveats.append(
-                f"a next standard QE day {line.next_standard_qe_day.isoformat()} is "
+                f"a next standard QE day {next_standard_qe_day.isoformat()} is "
                 f"supplied but the out-of-cycle flag is not set. The {pathway_words} "
                 f"deadline {dl.due.isoformat()} was used, and setting out_of_cycle=yes "
                 f"would not change it: the item 2 deadline is "

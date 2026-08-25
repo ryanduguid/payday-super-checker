@@ -318,16 +318,18 @@ def _assess_line(
     item4_uncertain = (
         possible_item4_due is not None and possible_item4_due > dl.due
     )
-    item4_unknown = (
-        "an earlier positive row could extend this deadline to "
-        f"{possible_item4_due.isoformat()} under s 18C(2) item 4, but the "
-        "file does not evidence an eligible contribution received by the fund, "
-        "applied to that earlier QE day and on time. The deadline shown is the "
-        "latest one proved by the supplied facts; reconcile the fund receipt and "
-        "statutory allocation before deciding between the candidate verdicts"
-        if item4_uncertain
-        else ""
-    )
+    if item4_uncertain:
+        assert possible_item4_due is not None
+        item4_unknown = (
+            "an earlier positive row could extend this deadline to "
+            f"{possible_item4_due.isoformat()} under s 18C(2) item 4, but the "
+            "file does not evidence an eligible contribution received by the fund, "
+            "applied to that earlier QE day and on time. The deadline shown is the "
+            "latest one proved by the supplied facts; reconcile the fund receipt and "
+            "statutory allocation before deciding between the candidate verdicts"
+        )
+    else:
+        item4_unknown = ""
     item4_partial_unknown = (
         "because the evidenced fund receipt covers only part of the SG amount, "
         "the unresolved item 4 deadline also leaves UNPAID possible: that is "
@@ -618,6 +620,7 @@ def _assess_line(
         offset = offset_credit > 0
 
         if offset:
+            assert settled is not None
             assumption = (
                 f"before the assessment on {assessment_date.isoformat()}"
                 if assessment_date is not None
@@ -733,4 +736,3 @@ def _assess_line(
             result.caveats.append(stale)
 
     return result
-
