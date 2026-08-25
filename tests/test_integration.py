@@ -7,9 +7,10 @@ from decimal import Decimal
 import pytest
 
 from paydaysuper.calendar import load_calendar
+from paydaysuper.assess import LATE, Result
 from paydaysuper.cli import EXIT_ERROR, EXIT_LATE_FOUND, EXIT_OK, main as cli_main
 from paydaysuper.csv_io import load_mapping, parse_rows
-from paydaysuper.deadlines import ContribLine
+from paydaysuper.deadlines import ContribLine, Deadline
 from paydaysuper.rates import load_gic, load_rates
 from paydaysuper.report import assess as report_assess
 from paydaysuper.report import console_summary, financial_year, needs_attention
@@ -82,6 +83,18 @@ def test_late_but_received_line_has_no_shortfall():
     assert r.sgc_low == r.nec                      # uplift 0%
     assert r.sgc_high == r.nec * Decimal("1.6")    # uplift 60%
     assert any("s 18D" in w for w in r.warnings)
+
+
+def test_console_refuses_exposed_result_without_exposure_figures():
+    """A malformed result must fail closed rather than display zero exposure."""
+    result = Result(
+        line=ContribLine("E1", date(2026, 7, 9), Decimal("100.00"), row=2),
+        deadline=Deadline(date(2026, 7, 20), "usual period"),
+        verdict=LATE,
+    )
+
+    with pytest.raises(AssertionError, match="exposure figures"):
+        console_summary([result], AS_AT, "report.csv", "2026-08-15", load_rates())
 
 
 def test_partial_late_receipt_keeps_the_statutory_base_and_nec_running():
