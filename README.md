@@ -33,6 +33,8 @@ The repository name is the public project identity; the `payday-super-checker` d
 
 Built by Ryan Duguid, a provisional member of Chartered Accountants ANZ. Written independently, in his own time and on his own equipment.
 
+No-install explainer: [When is payday super actually due](https://ryanduguid.github.io/tools/payday-super/). From an AI coding agent, run the same engine through [aus-accounting-mcp](https://ryanduguid.github.io/tools/australian-tax-ai-agents/).
+
 ## Install
 
 Python 3.10 or later. No runtime dependencies.
