@@ -183,14 +183,15 @@ def _parse_data_row(values: list[str], seen_rows: set[int]) -> ReportRow:
             f"source row {source_row} has unsupported verdict {verdict!r}"
         )
 
+    qe_day = _iso_date(record["qe_day"], field="qe_day", source_row=str(source_row))
+    assert qe_day is not None
+    sg_amount = _amount(
+        record["sg_amount"], field="sg_amount", source_row=str(source_row), optional=False
+    )
+    assert sg_amount is not None
     amounts = {
-        field: _amount(
-            record[field],
-            field=field,
-            source_row=str(source_row),
-            optional=field != "sg_amount",
-        )
-        for field in ("sg_amount", *EXPOSURE_FIELDS)
+        field: _amount(record[field], field=field, source_row=str(source_row), optional=True)
+        for field in EXPOSURE_FIELDS
     }
 
     exposure = [amounts[field] for field in EXPOSURE_FIELDS]
@@ -200,7 +201,12 @@ def _parse_data_row(values: list[str], seen_rows: set[int]) -> ReportRow:
                 f"source row {source_row} exposed verdict has incomplete exposure amounts"
             )
         shortfall, nec, uplift_low, uplift_high, estimate_low, estimate_high = exposure
-        assert all(value is not None for value in exposure)
+        assert shortfall is not None
+        assert nec is not None
+        assert uplift_low is not None
+        assert uplift_high is not None
+        assert estimate_low is not None
+        assert estimate_high is not None
         if estimate_low != shortfall + nec + uplift_low:
             raise PractitionerPackError(
                 f"source row {source_row} low SG-charge estimate does not add up"
@@ -241,9 +247,7 @@ def _parse_data_row(values: list[str], seen_rows: set[int]) -> ReportRow:
 
     return ReportRow(
         source_row=source_row,
-        qe_day=_iso_date(
-            record["qe_day"], field="qe_day", source_row=str(source_row)
-        ),
+        qe_day=qe_day,
         pathway=record["pathway"],
         due_date=_iso_date(
             record["due_date"],
@@ -254,7 +258,7 @@ def _parse_data_row(values: list[str], seen_rows: set[int]) -> ReportRow:
         verdict=verdict,
         days_late=days_late,
         lateness_measured_to=record["lateness_measured_to"],
-        sg_amount=amounts["sg_amount"],
+        sg_amount=sg_amount,
         final_shortfall=amounts["final_shortfall"],
         notional_earnings=amounts["notional_earnings"],
         uplift_best_case=amounts["uplift_best_case"],

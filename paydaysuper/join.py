@@ -108,11 +108,11 @@ def _covers(s: SuperRow, target: date) -> bool:
     `None <= target` raise `TypeError`. `False` is the defensible answer:
     without any period at all, claiming this row covers one specific date
     would be a guess."""
-    if s.period_start is None and s.period_end is None:
-        return False
-    start = s.period_start or s.period_end
-    end = s.period_end or s.period_start
-    return start <= target <= end
+    if s.period_start is None:
+        return s.period_end == target if s.period_end is not None else False
+    if s.period_end is None:
+        return s.period_start == target
+    return s.period_start <= target <= s.period_end
 
 
 def _check_reversed_periods(super_rows: list[SuperRow]) -> None:
@@ -527,7 +527,9 @@ def join(
         # a single canonical row cannot represent each tranche.
         dated = [s for s, _, _ in entries if s.paid_date is not None]
         undated = [s for s, _, _ in entries if s.paid_date is None]
-        last_known_paid_date = max(s.paid_date for s in dated) if dated else None
+        last_known_paid_date = max(
+            (s.paid_date for s in dated if s.paid_date is not None), default=None
+        )
         dated_total = sum(
             (amount for s, amount, _ in entries if s.paid_date is not None),
             Decimal("0"),
@@ -539,6 +541,7 @@ def join(
             if len(undated) == len(entries):
                 flag_parts.append("matched super rows carry no payment date")
             else:
+                assert last_known_paid_date is not None
                 undated_total = sum(
                     (amount for s, amount, _ in entries if s.paid_date is None),
                     Decimal("0"),
@@ -572,4 +575,3 @@ def join(
         OrphanReason(s, *_why_orphaned(coverage[id(s)], allocated_total)) for s in orphans
     ]
     return JoinResult(outcomes, orphans, key_mode, warnings, orphan_reasons)
-
