@@ -15,7 +15,6 @@ CALENDAR = (
     / "business_days.json"
 )
 
-
 def test_rounding_authority_and_experimental_boundary_stay_visible():
     """LCR 2026/3 settled the assessment-level five-cent rule, not this
     tool's per-line display boundary. The distinction must survive in both
