@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "product_release": "v0.1.2",
+  "fixture_version": "1",
+  "as_at": "2026-08-20",
+  "source_reviewed": "2026-08-15",
+  "sources": [
+    {
+      "publisher": "Federal Register of Legislation",
+      "title": "Superannuation Guarantee (Administration) Act 1992",
+      "url": "https://www.legislation.gov.au/C2004A04402/latest/text"
+    },
+    {
+      "publisher": "Australian Taxation Office",
+      "title": "LCR 2026/2 eligible contributions",
+      "url": "https://www.ato.gov.au/law/view/document?DocID=COG%2FLCR20262%2FNAT%2FATO%2F00001"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "timely_remittance_without_receipt",
+      "fixture": "timely_remittance_no_receipt.csv",
+      "expected_due_date": "2026-08-17",
+      "expected_verdict": "AT_RISK",
+      "expected_exit": 2
+    },
+    {
+      "id": "late_remittance_without_receipt",
+      "fixture": "late_remittance_no_receipt.csv",
+      "expected_due_date": "2026-08-17",
+      "expected_verdict": "LATE",
+      "expected_exit": 2
+    },
+    {
+      "id": "receipt_on_due_date",
+      "fixture": "receipt_on_due_date.csv",
+      "expected_due_date": "2026-08-17",
+      "expected_verdict": "ON_TIME",
+      "expected_exit": 0
+    },
+    {
+      "id": "receipt_after_due_date",
+      "fixture": "receipt_after_due_date.csv",
+      "expected_due_date": "2026-08-17",
+      "expected_verdict": "LATE",
+      "expected_exit": 2
+    }
+  ],
+  "human_decision": "Remittance evidence can show operational timing but cannot prove on-time; a human must establish eligible fund receipt, allocation and the other assessment facts before relying on a statutory conclusion."
+}
