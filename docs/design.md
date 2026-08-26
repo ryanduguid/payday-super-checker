@@ -1,9 +1,8 @@
 # payday-super-checker: design
 
 Design as implemented. Legal content researched 2 August 2026 and refreshed
-against current primary sources on 15 August 2026. See
-`primary-source-review-2026-08-15.md`; the 2 August notes remain the historical
-audit trail.
+against current primary sources on 15 August 2026. The maintained source record
+is `primary-source-review-2026-08-15.md`.
 
 ## Purpose
 
