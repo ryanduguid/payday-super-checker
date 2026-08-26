@@ -100,6 +100,65 @@ REPRODUCTION_COMMANDS = [
     "uv run --locked --extra dev --python 3.12 pytest tests/test_evaluation_pack.py -q",
 ]
 
+FIXTURE_HEADER = [
+    "employee_id",
+    "payment_date",
+    "sg_amount",
+    "remitted_date",
+    "fund_received_date",
+    "first_contribution_to_fund",
+    "out_of_cycle",
+    "next_standard_payday",
+    "defined_benefit",
+]
+
+EXPECTED_FIXTURE_ROWS = {
+    "timely_remittance_no_receipt.csv": [
+        "SYN001",
+        "2026-08-06",
+        "120.00",
+        "2026-08-14",
+        "",
+        "no",
+        "no",
+        "",
+        "no",
+    ],
+    "late_remittance_no_receipt.csv": [
+        "SYN001",
+        "2026-08-06",
+        "120.00",
+        "2026-08-18",
+        "",
+        "no",
+        "no",
+        "",
+        "no",
+    ],
+    "receipt_on_due_date.csv": [
+        "SYN001",
+        "2026-08-06",
+        "120.00",
+        "2026-08-14",
+        "2026-08-17",
+        "no",
+        "no",
+        "",
+        "no",
+    ],
+    "receipt_after_due_date.csv": [
+        "SYN001",
+        "2026-08-06",
+        "120.00",
+        "2026-08-14",
+        "2026-08-18",
+        "no",
+        "no",
+        "",
+        "no",
+    ],
+}
+
 
 @pytest.mark.parametrize(
     ("fixture", "expected_due_date", "expected_verdict", "expected_exit"),
@@ -137,6 +196,17 @@ def test_evidence_boundary_scenarios(
     assert rows[1]["employee_id"] == "NOTE"
     assert rows[0]["due_date"] == expected_due_date
     assert rows[0]["verdict"] == expected_verdict
+
+
+@pytest.mark.parametrize(("fixture", "expected_row"), EXPECTED_FIXTURE_ROWS.items())
+def test_fabricated_fixture_has_exact_approved_header_and_row(
+    fixture: str,
+    expected_row: list[str],
+) -> None:
+    with (PACK / "fixtures" / fixture).open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.reader(handle))
+
+    assert rows == [FIXTURE_HEADER, expected_row]
 
 
 def test_machine_readable_contract_matches_the_exact_ordered_contract() -> None:
@@ -203,6 +273,11 @@ def test_only_declared_evaluation_csvs_are_allowlisted() -> None:
         "evaluation/payday_super_evidence/fixtures/receipt_after_due_date.csv",
     }
     rules = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    evaluation_prefix = "!evaluation/payday_super_evidence/fixtures/"
+    evaluation_allowlist = {
+        rule.removeprefix("!") for rule in rules if rule.startswith(evaluation_prefix)
+    }
+    assert evaluation_allowlist == allowed
     for relative in sorted(allowed):
         assert f"!{relative}" in rules
         result = subprocess.run(
