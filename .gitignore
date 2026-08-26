@@ -9,8 +9,14 @@
 *.[pP][dD][fF]
 *.[cC][sS][vV]
 /practitioner-review.md
+# The only CSV exceptions are examples, importer test fixtures, and the four
+# fabricated Payday Super evaluation fixtures below.
 !examples/*.csv
 !tests/fixtures/importers/*.csv
+!evaluation/payday_super_evidence/fixtures/timely_remittance_no_receipt.csv
+!evaluation/payday_super_evidence/fixtures/late_remittance_no_receipt.csv
+!evaluation/payday_super_evidence/fixtures/receipt_on_due_date.csv
+!evaluation/payday_super_evidence/fixtures/receipt_after_due_date.csv
 
 # Python
 __pycache__/

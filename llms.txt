@@ -5,6 +5,7 @@
 - **Explainer**: https://ryanduguid.github.io/tools/payday-super/
 - **MCP facade**: https://ryanduguid.github.io/tools/australian-tax-ai-agents/
 - **Repository**: https://github.com/ryanduguid/payday-super-checker
+- **Evidence Evaluation**: evaluation/payday_super_evidence/README.md
 - **Distribution**: `payday-super-checker`
 - **Import Package**: `paydaysuper`
 - **CLI Command**: `payday-super-check`

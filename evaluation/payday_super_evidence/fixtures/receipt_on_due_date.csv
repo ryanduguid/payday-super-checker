@@ -1,0 +1,2 @@
+employee_id,payment_date,sg_amount,remitted_date,fund_received_date,first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit
+SYN001,2026-08-06,120.00,2026-08-14,2026-08-17,no,no,,no

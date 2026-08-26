@@ -67,6 +67,9 @@ records do not establish them.
 
 ## Use
 
+Review the remittance-versus-fund-receipt boundary with the
+[fabricated Payday Super evidence evaluation](evaluation/payday_super_evidence/README.md).
+
 Start with the sample that has no transition-period contributions. This
 command runs to a verdict with no confirmation flags:
 
