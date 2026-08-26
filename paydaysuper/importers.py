@@ -52,7 +52,6 @@ from .profiles import (
     Profile,
     detect,
     normalise_header,
-    normalise_name,
     resolve_columns,
 )
 
