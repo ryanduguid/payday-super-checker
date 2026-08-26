@@ -123,6 +123,8 @@ def test_sdist_manifest_carries_every_release_test_dependency():
 
     assert "include uv.lock" in manifest
     assert "include .github/workflows/release.yml" in manifest
+    assert "include llms.txt" in manifest
+    assert "recursive-include evaluation/payday_super_evidence *.md *.json *.csv" in manifest
 
 
 def test_operator_process_checks_actual_immutable_setting_before_tagging():

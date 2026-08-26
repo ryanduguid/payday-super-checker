@@ -1,5 +1,6 @@
 include LICENSE
 include README.md
+include llms.txt
 include .gitignore
 include uv.lock
 include .github/workflows/release.yml
@@ -10,6 +11,7 @@ recursive-include tests *.py
 # what CI's package job runs from inside the sdist.
 recursive-include tests/fixtures *.csv
 recursive-include examples *.json *.csv
+recursive-include evaluation/payday_super_evidence *.md *.json *.csv
 recursive-include tools *.py
 recursive-include docs *.md
 global-exclude __pycache__/*

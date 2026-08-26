@@ -280,22 +280,25 @@ def test_only_declared_evaluation_csvs_are_allowlisted() -> None:
     assert evaluation_allowlist == allowed
     for relative in sorted(allowed):
         assert f"!{relative}" in rules
-        result = subprocess.run(
-            ["git", "check-ignore", "--no-index", "--quiet", "--", relative],
+
+    if (ROOT / ".git").exists():
+        for relative in sorted(allowed):
+            result = subprocess.run(
+                ["git", "check-ignore", "--no-index", "--quiet", "--", relative],
+                cwd=ROOT,
+                check=False,
+            )
+            assert result.returncode == 1, relative
+        refused = subprocess.run(
+            [
+                "git",
+                "check-ignore",
+                "--no-index",
+                "--quiet",
+                "--",
+                "evaluation/payday_super_evidence/fixtures/client.csv",
+            ],
             cwd=ROOT,
             check=False,
         )
-        assert result.returncode == 1, relative
-    refused = subprocess.run(
-        [
-            "git",
-            "check-ignore",
-            "--no-index",
-            "--quiet",
-            "--",
-            "evaluation/payday_super_evidence/fixtures/client.csv",
-        ],
-        cwd=ROOT,
-        check=False,
-    )
-    assert refused.returncode == 0
+        assert refused.returncode == 0
