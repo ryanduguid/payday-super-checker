@@ -42,7 +42,8 @@ def test_evidence_boundary_scenarios(
     assert code == expected_exit
     with output.open(encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
-    assert len(rows) == 1
+    assert len(rows) == 2
+    assert rows[1]["employee_id"] == "NOTE"
     assert rows[0]["due_date"] == "2026-08-17"
     assert rows[0]["verdict"] == expected_verdict
 
