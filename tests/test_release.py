@@ -118,11 +118,20 @@ def test_release_workflow_is_manual_pinned_attested_and_prerelease_only():
     assert "myob_payroll.csv" in workflow and "myob_super.csv" in workflow
 
 
+def test_verify_workflow_supports_manual_outage_recovery():
+    workflow = (ROOT / ".github" / "workflows" / "verify.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "workflow_dispatch:" in workflow
+
+
 def test_sdist_manifest_carries_every_release_test_dependency():
     manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8").splitlines()
 
     assert "include uv.lock" in manifest
     assert "include .github/workflows/release.yml" in manifest
+    assert "include .github/workflows/verify.yml" in manifest
     assert "include llms.txt" in manifest
     assert "recursive-include evaluation/payday_super_evidence *.md *.json *.csv" in manifest
 
