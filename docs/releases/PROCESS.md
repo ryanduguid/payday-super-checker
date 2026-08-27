@@ -1,8 +1,21 @@
 # Experimental prerelease process
 
+The repository's [GitHub Releases](https://github.com/ryanduguid/payday-super-checker/releases) page is the canonical release history. A separate changelog is intentionally not maintained.
+
 This process publishes a GitHub prerelease only. It does not publish to PyPI,
 make an accounting entry or lodge anything. Output is not a compliance determination.
 Keep the release human-approved and stop on any mismatch.
+
+## Preserved squash-boundary release
+
+The lightweight `v0.1.0` tag points at the pull-request-side commit that
+preceded its squash merge to `main`. The ref object and peeled commit are both
+`1fe6f189036b4a276421b156a8f43fabcac47710`, so it is an intentional
+historical exception outside current `main` ancestry.
+
+Preserve that immutable tag exactly as published. Do not move, delete or
+recreate it to make the history appear linear. Every future release tag must
+point to a commit reachable from protected `main`.
 
 ## Before creating a tag
 
