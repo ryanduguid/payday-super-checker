@@ -29,6 +29,7 @@ dev = [
     "mypy>=1.14",
     "build==1.5.0",
     "pytest>=8",
+    "hypothesis==6.165.10",
     "holidays==0.102",
     "setuptools==84.0.0",
     "coverage==7.15.4",
