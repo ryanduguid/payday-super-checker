@@ -131,6 +131,7 @@ def test_sdist_manifest_carries_every_release_test_dependency():
 
     assert "include uv.lock" in manifest
     assert "include .github/workflows/release.yml" in manifest
+    assert "include .github/workflows/verify.yml" in manifest
     assert "include llms.txt" in manifest
     assert "recursive-include evaluation/payday_super_evidence *.md *.json *.csv" in manifest
 
