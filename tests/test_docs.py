@@ -14,6 +14,13 @@ CALENDAR = (
     / "data"
     / "business_days.json"
 )
+GENERATOR = (
+    Path(__file__).resolve().parents[1] / "tools" / "generate_calendar.py"
+)
+LOCKED_CALENDAR_COMMAND = (
+    "uv run --locked --extra dev --python 3.12 "
+    "python tools/generate_calendar.py > paydaysuper/data/business_days.json"
+)
 
 def test_rounding_authority_and_experimental_boundary_stay_visible():
     """LCR 2026/3 settled the assessment-level five-cent rule, not this
@@ -135,3 +142,13 @@ def test_calendar_authority_horizon_and_exclusions_are_pinned():
     assert "WA's official page" in review
     assert "Legislative Council second reading" in normalised_review
     assert "subject to the AFL schedule" in normalised_review
+
+
+def test_calendar_regeneration_guidance_uses_the_locked_environment():
+    readme = README.read_text(encoding="utf-8")
+    generator = GENERATOR.read_text(encoding="utf-8")
+
+    for guidance in (readme, generator):
+        assert LOCKED_CALENDAR_COMMAND in guidance
+    assert "holidays==" not in readme
+    assert "pip install holidays==" not in generator

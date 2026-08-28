@@ -12,8 +12,7 @@ Method (SGAA 1992 s 6(1) "business day"):
   whole-of-jurisdiction, weekends excluded (computed at runtime).
 
 Usage:
-    pip install holidays==0.102
-    python tools/generate_calendar.py > paydaysuper/data/business_days.json
+    uv run --locked --extra dev --python 3.12 python tools/generate_calendar.py > paydaysuper/data/business_days.json
 Then hand-review every line against the 8 state/territory government pages
 before shipping, record the review date, and raise `verified_until` only to
 the last date every jurisdiction covers. The raw generator deliberately
