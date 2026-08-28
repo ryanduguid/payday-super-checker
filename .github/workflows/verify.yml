@@ -18,6 +18,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
@@ -40,5 +41,12 @@ jobs:
       - name: Audit
         run: uv run --locked --extra dev --python 3.12 --with "pip-audit==2.10.1" pip-audit --local --strict
 
-      - name: Run tests
-        run: uv run --locked --extra dev --python 3.12 pytest
+      - name: Run tests with scoped branch coverage
+        run: >-
+          uv run --locked --extra dev --python 3.12 coverage run --branch
+          --source=paydaysuper.assess,paydaysuper.report -m pytest
+
+      - name: Require complete changed-line coverage in assessment logic
+        run: |
+          uv run --locked --extra dev --python 3.12 coverage xml --include="paydaysuper/assess.py,paydaysuper/report.py" -o coverage.xml
+          uv run --locked --extra dev --python 3.12 diff-cover coverage.xml --compare-branch=origin/main --branch-coverage --fail-under=100
