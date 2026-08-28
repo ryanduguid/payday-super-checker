@@ -39,10 +39,12 @@ point to a commit reachable from protected `main`.
    Continue only when the response contains `{"enabled":true}`. The
    `enforced_by_owner` value may be either true or false. A 404, an access error
    or `"enabled": false` is a stop, not evidence of a safe setting.
-4. Resolve the release tag from the committed package metadata, then read its
+4. Require a clean worktree and index, including no untracked files. Then
+   resolve the release tag from the committed package metadata and read its
    matching release notes in full:
 
    ```bash
+   test -z "$(git status --porcelain=v1 --untracked-files=all)"
    tag=$(uv run --locked --extra dev --python 3.12 python tools/release.py \
      metadata --field tag)
    notes_path="docs/releases/${tag}.md"
@@ -58,6 +60,7 @@ Fetch and record the current default-branch commit, then create an annotated tag
 at that exact object:
 
 ```bash
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
 tag=$(uv run --locked --extra dev --python 3.12 python tools/release.py \
   metadata --field tag)
 git fetch origin main --tags

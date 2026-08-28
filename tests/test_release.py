@@ -144,6 +144,7 @@ def test_operator_process_checks_actual_immutable_setting_before_tagging():
     assert '"enabled":true' in process.replace(" ", "")
     before_tag, _, after_tag = process.partition("git tag")
     assert "immutable-releases" in before_tag
+    assert "git status --porcelain" in before_tag
     assert "workflow_dispatch" in after_tag
     assert "Do not" in process and "compliance determination" in process
     assert "python -m build" in process
