@@ -144,12 +144,25 @@ def test_operator_process_checks_actual_immutable_setting_before_tagging():
     assert '"enabled":true' in process.replace(" ", "")
     before_tag, _, after_tag = process.partition("git tag")
     assert "immutable-releases" in before_tag
-    assert "git status --porcelain" in before_tag
+    normalised_process = "\n".join(line.lstrip() for line in process.splitlines())
+    clean_guard = (
+        "release_status=$(git status --porcelain=v1 --untracked-files=all) || exit 1\n"
+        'test -z "$release_status" || exit 1'
+    )
+    assert normalised_process.count(clean_guard) == 2
+    metadata_blocks = [
+        block
+        for block in process.split("```bash")[1:]
+        if "metadata --field tag" in block.partition("```")[0]
+    ]
+    assert len(metadata_blocks) == 4
+    assert all("set -euo pipefail" in block.partition("```")[0] for block in metadata_blocks)
     assert "workflow_dispatch" in after_tag
     assert "Do not" in process and "compliance determination" in process
     assert "python -m build" in process
     assert "tools/release.py" in process
     assert "builds every artefact twice" not in process
+    assert 'gh release verify "$tag"' in process
     assert "--source-digest" in process and "--source-ref refs/heads/main" in process
     assert "--signer-workflow" in process
     assert "--predicate-type https://spdx.dev/Document/v2.3" in process

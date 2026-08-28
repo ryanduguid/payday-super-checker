@@ -44,7 +44,9 @@ point to a commit reachable from protected `main`.
    matching release notes in full:
 
    ```bash
-   test -z "$(git status --porcelain=v1 --untracked-files=all)"
+   set -euo pipefail
+   release_status=$(git status --porcelain=v1 --untracked-files=all) || exit 1
+   test -z "$release_status" || exit 1
    tag=$(uv run --locked --extra dev --python 3.12 python tools/release.py \
      metadata --field tag)
    notes_path="docs/releases/${tag}.md"
@@ -60,7 +62,9 @@ Fetch and record the current default-branch commit, then create an annotated tag
 at that exact object:
 
 ```bash
-test -z "$(git status --porcelain=v1 --untracked-files=all)"
+set -euo pipefail
+release_status=$(git status --porcelain=v1 --untracked-files=all) || exit 1
+test -z "$release_status" || exit 1
 tag=$(uv run --locked --extra dev --python 3.12 python tools/release.py \
   metadata --field tag)
 git fetch origin main --tags
@@ -97,6 +101,7 @@ gates stay in `tools/release.py` (`metadata` and `verify`).
 The equivalent CLI dispatch is:
 
 ```bash
+set -euo pipefail
 tag=$(uv run --locked --extra dev --python 3.12 python tools/release.py \
   metadata --field tag)
 gh workflow run release.yml --ref main \
@@ -115,6 +120,7 @@ those tags requires `ryanduguid/payday-super-checker` in the `--repo` and
 `--signer-workflow` arguments instead.
 
 ```bash
+set -euo pipefail
 tag=$(uv run --locked --extra dev --python 3.12 python tools/release.py \
   metadata --field tag)
 version=${tag#v}
