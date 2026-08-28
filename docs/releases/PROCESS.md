@@ -21,10 +21,11 @@ point to a commit reachable from protected `main`.
 
 1. Merge the release-preparation pull request and wait for every required check
    on the resulting `main` commit. Do not tag a pull-request head.
-2. In **Settings > General > Releases**, enable release immutability. GitHub
-   applies it only to future releases. This setting was read through the API on
-   15 August 2026 and was disabled, so it is a live operator prerequisite rather
-   than an assumption committed in this repository.
+2. Confirm release immutability remains enabled in **Settings > General >
+   Releases**. GitHub applies it only to future releases. The API returned
+   `{"enabled":true,"enforced_by_owner":false}` on 28 August 2026. Because the
+   setting can change, its live recheck remains an operator prerequisite; if it
+   is disabled, enable it before continuing.
 3. Re-check the actual repository setting with an administrator-authenticated
    GitHub CLI. The endpoint needs Administration read permission:
 
@@ -62,13 +63,13 @@ Tag creation and push are deliberate operator actions. Do not reuse or move a
 tag. If anything is wrong, stop and prepare a new patch version.
 
 GitHub does not freeze the tag through release immutability until the release is
-published. The workflow narrows this window by rechecking the remote tag and
-`main` immediately before publication, then verifies the tag and immutable
-release afterwards. Those checks detect but cannot atomically prevent the
-residual race. Preventive control requires a repository tag ruleset that blocks
-updates and deletion for release tags; without one, keep tag changes quiescent
-for the short publication window and treat any post-check mismatch as a failed
-release.
+published. This repository also has an active tag ruleset,
+`Protect version tags`, that matches `refs/tags/v*` and blocks updates and
+deletion with no bypass actors, verified through the API on 28 August 2026.
+Keep that ruleset active. It closes the update-and-delete path after tag
+creation. The residual race is a wrong initial tag target; the workflow's
+remote-tag and `main` rechecks catch that before publication and verify the
+immutable release afterwards. Treat any mismatch as a failed release.
 
 ## Dispatch and verify
 
