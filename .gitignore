@@ -29,6 +29,7 @@ dist/
 *.egg-info/
 .pytest_cache/
 .coverage
+coverage.xml
 htmlcov/
 
 # Editors and OS
