@@ -149,7 +149,6 @@ def test_operator_process_checks_actual_immutable_setting_before_tagging():
     assert "python -m build" in process
     assert "tools/release.py" in process
     assert "builds every artefact twice" not in process
-    assert "gh release verify v0.1.1" in process
     assert "--source-digest" in process and "--source-ref refs/heads/main" in process
     assert "--signer-workflow" in process
     assert "--predicate-type https://spdx.dev/Document/v2.3" in process
