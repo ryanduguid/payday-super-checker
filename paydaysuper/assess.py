@@ -1,7 +1,7 @@
-"""Per-line payday-super verdicts and exposure figures.
+"""Payday-super assessment orchestration, verdicts and exposure figures.
 
-Extracted from report.py so the file-level assess() path and the CSV/console
-renderers stay readable. Public names are re-exported from report.
+The public file-level route and its per-line state machine live together here.
+Public names remain re-exported from report for compatibility.
 """
 from __future__ import annotations
 
@@ -12,10 +12,16 @@ from decimal import Decimal
 from .calendar import BusinessCalendar
 from .csv_io import cents, money, remitted_credit
 from .deadlines import (
+    REGIME_START,
     SKIP_DB,
     USUAL_7BD,
     ContribLine,
     Deadline,
+    PreRegimeError,
+    annotate_calendar_risk,
+    annotate_missing_flag,
+    apply_item4,
+    compute_due,
     earliest_prepayment_day,
     receipt_amount_cap,
 )
@@ -190,6 +196,99 @@ def _flag_duplicates(lines: list[ContribLine]) -> None:
             )
             for line in group:
                 line.duplicate_note = note
+
+
+def assess(
+    lines: list[ContribLine],
+    cal: BusinessCalendar,
+    gic: GicTable,
+    as_at: date,
+    assessment_date: date | None = None,
+    *,
+    transition_allocation_confirmed: bool = False,
+) -> list[Result]:
+    """Assess each contribution line.
+
+    `assessment_date` is the day the ATO made (or is assumed to make) an SG
+    charge assessment for these QE days. Eligible late contributions received
+    before then reduce the final shortfall by their credited amount (s 18D).
+    Left as None, the tool assumes no assessment has issued, which is the usual
+    case for an employer checking their own records.
+
+    `transition_allocation_confirmed` is deliberately false by default.
+    LCR 2026/1 requires contributions made from 1 to 28 July 2026 to be
+    applied first to any June-quarter shortfall, and permits a pre-1 July
+    amount to carry forward only to the extent it was unused excess. This
+    file format has neither balance, so a contribution dated no later than
+    28 July cannot safely be assigned to a new-regime payday without an
+    operator reconciling it first."""
+    # Collect every date problem before stopping, so the operator can fix
+    # the whole file in one pass rather than one row per run.
+    problems = [
+        problem
+        for line in lines
+        for problem in (_amount_problem(line), _date_problem(line))
+        if problem
+    ]
+    if problems:
+        raise ValueError("; ".join(problems))
+
+    _flag_duplicates(lines)
+
+    # Report every pre-regime row at once, not one per run.
+    pre_regime = [line for line in lines if line.qe_day < REGIME_START]
+    if pre_regime:
+        rows = ", ".join(str(line.row) for line in pre_regime[:10])
+        more = f" and {len(pre_regime) - 10} more" if len(pre_regime) > 10 else ""
+        raise PreRegimeError(
+            f"{len(pre_regime)} row(s) have a QE day before 1 Jul 2026 (rows {rows}"
+            f"{more}; earliest {min(l.qe_day for l in pre_regime).isoformat()}): the old "
+            "quarterly SG law applies to them and this tool covers payday super only. "
+            "Remove them and run again."
+        )
+
+    # Prefer the fund-receipt date because that is the contribution fact the
+    # checker ultimately tests. Where it is absent, a remittance on or before
+    # 28 July could still have reached the fund in the overlap period, so it
+    # is included rather than guessed away. Rows with no payment fact, nil SG
+    # and defined-benefit interests do not allocate a contribution here.
+    transition_rows: list[ContribLine] = []
+    for line in lines:
+        contribution_date = line.received if line.received is not None else line.remitted
+        if (
+            not line.db_interest
+            and line.sg_amount > 0
+            and receipt_amount_cap(line) > 0
+            and contribution_date is not None
+            and contribution_date <= TRANSITION_END
+        ):
+            transition_rows.append(line)
+    if transition_rows and not transition_allocation_confirmed:
+        rows = ", ".join(str(line.row) for line in transition_rows[:10])
+        more = f" and {len(transition_rows) - 10} more" if len(transition_rows) > 10 else ""
+        raise ValueError(
+            f"{len(transition_rows)} row(s) use a contribution dated no later than "
+            f"28 Jul 2026 (rows {rows}{more}). LCR 2026/1 requires pre-1 July "
+            "amounts to be unused excess and 1-28 July amounts to reduce any "
+            "employee June-quarter shortfall first. This file cannot calculate "
+            "those old-regime balances. Reconcile them for every affected employee, "
+            "then rerun with --confirm-transition-allocation; no payroll payment, "
+            "lodgment or accounting decision is made by this tool"
+        )
+    transition_row_ids = {id(line) for line in transition_rows}
+
+    pairs = [(line, compute_due(line, cal)) for line in lines]
+    apply_item4(pairs, as_at)
+    annotate_missing_flag(pairs)
+    annotate_calendar_risk(pairs, cal)
+
+    results: list[Result] = []
+    for line, dl in pairs:
+        results.append(
+            _assess_line(line, dl, cal, gic, as_at, assessment_date, transition_row_ids)
+        )
+
+    return results
 
 
 def _assess_line(
