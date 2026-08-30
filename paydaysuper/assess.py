@@ -88,6 +88,11 @@ class Result:
     # intermediate third outcome for a partial receipt. The historical
     # attribute name is retained for report-CSV and API compatibility.
     horizon_verdicts: tuple[str, str] | None = None
+    # True where a fund-receipt date exists AND falls on or before the as-at
+    # date, so the run was actually able to use it. A receipt the run itself
+    # discards as future proves nothing about receipt by the fund, which is
+    # why the remittance-only gate reads this rather than the raw column.
+    receipt_established: bool = False
 
     @property
     def warnings(self) -> list[str]:
@@ -345,6 +350,7 @@ def _assess_line(
     # the fund had not received it yet.
     settled = line.received if line.received is not None and line.received <= as_at else None
     remitted = line.remitted if line.remitted is not None and line.remitted <= as_at else None
+    result.receipt_established = settled is not None
     if line.received is not None and line.received > as_at:
         result.caveats.append(
             f"fund receipt date {line.received.isoformat()} is after the as-at date "
@@ -817,12 +823,25 @@ def _assess_line(
         ):
             extended = cal.add_business_days(line.qe_day, 20)
             if landed <= extended:
-                becomes = (
-                    "the line becomes on time"
-                    if settled is not None
-                    else "the line stops being late, though it stays at risk until "
-                    "you supply a fund-receipt date"
-                )
+                # Only a full fund receipt can reach ON_TIME and only a full
+                # remittance can reach AT_RISK, so partial evidence keeps the
+                # line exposed for the unfunded remainder however far the
+                # deadline moves. Promising an outcome the flag cannot produce
+                # states more than is known, and the wording travels into
+                # report.csv and the practitioner pack.
+                unfunded = cents(line.sg_amount) - receipt_credit
+                if settled is not None and receipt_covers_all:
+                    becomes = "the line becomes on time"
+                elif settled is None and fully_remitted:
+                    becomes = (
+                        "the line stops being late, though it stays at risk until "
+                        "you supply a fund-receipt date"
+                    )
+                else:
+                    becomes = (
+                        f"${money(unfunded)} of ${money(line.sg_amount)} still has "
+                        "no evidenced fund receipt, so only the deadline moves"
+                    )
                 result.caveats.append(
                     "this assumes the contribution is not the first to this fund. If "
                     "it is a new starter or a fund switch, set "

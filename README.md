@@ -144,6 +144,12 @@ sign-off checklist:
 payday-super-check review-pack report.csv -o practitioner-review.md
 ```
 
+**The report argument must be a bare `.csv` filename in the current directory.**
+Unlike every other path this tool accepts, `review-pack` refuses a directory
+part: `sub/report.csv`, `./report.csv` and an absolute path are all rejected
+with exit code 1. `cd` to the directory holding the report, or copy it beside
+you, and pass the filename alone. The `-o` output path is unrestricted.
+
 The pack binds itself to the exact report bytes with SHA-256, recounts every
 verdict, reconciles the displayed experimental range and puts each non-`ON_TIME`
 row into a human review queue. It refers to the source CSV's `row` value rather
@@ -189,7 +195,7 @@ To get a real verdict, enter the missing holidays in a `--holidays-override` fil
 
 A date on or before a deadline that runs past the calendar's coverage still gets a verdict. A missing holiday can only push the real deadline later, so paying early is provably on time whatever the calendar is missing.
 
-The exit code is 0 when nothing is exposed, nothing is left undecided, and the file can produce an ON_TIME result (or you passed `--confirm-remittance-only` after accepting that it cannot). It is 2 when any of those is untrue, and 1 on a data or file error, so you can run it from a scheduled job. A file whose every in-scope positive row lacks `fund_received_date` is undecided in that sense: vendor imports never write that column, so the advertised two-command path is remittance-only `AT_RISK` until you fill the dates. Argparse also uses 2 for a bad command line, so a wrapper should check stderr before raising an alarm.
+The exit code is 0 when nothing is exposed, nothing is left undecided, and the file can produce an ON_TIME result (or you passed `--confirm-remittance-only` after accepting that it cannot). It is 2 when any of those is untrue, and 1 on a data or file error, so you can run it from a scheduled job. A file where no in-scope positive row carries a `fund_received_date` on or before the as-at date is undecided in that sense: vendor imports never write that column, so the advertised two-command path is remittance-only `AT_RISK` until you fill the dates. A receipt dated after `--as-at` counts as absent here, because the run discards it as future and says so in that row's own caveat. Argparse also uses 2 for a bad command line, so a wrapper should check stderr before raising an alarm.
 
 ### Options
 
@@ -202,7 +208,7 @@ The exit code is 0 when nothing is exposed, nothing is left undecided, and the f
 | `--mapping-file FILE` | Same thing as JSON, see `examples/mapping.example.json` |
 | `--holidays-override FILE` | Add or remove public holidays from the bundled calendar; its optional `verified_until` declares how far you have entered them |
 | `--confirm-transition-allocation` | Confirm you reconciled LCR 2026/1 for every contribution dated no later than 28 July 2026: pre-1 July amounts are unused excess and 1 to 28 July amounts remain after any June-quarter employee shortfall |
-| `--confirm-remittance-only` | Confirm you accept a remittance-only review because no fund-receipt date is on any in-scope positive row. Without this flag that file exits 2: it cannot produce ON_TIME |
+| `--confirm-remittance-only` | Confirm you accept a remittance-only review because no in-scope positive row has a fund-receipt date on or before the as-at date. Without this flag that file exits 2: it cannot produce ON_TIME |
 
 ### Input columns
 
@@ -277,7 +283,7 @@ The importer still prints `row N: partial: 999.99 of 1000.00 matched` and `row N
 
 ## Local file boundary
 
-This is a single-user command-line tool. Its positional input, importer input, mapping, calendar override and output arguments designate files the invoking operating-system account has chosen to read or write; they are not a sandbox. Do not expose the command as a web endpoint, multi-user service, or automation that accepts path values from a less-trusted caller without adding an appropriate safe-root boundary.
+This is a single-user command-line tool. Its positional input, importer input, mapping, calendar override and output arguments designate files the invoking operating-system account has chosen to read or write; they are not a sandbox. The one exception is `review-pack`'s report argument, which must be a bare `.csv` filename in the current directory and is opened there. Do not expose the command as a web endpoint, multi-user service, or automation that accepts path values from a less-trusted caller without adding an appropriate safe-root boundary.
 
 Contribution and report outputs must have an explicit `.csv` filename; the
 practitioner pack must have an explicit `.md` filename. They are staged in the

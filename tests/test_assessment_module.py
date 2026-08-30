@@ -31,6 +31,9 @@ def test_report_route_preserves_the_representative_result_object() -> None:
         line=line,
         deadline=Deadline(due=date(2026, 8, 17), pathway=USUAL_7BD),
         verdict=assessment_module.ON_TIME,
+        # The receipt falls on or before the as-at date, so this run could
+        # use it. The remittance-only exit gate reads exactly this flag.
+        receipt_established=True,
     )
     assert result.line is line
     assert result.notes == []

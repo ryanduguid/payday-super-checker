@@ -2181,6 +2181,58 @@ def test_a_file_with_any_fund_receipt_is_not_remittance_only(tmp_path, capsys):
     assert "AT_RISK: 1" in printed
 
 
+def test_receipts_after_the_as_at_date_are_still_remittance_only(tmp_path, capsys):
+    """A receipt the run discards as future proves nothing about receipt by
+    the fund, so it must not defeat the gate. Two files with identical usable
+    evidence used to exit 2 and 0 purely because one had the column filled."""
+    populated = tmp_path / "populated.csv"
+    populated.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        "E1,2026-08-06,600.00,2026-08-14,2026-08-17,no,no,,no\n"
+        "E2,2026-08-06,318.00,2026-08-14,2026-08-17,no,no,,no\n",
+        encoding="utf-8",
+    )
+    code = main([str(populated), "-o", str(tmp_path / "a.csv"), "--as-at", "2026-08-15"])
+    printed = capsys.readouterr().out
+    assert code == EXIT_LATE_FOUND
+    assert "AT_RISK: 2" in printed
+    assert "cannot produce ON_TIME" in printed
+
+    blank = tmp_path / "blank.csv"
+    blank.write_text(
+        "employee_id,payment_date,sg_amount,remitted_date,fund_received_date,"
+        "first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit\n"
+        "E1,2026-08-06,600.00,2026-08-14,,no,no,,no\n"
+        "E2,2026-08-06,318.00,2026-08-14,,no,no,,no\n",
+        encoding="utf-8",
+    )
+    blank_code = main([str(blank), "-o", str(tmp_path / "b.csv"), "--as-at", "2026-08-15"])
+    capsys.readouterr()
+    assert blank_code == code
+
+    # The confirmation flag still gets the operator to exit 0, and the same
+    # run reaching the receipt date decides it normally.
+    assert (
+        main(
+            [
+                str(populated),
+                "-o",
+                str(tmp_path / "c.csv"),
+                "--as-at",
+                "2026-08-15",
+                "--confirm-remittance-only",
+            ]
+        )
+        == EXIT_OK
+    )
+    assert (
+        main([str(populated), "-o", str(tmp_path / "d.csv"), "--as-at", "2026-08-20"])
+        == EXIT_OK
+    )
+    assert "ON_TIME: 2" in capsys.readouterr().out
+
+
 def test_the_universal_at_risk_caveat_does_not_fill_the_listing():
     """Every AT_RISK row carries the no-fund-receipt caveat by construction,
     so listing it made ten rows whose only note repeated the block header, and
@@ -2398,6 +2450,67 @@ def test_new_starter_hint_wording_matches_the_verdict_it_would_produce():
     r = assess([line], load_calendar(), load_gic(), AS_AT)[0]
     hint = [c for c in r.caveats if "first_contribution_to_fund" in c]
     assert hint and "stays at risk" in hint[0]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "unfunded"),
+    [
+        # A partial fund receipt: only $400 of the $1000 is evidenced as
+        # received, so the extended deadline leaves $600 exposed.
+        (
+            {
+                "remitted": date(2026, 8, 14),
+                "remitted_amount": Decimal("400.00"),
+                "matched_amount": Decimal("400.00"),
+                "received": date(2026, 8, 19),
+            },
+            "600.00",
+        ),
+        # A partial remittance with no receipt at all: remittance establishes
+        # no statutory credit, so the whole liability stays unfunded and
+        # AT_RISK (which requires a full remittance) is out of reach too.
+        (
+            {
+                "remitted": date(2026, 8, 19),
+                "remitted_amount": Decimal("400.00"),
+            },
+            "1000.00",
+        ),
+    ],
+)
+def test_new_starter_hint_promises_no_verdict_on_partial_evidence(kwargs, unfunded):
+    """Setting the flag on a part-funded row moves the deadline and nothing
+    else: ON_TIME needs a full fund receipt and AT_RISK needs a full
+    remittance, so the hint must not claim either."""
+    line = ContribLine(
+        employee_id="EMP1",
+        qe_day=date(2026, 8, 6),
+        sg_amount=Decimal("1000.00"),
+        row=2,
+        **kwargs,
+    )
+    as_at = date(2026, 9, 25)
+    r = assess([line], load_calendar(), load_gic(), as_at)[0]
+    hint = [c for c in r.caveats if "first_contribution_to_fund" in c]
+    assert hint
+    assert "becomes on time" not in hint[0]
+    assert "stays at risk" not in hint[0]
+    assert f"${unfunded} of $1000.00 still has no evidenced fund receipt" in hint[0]
+
+    # What the operator would actually get, so the caveat is checked against
+    # the run it describes rather than against itself.
+    flagged = ContribLine(
+        employee_id="EMP1",
+        qe_day=date(2026, 8, 6),
+        sg_amount=Decimal("1000.00"),
+        first_to_fund=True,
+        row=2,
+        **kwargs,
+    )
+    actual = assess([flagged], load_calendar(), load_gic(), as_at)[0]
+    assert actual.deadline.due == date(2026, 9, 3)
+    assert actual.verdict == "UNPAID"
+    assert actual.final_shortfall == Decimal(unfunded)
 
 
 def test_zero_amount_line_with_late_payment_dates_is_not_exposure(tmp_path):

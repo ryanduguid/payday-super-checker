@@ -22,6 +22,12 @@ with elevated privileges or pass path arguments from a less-trusted user, web
 request, queue, or other tenant without first enforcing a caller-specific safe
 root.
 
+`review-pack`'s report argument is the single exception: it must be a bare
+`.csv` filename carrying no directory part, and it is opened relative to the
+process's current directory. That confinement is deliberate, but it is a
+usability boundary on one argument rather than a general safe root, and it
+does not extend to that command's `-o` output path.
+
 A generated contribution or report file must be given a `.csv` filename, and a
 generated practitioner pack must be given a `.md` filename. That constrains the
 name only; it is not a path boundary and does not confine the write to any

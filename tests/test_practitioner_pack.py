@@ -280,6 +280,47 @@ def test_relative_report_path_cannot_leave_cwd(tmp_path, monkeypatch):
         outside.unlink(missing_ok=True)
 
 
+def test_rejected_report_path_names_the_remedy(tmp_path, monkeypatch, capsys):
+    """The confinement is real and stays, but it applies to no other path this
+    tool accepts and `-o out/report.csv` is fully supported, so the operator
+    who follows the documented two-command path has to be told how to proceed
+    rather than left with a bare refusal."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "sub").mkdir()
+    source = tmp_path / "sub" / "report.csv"
+    _write_report(source)
+
+    for selected in ("sub/report.csv", "./report.csv", str(source)):
+        assert (
+            cli.main(["review-pack", selected, "-o", str(tmp_path / "pack.md")])
+            == cli.EXIT_ERROR
+        )
+        message = capsys.readouterr().err
+        assert "filename in the working directory" in message
+        assert "cd to the directory holding report.csv" in message
+
+
+def test_review_pack_path_confinement_is_documented():
+    """The confinement was documented nowhere and contradicted both documents'
+    stated path boundary, so a reader following either one hit exit 1."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    review_pack_section = readme.partition("### Build a practitioner review pack")[
+        2
+    ].partition("\n### ")[0]
+    assert "bare `.csv` filename in the current directory" in review_pack_section
+    assert "`sub/report.csv`" in review_pack_section
+
+    security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+
+    for document, heading in ((readme, "## Local file boundary"),
+                              (security, "## Local path trust boundary")):
+        # Both documents hard-wrap, so compare on a single-spaced rendering.
+        boundary = " ".join(document.partition(heading)[2].split())
+        assert "review-pack" in boundary
+        assert "bare `.csv` filename" in boundary
+
+
 def test_report_path_must_be_csv(tmp_path):
     source = tmp_path / "report.txt"
     source.write_text("not csv", encoding="utf-8")
