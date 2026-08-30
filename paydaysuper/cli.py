@@ -90,8 +90,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--confirm-remittance-only",
         action="store_true",
         help=(
-            "confirm you accept a remittance-only review: no fund-receipt date is "
-            "on any in-scope positive row, so the file cannot produce ON_TIME"
+            "confirm you accept a remittance-only review: no in-scope positive row "
+            "has a fund-receipt date on or before the as-at date, so the file "
+            "cannot produce ON_TIME"
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")

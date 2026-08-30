@@ -280,7 +280,9 @@ def load_report_snapshot(path: str | Path) -> ReportSnapshot:
     name = Path(raw).name
     if name != raw:
         raise PractitionerPackError(
-            "report path must be a .csv filename in the working directory"
+            "report path must be a .csv filename in the working directory, with no "
+            f"directory part: cd to the directory holding {name}, or copy it here, "
+            "and pass the bare filename"
         )
     if os.path.splitext(name)[1].lower() != ".csv":
         raise PractitionerPackError(f"{path} must be a .csv checker report")

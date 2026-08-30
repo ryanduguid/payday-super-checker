@@ -38,10 +38,28 @@ def test_locally_substitutable_dates_do_not_stop_the_national_clock(cal):
     assert cal.is_business_day(date(2026, 11, 3))  # Melbourne Cup Day
 
 
-def test_nsw_act_bank_holiday_is_a_business_day(cal):
-    """The August bank holiday is a bank holiday, not a general public
-    holiday, so it stays a business day."""
-    assert cal.is_business_day(date(2026, 8, 4))
+def test_no_bank_holiday_reaches_the_shipped_table():
+    """The NSW/ACT August bank holiday is a bank holiday, not a general
+    public holiday, so it must never remove a business day.
+
+    This cannot be observed through is_business_day: the bank holiday is the
+    first Monday in August, which NT Picnic Day already makes a non-business
+    day every year (2026-08-03, 2027-08-02, 2028-08-07). So assert the
+    exclusion on the table itself. tests/test_generate_calendar.py guards the
+    generator that produces it."""
+    table = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "paydaysuper"
+            / "data"
+            / "business_days.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert not [
+        entry
+        for entry in table["non_business_days"]
+        if "bank holiday" in entry["name"].lower()
+    ]
 
 
 def test_add_business_days_skips_weekends(cal):
