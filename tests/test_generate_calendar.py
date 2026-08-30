@@ -77,6 +77,34 @@ def test_generator_excludes_locally_substitutable_dates():
     assert generated["official_sources"]["checked"] is None
 
 
+def test_generator_requests_public_holidays_only_and_emits_no_bank_holiday():
+    """A bank holiday is not a public holiday for the whole of a State, so
+    admitting one would extend a deadline and manufacture a false ON_TIME.
+
+    The exclusion lives in the generator's category argument, not in
+    NOT_WHOLE_OF_JURISDICTION and not in the shipped table's dates: the
+    NSW/ACT August bank holiday falls on the first Monday in August, which NT
+    Picnic Day already removes, so is_business_day can never observe it."""
+    source = (ROOT / "tools" / "generate_calendar.py").read_text(encoding="utf-8")
+    assert 'categories=("public",)' in source
+    assert source.count("holidays.Australia(") == 1
+
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "generate_calendar.py")],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    generated = json.loads(completed.stdout)
+
+    assert not [
+        entry
+        for entry in generated["non_business_days"]
+        if "bank holiday" in entry["name"].lower()
+    ]
+
+
 def test_generator_provenance_reflects_the_environment_that_ran():
     """The pin in _comment and the generation date come from the installed
     holidays package and the clock, not from literals: a hardcoded pin

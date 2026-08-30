@@ -36,12 +36,19 @@ def horizon_indeterminate(results: list[Result]) -> list[Result]:
 
 
 def remittance_only_unproven(results: list[Result]) -> bool:
-    """True when every in-scope positive row lacks a fund-receipt date.
+    """True when no in-scope positive row has a usable fund-receipt date.
 
     Vendor imports never write ``fund_received_date``, so a fully remitted
     file is all ``AT_RISK`` and cannot produce ``ON_TIME``. Defined-benefit
     rows and nil amounts are not lateness-tested, so they do not count. A
     file with no assessable rows is not remittance-only.
+
+    The test is ``receipt_established``, not the raw column: a receipt dated
+    after the as-at date is discarded by the run that reads it, so the row
+    still cannot produce ``ON_TIME`` and the file is still remittance-only.
+    Reading the column instead let a mid-period run whose receipts all
+    post-date ``--as-at`` exit 0 while its own per-row caveat said the
+    statutory test of receipt by the fund was not met.
     """
     assessable = [
         r
@@ -50,7 +57,7 @@ def remittance_only_unproven(results: list[Result]) -> bool:
     ]
     if not assessable:
         return False
-    return all(r.line.received is None for r in assessable)
+    return not any(r.receipt_established for r in assessable)
 
 
 def needs_attention(
@@ -313,18 +320,20 @@ def console_summary(
     if remittance_only_unproven(results):
         if remittance_only_confirmed:
             lines.append(
-                "Operator confirmed remittance-only review: no fund-receipt date is "
-                "recorded on any in-scope positive row, so this file cannot produce "
-                "ON_TIME. The confirmation is recorded; fill fund_received_date from "
-                "the clearing house or fund before treating a verdict as final."
+                "Operator confirmed remittance-only review: no in-scope positive row "
+                "has a fund-receipt date on or before the as-at date, so this file "
+                "cannot produce ON_TIME. The confirmation is recorded; fill "
+                "fund_received_date from the clearing house or fund before treating "
+                "a verdict as final."
             )
         else:
             lines.append(
-                "This file cannot produce ON_TIME: every in-scope positive row lacks "
-                "a fund-receipt date. Fill fund_received_date from the clearing house "
-                "or fund, then rerun. To accept remittance-only AT_RISK results after "
-                "that gap is understood, pass --confirm-remittance-only. No payroll "
-                "payment, lodgment or accounting decision is made by this tool."
+                "This file cannot produce ON_TIME: no in-scope positive row has a "
+                "fund-receipt date on or before the as-at date. Fill "
+                "fund_received_date from the clearing house or fund, then rerun. To "
+                "accept remittance-only AT_RISK results after that gap is understood, "
+                "pass --confirm-remittance-only. No payroll payment, lodgment or "
+                "accounting decision is made by this tool."
             )
         lines.append("")
 
