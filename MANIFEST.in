@@ -16,5 +16,7 @@ recursive-include examples *.json *.csv
 recursive-include evaluation/payday_super_evidence *.md *.json *.csv
 recursive-include tools *.py
 recursive-include docs *.md
+include assets/quick-proof.md
+include assets/quick-proof.svg
 global-exclude __pycache__/*
 global-exclude *.py[cod]
