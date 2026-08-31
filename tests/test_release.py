@@ -98,6 +98,8 @@ def test_release_workflow_is_manual_pinned_attested_and_prerelease_only():
     assert "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6" in workflow
     assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in workflow
     assert "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97" in workflow
+    assert "enable-cache: true" not in workflow
+    assert workflow.count("enable-cache: false") == 1
     assert "python -m build" in workflow
     assert "tools/release.py build" not in workflow
     assert "--prerelease" in workflow and "--latest=false" in workflow
