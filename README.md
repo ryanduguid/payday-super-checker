@@ -37,6 +37,16 @@ No-install explainer: [When is payday super actually due](https://ryanduguid.git
 
 Citation: [`CITATION.cff`](CITATION.cff); release: [`v0.1.2`](https://github.com/ryanduguid/payday-super-checker/releases/tag/v0.1.2).
 
+## Quick proof
+
+[![Fabricated Payday Super review](assets/quick-proof.svg)](assets/quick-proof.md)
+
+The card comes from the fabricated sample and links to the complete console transcript. Re-run the sample and confirm that both committed proof files are current:
+
+```bash
+python tools/render_quick_proof.py --check
+```
+
 ## Install
 
 Python 3.10 or later. No runtime dependencies.
