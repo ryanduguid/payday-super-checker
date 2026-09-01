@@ -19,7 +19,7 @@ classifiers = [
   "Topic :: Office/Business :: Financial :: Accounting",
 ]
 [project.urls]
-Homepage = "https://ryanduguid.github.io/tools/payday-super/"
+Homepage = "https://duguid.com.au/tools/payday-super/"
 Repository = "https://github.com/ryanduguid/payday-super-checker.git"
 Issues = "https://github.com/ryanduguid/payday-super-checker/issues"
 
