@@ -6,7 +6,7 @@ authors:
 title: "payday-super-checker: experimental Payday Super review CLI. Not a compliance determination."
 version: 0.1.2
 date-released: 2026-08-24
-url: "https://ryanduguid.github.io/tools/payday-super/"
+url: "https://duguid.com.au/tools/payday-super/"
 repository-code: "https://github.com/ryanduguid/payday-super-checker"
 license: MIT
 keywords:
