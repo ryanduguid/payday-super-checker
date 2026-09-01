@@ -1,0 +1,5 @@
+employee_id,payment_date,sg_amount,remitted_date,fund_received_date,first_contribution_to_fund,out_of_cycle,next_standard_payday,defined_benefit
+EMP201,2026-08-06,612.00,2026-08-11,,no,no,,no
+EMP202,2026-08-06,540.00,2026-08-17,,no,no,,no
+EMP201,2026-08-20,612.00,2026-08-25,,no,no,,no
+EMP202,2026-08-20,540.00,2026-08-31,,no,no,,no
