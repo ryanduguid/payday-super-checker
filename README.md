@@ -145,6 +145,53 @@ identifiers in process logs. Use that row number to find the full record in
 
 Full detail goes to `report.csv`: due date, which deadline rule applied, days late, the final shortfall after any offset, notional earnings, best and worst case uplift, and every warning that applies to that line.
 
+### The remittance-versus-fund-receipt boundary
+
+`examples/sample_remittance_only.csv` isolates the one fact no payroll system
+or clearing house exports. Every line in it was remitted on or before its own
+deadline, and every `fund_received_date` is blank, which is exactly the shape
+a vendor import gives you. Nothing in the file is late, and nothing in it can
+be proved on time:
+
+```bash
+payday-super-check examples/sample_remittance_only.csv --as-at 2026-09-10
+```
+
+```
+payday-super-checker: 4 contribution lines, as at 2026-09-10
+
+  ON_TIME: 0  AT_RISK: 4  LATE: 0  UNPAID: 0  UNKNOWN: 0  SKIPPED: 0
+
+This file cannot produce ON_TIME: no in-scope positive row has a fund-receipt date on or before the as-at date. Fill fund_received_date from the clearing house or fund, then rerun. To accept remittance-only AT_RISK results after that gap is understood, pass --confirm-remittance-only. No payroll payment, lodgment or accounting decision is made by this tool.
+
+4 line(s) remitted by the deadline but with no fund-receipt date. The statutory timing test turns on receipt by the fund, not the day you paid, and clearing-house transit time is the employer's risk.
+```
+
+That run exits 2. There is no exposure in the file and no deadline the
+calendar could not decide, so the missing receipt date is the only thing
+holding the run above zero. Confirming that you accept a remittance-only
+review exits 0 and leaves every verdict where it was:
+
+```bash
+payday-super-check examples/sample_remittance_only.csv --as-at 2026-09-10 --confirm-remittance-only
+```
+
+```
+payday-super-checker: 4 contribution lines, as at 2026-09-10
+
+  ON_TIME: 0  AT_RISK: 4  LATE: 0  UNPAID: 0  UNKNOWN: 0  SKIPPED: 0
+
+Operator confirmed remittance-only review: no in-scope positive row has a fund-receipt date on or before the as-at date, so this file cannot produce ON_TIME. The confirmation is recorded; fill fund_received_date from the clearing house or fund before treating a verdict as final.
+
+4 line(s) remitted by the deadline but with no fund-receipt date. The statutory timing test turns on receipt by the fund, not the day you paid, and clearing-house transit time is the employer's risk.
+```
+
+Both blocks are abridged in the same way as the two above: the real runs also
+print the assumptions page. The flag records that you understand the gap. It
+does not turn `AT_RISK` into `ON_TIME`, because paying on time is not the
+statutory test. Fill `fund_received_date` from your clearing house or fund and
+rerun before treating any verdict here as final.
+
 ### Build a practitioner review pack
 
 Turn the completed checker report into a deterministic Markdown index and
