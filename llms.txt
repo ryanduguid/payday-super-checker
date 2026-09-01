@@ -1,9 +1,9 @@
 # payday-super-checker
-> High-density context for LLM agents. Experimental Payday Super review aid — not a compliance determination.
+> High-density context for LLM agents. Experimental Payday Super review aid: not a compliance determination.
 
 ## Package Overview
-- **Explainer**: https://ryanduguid.github.io/tools/payday-super/
-- **MCP facade**: https://ryanduguid.github.io/tools/australian-tax-ai-agents/
+- **Explainer**: https://duguid.com.au/tools/payday-super/
+- **MCP facade**: https://duguid.com.au/tools/australian-tax-ai-agents/
 - **Repository**: https://github.com/ryanduguid/payday-super-checker
 - **Evidence Evaluation**: evaluation/payday_super_evidence/README.md
 - **Distribution**: `payday-super-checker`
