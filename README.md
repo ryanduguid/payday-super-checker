@@ -1,5 +1,16 @@
 # payday-super-checker
 
+> [!IMPORTANT]
+> **Repository migration: 2 September 2026.** We moved maintained development to
+> [`packages/payday-super-checker`](https://github.com/ryanduguid/australian-accounting/tree/main/packages/payday-super-checker)
+> in Australian Accounting. The first replacement release is
+> [`v0.1.3`](https://github.com/ryanduguid/australian-accounting/releases/tag/payday-super-checker/v0.1.3).
+>
+> Keep this repository's prerelease
+> [`v0.1.2`](https://github.com/ryanduguid/payday-super-checker/releases/tag/v0.1.2)
+> as the rollback release until the fourteen-day observation window closes on
+> 16 September 2026. Open new issues and pull requests in Australian Accounting.
+
 ```
 +----------------------------------------------------------------------+
 |                         payday-super-checker                         |
